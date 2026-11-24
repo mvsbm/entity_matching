@@ -21,11 +21,11 @@
 | S | random pairs sampled for u on the file (10⁷; fixed), for each comparison not counted exactly; the fit's own sample, for EM, is 10⁶ |
 | P_em | pairs in EM's blocks (equal phone, equal address) within the fitting sample |
 | E | accepted pairs |
-| F, D, T | folds (3), decision variants (5 for the rules, 23 for the model), Optuna trials |
 
-**A full run** (`jobs.build.build`, which `nayose resolve records` calls), with the times measured on 1,039,995 generated records by
+**A full run** (`jobs.build.build`, which `python -m er build` calls), with the times measured on 1,039,995 generated records by
 `scripts/benchmark.py`, in a process of its own under an 8 GB DuckDB memory limit (peak 7.1 GB, Python included). The reader
-reads the file before these steps, about 3.3 s a million records ([below](#reading-a-file-as-it-comes)):
+reads the file before these steps, about 3.3 s a million records ([below](#reading-a-file-as-it-comes)); the lookup index is
+built after them, 3.2 s ([below](#a-lookup)):
 
 | # | Step | Code | Cost | Grows like | At 1M |
 |---|---|---|---|---|---|
@@ -33,21 +33,21 @@ reads the file before these steps, about 3.3 s a million records ([below](#readi
 | 2 | budget: every rule's and generator's pairs, exactly, before any join | `steps.budget.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 2.09 s |
 | 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, position, swap and deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `steps.fit.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 4.05 s |
 | 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `steps.rules.rules`, `er.match.rule_edges`, `er.cluster.merge` | O(N + Σ P_r·L²) + O(E·log E + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.09 s |
-| 5 | candidates: every generator as one SQL join or window, keeping only the pairs that can reach 0 (step 6's bound) or a rule found, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `steps.candidates.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M, 3 per sorted window | 11.84 s |
+| 5 | candidates: every generator as one SQL join or window, keeping only the pairs that can reach 0 (step 6's bound) or a rule found, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `steps.candidates.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M | 11.84 s |
 | 6 | score: every candidate that can reach 0 points, with the u the fit measured; a bound settles the rest below 0 unscored, as nothing reads them (below) | `steps.score.score`, `er.match.score_fs`, `bound_sql` | O(C·K_c + C₀·K·L²) | C | 0.24 s |
 | 7 | cluster: accept at the threshold, connected components with the rules' pairs (each rule cluster one node), gold | `steps.cluster.cluster`, `er.cluster.merge` | O(C + E·log E + N) | N | 0.23 s |
 | 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `steps.write.write` | O(N + C) | N | 1.38 s |
-| 9 | report: qa.md, report.txt and the review sheet, built before the write and landing with it | `steps.report.report` | O(review pairs) + O(N) | N | 0.83 s |
+| 9 | report: report.txt and the review sheet, built before the write and landing with it | `steps.report.report` | O(review pairs) + O(N) | N | 0.83 s |
 | | **total** | | | | **29.7 s** |
 
-**Pairs that can't reach 0 points.** Nothing reads a candidate's score below the floor: `scored/` keeps 0 points and up (or `[threshold] keep_from`), and the line and review start there. So a pair is scored only when its bound reaches the floor: the prior, each comparison whose tests are equality, Hamming or one edit at its own level, and each other at the best level the pair may land in (`bound_tests`): DuckDB settles each level's test where it can in C++, a name or a company name in katakana by Jaro–Winkler on its one-byte copy, and only a test it can't settle (text outside katakana and ASCII, an edit distance past one) counts as passing. 0 where its fields are missing. Each test is computed once: the outcomes index a table of the bounds they allow, since DuckDB computes an expression as often as it is written. A pair a rule found is scored whatever its bound. A full run's candidates step already leaves the rest out as its keys list them (below); an increment's are counted (`unscored`, one row "below 0" in report.txt's SCORES and the score chart) and never compared by name, company or address: on a file whose address and phone are mostly empty, that is nearly every candidate. Every score written is the same to the last bit. The gate on oversized blocks does the same at its own floor, the review floor, and the probe, at design time, at the line. K_c is the comparisons settled first, C₀ the candidates whose bound reaches 0.
+**Pairs that can't reach 0 points.** Nothing reads a candidate's score below the floor: `scored/` keeps 0 points and up (or `[threshold] keep_from`), and the line and review start there. So a pair is scored only when its bound reaches the floor: the prior, each comparison whose tests are equality, Hamming or one edit at its own level, and each other at the best level the pair may land in (`bound_tests`): DuckDB settles each level's test where it can in C++, a name or a company name in katakana by Jaro–Winkler on its one-byte copy, and only a test it can't settle (text outside katakana and ASCII, an edit distance past one) counts as passing. 0 where its fields are missing. Each test is computed once: the outcomes index a table of the bounds they allow, since DuckDB computes an expression as often as it is written. A pair a rule found is scored whatever its bound. A full run's candidates step already leaves the rest out as its keys list them (below); an increment's are counted (`unscored`, one row "below 0" in report.txt's SCORES and the score chart) and never compared by name, company or address: on a file whose address and phone are mostly empty, that is nearly every candidate. Every score written is the same to the last bit. The gate on oversized blocks does the same at its own floor, the review floor. K_c is the comparisons settled first, C₀ the candidates whose bound reaches 0.
 
 At a million records, the candidates (11.84 s) and the load (6.91 s) take more than half the time. The fit grows
 far slower than the file: it learns on n records, and its u sample of the file is S pairs for each of name, company
 and address, whatever the file's size; cif, phone and birth are counted exactly, in O(N). The score grows with the
 candidates, and is small because the candidates step lists only the pairs that can reach 0.
 
-**An increment** (`jobs.update.update`, `nayose add records`): a batch of Δ new records joins a written run.
+**An increment** (`jobs.update.update`, `python -m er update`): a batch of Δ new records joins a written run.
 
 | Step | Cost | What it touches |
 |---|---|---|
@@ -58,83 +58,61 @@ candidates, and is small because the candidates step lists only the pairs that c
 | score | O(C_Δ·K·L²) | only the pairs touching the batch |
 | cluster | O(C_Δ + touched clusters) | the stored clusters, with the new pairs merged in |
 | write | O(Δ + C_Δ) appended, O(N) rewritten | new Parquet parts for records, rule pairs and matches; gold and the rules' clusters rewritten. Every file is staged under a temporary name and renamed into place only once all are complete, so an interrupted increment leaves the run as it was, or is finished by the next one |
+| index | O(Δ·(G + R + D·L) + N) | the lookup index brought up to date ([below](#a-lookup)) |
 
 So a full run costs **O(N·L + Σ P + C·K·L² + E·log E)**, plus the fit and the u sample, whose sizes are fixed. It
 is linear in N when every key's pairs per record stay flat as the file grows, which `budget` checks exactly on each
-file and `scale_check` projects to `budget.target_rows` while choosing (below). An increment costs
+file; projected to a million records on labelled train, every key of the method stays under 5 pairs per record (below). An increment costs
 **O(Δ·(L + Σ b) + C_Δ·K·L²)**, plus sequential scans and rewrites of the stored columns, the exact u counts, and a u
 sample only for a comparison that has drifted. Its expensive work grows with the batch, not with the file. A full run
 re-fits the model.
 
-**People's decisions** (`jobs.decide.decide`, `nayose apply decisions`) cost **O(D + touched clusters)** for D
+**People's decisions** (`jobs.decide.decide`, `python -m er decide`) cost **O(D + touched clusters)** for D
 decisions, plus O(N) to rewrite gold: each `match` pair merges two stored clusters, each one node, and nothing is scored.
+The index is then brought up to date, as after an increment.
 
 **Measured:** an increment of 1,000 records into a run of 999,000 generated records (the parity runs' 1M file less
-1,000 drawn at random), `nayose add records` in a process of its own: 4.0 s of steps, 5.4 s wall clock, a peak of
+1,000 drawn at random), in a process of its own: 4.0 s of steps, 5.4 s wall clock, a peak of
 4.19 GB under DuckDB's default memory limit.
 
-**A lookup** (`jobs.index.look_up`, `nayose match record`): one record against the run's index costs
-**O(G·(log N + b) + C·K·L²)**, N only inside log N: each of its keys reads a few row groups of its table, sorted by the
-key's hash, and a sorted window's place is a bisect in every 1,024th key. Building the index (`jobs.index.build`, `nayose build index`) costs
-**O(N·(G + R + D·L) + N log N)**: every key of every record, sorted, read from the run's own
-files. Keeping it up to date after an increment or decisions (`jobs.index.update`) costs
-**O(Δ·(G + R + D·L) + N)** for Δ records added, the N one pass over two columns for the entities that moved.
-**Measured** on 1,039,995 generated records ([reports/benchmark_lookup.md](../reports/benchmark_lookup.md)): built in
-3.2 s, 840 MB on disk; with the index kept open, a lookup at p50 83 ms, p95 91 ms and at most 197 ms; 1,000 records added, the index up to date in 0.2 s, against 3.1 s to build it again. The
-pairs and weights equal to an increment of that record alone on every record checked, and the index kept up to date
-answering every lookup as one built again.
-
 **Memory.** Records, pairs, scores and clusters are DuckDB tables. Past `memory_limit` (config/settings.toml `[compute]`,
-or `--compute memory_limit=8GB` on a command), DuckDB spills them to `temp_directory`: by default a folder of the
+or `--compute memory_limit=8GB` on a job), DuckDB spills them to `temp_directory`: by default a folder of the
 person's own, readable only by them, in the system's temporary folder. The budget counts the room DuckDB may spill to: 90% of that disk's free space, DuckDB's
 own cap (`max_temp_directory_size`). Python holds one chunk of `load` (200,000 records), the fitting sample (n records)
 and small summaries. DuckDB keeps in memory what fits under its limit and spills the rest, so the 7.1 GB peak at a
 million records ([below](#files-of-growing-size)) shows what it chose to keep under 8 GB. The deletion-key tables hold only the IDs and the key columns.
+
+### A lookup
+
+`jobs.index.look_up`, `python -m er lookup`: one record against the run's index costs
+**O(G·(log N + b) + C·K·L²)**, N only inside log N: each of its keys reads a few row groups of its table, sorted by the
+key's hash. Building the index (`jobs.index.build`, the last step of `build`) costs
+**O(N·(G + R + D·L) + N log N)**: every key of every record, sorted, read from the run's own
+files. Keeping it up to date after an increment or decisions (`jobs.index.update`) costs
+**O(Δ·(G + R + D·L) + N)** for Δ records added, the N one pass over two columns for the entities that moved.
+**Measured** at design time on 1,039,995 generated records: built in
+3.2 s, 840 MB on disk; with the index kept open, a lookup at p50 83 ms, p95 91 ms and at most 197 ms; 1,000 records added, the index up to date in 0.2 s, against 3.1 s to build it again. The
+pairs and weights equal to an increment of that record alone on every record checked, and the index kept up to date
+answering every lookup as one built again.
 
 ## The cost checks before a run
 
 | Check | When | Cost | What it stops |
 |---|---|---|---|
 | `budget` | every run, on the actual file | O(N) per rule and generator | only a run whose normal blocks would not fit in memory and the room DuckDB may spill to. Oversized blocks (64+ records) are checked on a sample instead: at most `sample_pairs` scored pairs each, never more than joining them would cost |
-| `scale_check` | `scripts/choose.py`, on train | O(N) per key | a key whose pairs, projected to `target_rows`, exceed `max_pairs_per_record` × N: the guard against keys that grow by many normal blocks, which the sample check doesn't catch |
-| `window_only` | `scripts/choose.py`, on train | O(N + P + P_true·K), P_true true pairs, plus two u samples | a true pair that could reach the threshold but shares no key, at train's size or at `target_rows` |
-| `pattern_coverage` | `scripts/choose.py` and every run's QA report | O(Π levels), a few thousand patterns | reported, not stopped: patterns that can reach the threshold with no guaranteed key |
+| `pattern_coverage` | every run, in report.txt (PATTERNS WITHOUT A KEY) | O(Π levels), a few thousand patterns | reported, not stopped: patterns that can reach the threshold with no guaranteed key |
 
-`scale_check` splits a key's pairs P on train into T pairs of one entity and C chance pairs between entities. A
+The keys themselves are held at design time, on labelled train, to `max_pairs_per_record` × N projected to
+`target_rows` (a million records): the guard against keys that grow by many normal blocks, which the sample check
+doesn't catch. A key's pairs P on train split into T pairs of one entity and C chance pairs between entities. A
 bigger population of the same kind has proportionally more duplicated entities, so T grows like N, and two entities
 share a value with the same probability at any size, so C grows like N²: P(n) = T·n/N + C·n(n − 1)/(N(N − 1)). That is
 the expectation of keeping a share of the entities, computed instead of sampled. Pairs between members of one
 household count as chance, the safe side ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
 
-## Choosing the configuration
+## Work the code skips
 
-`scripts/choose.py`, once, on the labelled synthetic train and val (Optuna off):
-
-| Step | Cost |
-|---|---|
-| rules: design analyses, A/B, decisions, cost, evaluation, output | O(D · run) on train and val |
-| candidates on train: every generator's reach | O(N·L + Σ P_g) |
-| training: EM against labels | O(n + S·K + P_em·K), twice |
-| threshold rule on out-of-fold scores | O(F · (fit + run on n/F records)) |
-| A/B on val | O(variants · run) |
-| decisions | O(D · (F + 1) · run) |
-| will it scale: `scale_check`, `window_only`, `pattern_coverage` | O(N) per key + O(N + P + P_true·K) + O(Π levels) |
-| output: train, val and test through the chosen pipeline | O(3 · run) |
-| gold: train, val and test resolved by `jobs.build.build` into `data/medallion/gold/<dataset>/` | O(3 · full run), with train's model |
-| Optuna (off by default) | O(T · F · run) |
-
-`reports/choose.md` times some of it: the training, 7.5 s by EM and 0.3 s from labels; the threshold rule's 3-fold
-cross-validation, 27.5 s; and `FINAL` on each dataset, 2.0 s on train, 0.9 s on val, 6.7 s on test. u is sampled
-once per set of records and comparison (each fold, val, train, test, and the coverage check's two samples), and only
-for the comparisons not counted exactly. `notebooks/demo.ipynb` runs every step of a full run and an increment on
-3,758 records; `scripts/export_pdfs.py` prints it as a PDF.
-
-`scripts/choose_kind.py` chooses how persons and companies are told apart: 768 combinations on 12 generated scenarios
-of 20,000 customers each, by successive halving. `reports/choose_kind.md` times the search: 125 s for every combination
-on 3 scenarios, 49 s for the best quarter on 6, 55 s for the best quarter of those on 12. Each scenario's name models are
-trained once and its signals computed once; a combination fits only its combiner, on 1,000 records.
-
-**Work the code skips** (identical results, covered by tests/):
+Identical results, covered by tests/:
 - **Names scored in DuckDB** (`er.kind.NameModel.logit`): every distinct name's character n-grams in one query, once
   however often the name repeats, joined to the model's weights and summed in term order, so every run gives the same
   bits. The same sums as scikit-learn's vectorizer, which builds the n-grams one name at a time in Python.
@@ -146,10 +124,7 @@ trained once and its signals computed once; a combination fits only its combiner
 - **One u sample per set of records** (`er.match.scored_sample`, `SCORED_U`). A comparison's u depends only on
   itself, the sample size, the seed (`FSModel.u_keys`) and the values it reads, since the sampled pairs are picked by
   a hash of the record ID, as Splink picks them. So the cache is keyed by the comparison and a fingerprint of those values, a frame and a
-  table with the same rows alike: within one process, a model's variants and `choose.py`'s repeats of train share one
-  sample. A workspace keeps it too (`u_sampled.json`, keyed besides by the code and DuckDB's version), so
-  the next full run comparing the same way reads it and draws no sample: 250,000 records' fit from 12.5 s
-  to 3.6 s. cif, phone and birth need none: their levels are counted (`exact_u`, once per fit).
+  table with the same rows alike: within one process, a model's variants share one sample. cif, phone and birth need none: their levels are counted (`exact_u`, once per fit).
 - **The u sample counted in one pass** (`er.match.sample_u`). The records and pairs are drawn as Splink draws them (a
   hash of the ID and the seed: the portable one, `config.hashed`), and every comparison's levels are counted in one pass
   over the pairs, where Splink's estimate joins them again for each comparison, chunk by chunk: on the same pairs, the
@@ -160,8 +135,8 @@ trained once and its signals computed once; a combination fits only its combiner
 - **Scores in one query** (`er.match.predict_sql`). Splink 5.0's predict SQL as Splink writes it: each level's condition
   in order, its weight the same `float8` literal, summed in the same order, so the same scores to the last bit (tests
   compare them with the scores recorded from Splink 5.0), without the two copies of the records Splink makes first and
-  its SQL built per call. Scoring 250,000 records 4.8 s to 2.6 s, the probe's draws 5.1 s to 3.0 s.
-- **Rules in plain SQL** (`er.match.rule_edges`): one equi-join per rule, for `choose.py`, full runs and increments
+  its SQL built per call. Scoring 250,000 records 4.8 s to 2.6 s.
+- **Rules in plain SQL** (`er.match.rule_edges`): one equi-join per rule, for full runs and increments
   alike. A fuzzy condition lets equal values through without calling the string function. Splink's
   `deterministic_link` would join every column of both records back first.
 - **Deletion keys unnested once** per candidates call (`Records.variants`), into a table that the count, the join and
@@ -224,31 +199,14 @@ trained once and its signals computed once; a combination fits only its combiner
   distinct pairs listed (`stored`, those kept), each generator's pairs as listed, `unscored` those below 0. On a
   generated file of 1.3 million records with sparse addresses and sequential customer IDs, 112 million candidates
   were 33,700 stored and the step 61 s instead of 593 s. Larger passes spill: 33 million pairs through the joins took
-  ten times what 10 million did. Design time (`design.pipeline.run_fs`) stores every pair, so the keys' metrics count
-  them all (`jobs.build.build`'s `reaching_only`).
+  ten times what 10 million did. With `reaching_only` off, `jobs.build.build` stores every pair, so design time's metrics of the keys count
+  them all.
 - **A key's oversized blocks left out before its join**, on both sides, not from its pairs after.
-- **No gap or probe in a run** (`design.gap`, `design.probe`): they estimate the matches the keys miss, which no output of a
-  run reads, so `scripts/benchmark.py` runs them at design time, where the keys are chosen. On the parity runs'
-  generated files (each pair of runs on one file), a full run of 1,000,000 records 43.1 s to 27.1 s (the gap took
-  15.39 s of it, the probe 0.59 s), of 200,000 records 16.8 s to 10.6 s, wall clock; every output file, the model, an increment and 30 lookups the same to the last bit.
 - **Records read as Parquet only** (`er.intake`): every column read as text, by column in Arrow, with no delimiter,
   quoting or encoding to work out. On the parity runs' generated 1,000,000-record Parquet file, the reader 3.81 s to
   3.25 s (the median of three runs), the file it reads the same to the byte (its SHA-256); the full run with it 27.1 s
   to 26.2 s, wall clock; every result the same to the last bit, on train, val, 200,000 and 1,000,000 records, an
   increment and 30 lookups.
-- **The gap's sample bounded once** (`design.sample.discover`): every atom's drawn pairs are listed first, then pass the
-  bound together, 10 million at a time, not one pass per atom; each pass joins the records again.
-- **PassJoin's candidates as value IDs** (`Records.near_values`): the segment join keeps each candidate as two
-  integers, and only those cross into Python, with each value's text once, for rapidfuzz to check: no pandas string
-  for each of tens of millions of candidate pairs of names. With the bound above, the gap on 500,000 generated
-  records 21.5 s to 6.3 s (within two edits of a name, 12.4 s to 1.9 s), on train 4.9 s to 1.3 s.
-  Each row of the segment join holds its value's id and segment, never the value itself: within a block of within
-  values one id is one value, so a long value isn't copied into every one of its segment rows.
-- **The gap's one-edit atoms read only the sample's deletion blocks** (`design.sample.discover`): the sampled records'
-  deletion keys first, then each record's keys that are among them, so a block no sampled record is in is never
-  stored. The table of every record's deletions grew as N·L², L the value's length: on 500,000 records with addresses
-  of about 100 characters compared whole, the gap ran out of a 12.7 GiB memory limit and its spill filled the disk; it
-  now finishes in 32 s. On 138,000 such records, the gap 15.7 s to 13.1 s.
 - **A chain made from its prefix's column** (`er.standardize.prepare`): a normalization chain whose chain without its
   last step was already made (`address`, then `address` and `first3`) applies only that step to it, when that step
   makes nothing of an empty value, as every built-in step does. On addresses of about 100 characters, the address
@@ -267,21 +225,17 @@ trained once and its signals computed once; a combination fits only its combiner
 - **EM on agreement-pattern counts, in Python** (`er.fit.session`): each session counts its pairs' agreement
   patterns in one query, a few hundred rows, and runs its rounds over those counts in Python, never over every pair
   in its blocks: the prior counted once, no table cache or settings check per session.
-- **Threshold rule without clustering** (`accept_curve`). The rule reads only accepted and false accepted pairs per
-  weight, so decision variants resolve clusters at the chosen weight only.
-- **Run cache.** Identical runs (same configuration, dataset and threshold) are computed once, in both stages.
 - **Merged lists by bitmask.** A pair's generators are one bit each, combined with `bit_or` in SQL, then named once
-  per combination ([lessons.md](lessons.md#linear-work-done-one-pair-at-a-time-in-python)).
+  per combination.
 
-**Rejected by the rule, because they change results:** u from 10⁶ pairs instead of 10⁷ for the scores
-(`u_from_1e6_pairs`) would make u-sampling about 6× cheaper, but loses true pairs: cross-validated train +1 / −8
-(p = 0.0391), val −1. The fit's own sample, which feeds only EM, does use 10⁶ pairs (`fit_u_from_1e6_pairs`): no pair
-moves on train or val. Dropping the three sorted windows (`no_sorted_windows`) would remove 9 pairs per record at a
-million records, 3 per window, but loses 1 true pair on val.
+**Not used, because it changes results** (measured at design time on labelled train and val): u from 10⁶ pairs
+instead of 10⁷ for the scores would make u-sampling about 6× cheaper, but loses true pairs: cross-validated train
++1 / −8 (p = 0.0391), val −1. The fit's own sample, which feeds only EM, does use 10⁶ pairs: no pair moves on train or
+val.
 
 ## Files of growing size
 
-`scripts/benchmark.py`: each generated file resolved by `nayose resolve records` in a process of its own, the model fitted
+`scripts/benchmark.py`: each generated file resolved by `python -m er build` in a process of its own, the model fitted
 on the file itself, without labels ([reports/benchmark.md](../reports/benchmark.md)):
 
 | Records | Seconds | Peak memory | fit | score | everything else |
@@ -301,8 +255,8 @@ quarter of a second at every size, since the candidates step lists only the pair
 
 ## Reading a file as it comes
 
-`scripts/benchmark_intake.py`: the reader (`er.intake`, before every run) on a generated file of 1,039,995 records × 25
-columns as Parquet, every column text, a clean copy and a damaged one ([reports/benchmark_intake.md](../reports/benchmark_intake.md)):
+Measured at design time: the reader (`er.intake`, before every job) on a generated file of 1,039,995 records × 25
+columns as Parquet, every column text, a clean copy and a damaged one:
 
 | File | Seconds | Read back | Changed, never damaged |
 |---|---|---|---|
@@ -317,11 +271,3 @@ columns hold numbers is learned from the first chunk (a column's first 50,000 va
 Plain ASCII is told by Arrow's byte tests (printable, not empty, no space at either end), not by a regular expression,
 and a bracket found by RE2, which finds a single character far faster than Arrow's substring search: on a file of
 500,000 records × 80 columns, some of 1,500 characters, the reader 37 s to 20 s.
-
-## The gap and the probe: the matches no key lists
-
-At design time, `scripts/benchmark.py` runs both on each scenario's run once it has clustered (`gap.gap`, `probe.probe`).
-The gap pairs 20,000 sampled records with every record that shares a value with them or a near one, and scores the
-pairs: O(f·N·b). The probe scores about `[probe] pairs` (a million) pairs in each of its groups, drawn at random among
-the pairs that share a phone or a postal area: O(N + P·K + L). On the parity runs' generated file of 1,000,000
-records, the gap takes 15.39 s and the probe 0.59 s, against 26.2 s for the whole run.

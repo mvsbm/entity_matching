@@ -6,7 +6,7 @@ import pytest
 
 from er.config import (Budget, FSSpec, InputError, Key, KeyBlocker, Resolver)
 from er.match import exact_u, pattern_coverage, train_fs
-from er.config import dump_pipeline, fields_read, load_pipeline
+from er.config import fields_read, load_pipeline
 from er.settings import fit_to_file, load_settings
 from er.standardize import prepare
 
@@ -17,12 +17,6 @@ def pipeline_and_columns():
     s = load_settings()
     p = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)
     return s, p, {c for sources in s.columns.values() for alt in sources for c in alt} - {"ENTITY_ID"}  # every mapped record column
-
-
-def test_the_pipeline_file_writes_and_loads_back_unchanged(tmp_path):
-    s, p, _ = pipeline_and_columns()
-    dump_pipeline(p, s.chains, tmp_path / "p.toml")
-    assert load_pipeline(tmp_path / "p.toml", s.standardize, s.chains, s.columns) == p
 
 
 def test_a_mandatory_field_or_an_empty_one_of_group_stops_the_run():
@@ -45,11 +39,11 @@ def test_an_absent_optional_field_disables_exactly_what_reads_it():
     assert "customer_id" not in fields_read(replace(q, generators={b.name: b for b in q.fs.blockers}))
     rules = {r.name for st in q.rules.stages for r in st.rules}
     assert rules == {r.name for st in p.rules.stages for r in st.rules} - {"X1_CIF_PERSON_NAME", "X2_CIF_COMPANY_NAME", "X3_CIF_PHONE", "F3_NAME~_CIF"}
-    assert [b.name for b in q.fs.blockers] == [b.name for b in p.fs.blockers if b.name != "cif"]
-    assert [c.name for c in q.fs.model.comparisons] == ["name", "company", "address", "phone"]
+    assert [b.name for b in q.fs.blockers] == [b.name for b in p.fs.blockers if b.name not in ("cif", "cif_deletions")]
+    assert [c.name for c in q.fs.model.comparisons] == ["name", "company", "address", "phone", "birth"]
     assert [[k.column for k in r] for r in q.fs.model.prior_rules] == [["full_name", "address_code", "phone"]]
     assert {g.split(" (")[0] for g in gone} == {"rule X1_CIF_PERSON_NAME", "rule X2_CIF_COMPANY_NAME", "rule X3_CIF_PHONE", "rule F3_NAME~_CIF",
-                                                "generator cif", "level cif: exact", "comparison cif",
+                                                "generator cif", "generator cif_deletions", "level cif: exact", "level cif: one digit off", "comparison cif",
                                                 "prior rule ['customer_id', 'full_name']", "prior rule ['customer_id', 'company_name']"}
     q, gone = fit_to_file(p, s, cols - {"FULL_NAME_KANA", "O_PERSON_NAME_KANA"})  # a field built from the sources the file has
     person = next(d for d in q.rules.standardize.derived if d.name == "person_name")
@@ -81,7 +75,7 @@ def test_exact_u_counts_every_pair(engine, records):
 
 def test_blank_values_are_missing_and_full_width_spaces_are_stripped():
     s = load_settings()
-    p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
+    p = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)
     sources = {c for alts in s.columns.values() for alt in alts for c in alt}
     raw = pd.DataFrame({c: [pd.NA] * 3 for c in sources}, dtype="string")
     raw["CONT_ID"] = ["1", "2", "3"]

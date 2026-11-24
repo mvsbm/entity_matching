@@ -23,7 +23,7 @@ def kind_population():
     g = kind_problems(make(spec, *ref), KindProblems(), load_registry(base.paths["reference"]), std.legal_front, std.legal_end,
                       spec.kana_confusions, spec.branches)
     s = shared_name(base, "NAME_KANA")
-    return s, load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns), g
+    return s, load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns), g
 
 
 def test_the_name_model_saves_and_loads_to_the_same_scores(tmp_path):
@@ -43,7 +43,7 @@ def test_a_run_loads_the_committed_name_model_and_it_is_what_training_builds():
     from design.generate import train_name_model
     from er.kind import name_model
     s = load_settings()
-    spec = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns).kind
+    spec = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns).kind
     kept, fresh = name_model(s, spec), train_name_model(s, spec)
     assert kept.terms == fresh.terms and np.allclose(kept.coef, fresh.coef, rtol=0, atol=1e-3) and abs(kept.intercept - fresh.intercept) < 1e-3, \
         "the training changed: run scripts/train_name_model.py and commit config/kind_names.npz"
@@ -197,12 +197,8 @@ def test_the_kind_problems_name_no_company_the_name_model_trains_on():
     assert set(train["reading"]) == {"ヰヱヰヱ"} and set(held["reading"]) == {"アオイ"}
 
 
-def test_a_pipeline_or_a_workspace_holding_what_no_run_reads_of_kind_is_refused(tmp_path):
-    from er import folder
+def test_a_pipeline_setting_what_no_run_reads_of_kind_is_refused():
     from er.config import kind_spec
     with pytest.raises(InputError, match="depth, review_max set nothing") as stop:  # a combiner's and a review sheet's settings
         kind_spec({"name_field": "any_name", "depth": 2, "review_max": 1000})
     assert stop.value.fix == "delete depth, review_max from [kind]"
-    (tmp_path / "kind_answers").mkdir()  # people's person/company answers: a run would leave them out
-    with pytest.raises(InputError, match="person/company answers, which no run reads now"):
-        folder.current(tmp_path)

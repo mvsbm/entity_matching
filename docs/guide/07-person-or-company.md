@@ -1,4 +1,4 @@
-[README](../../README.md) · **Guide:** [1 Task](01-entity-resolution-and-our-task.md) · [2 Variants](02-the-same-fact-written-differently.md) · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · [6 Measuring](06-measuring-and-choosing.md) · **7 Kinds**
+[README](../../README.md) · **Guide:** [1 Task](01-entity-resolution-and-our-task.md) · [2 Variants](02-the-same-fact-written-differently.md) · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · **7 Kinds**
 
 # 7. Person or company
 
@@ -37,7 +37,7 @@ A customer's kind follows from its records: 2 if any record is a company, 1 if n
 
 ## How we know: every combination, across the unknowns
 
-`scripts/choose_kind.py` ([reports/choose_kind.md](../../reports/choose_kind.md)) builds test populations of 20,000 customers from real company names (the registry's, trained on two prefectures and tested on a third) and the personas, with the problems above at rates drawn over their plausible range: 12 scenarios. It tries 768 combinations of the ideas (legal forms, the name model's n-grams and training, every subset of five signals, three combiners) by successive halving, and judges each correct first: the share of companies called company while at most 0.1% of company calls are wrong, and of persons called person while at most 1% are wrong.
+The ideas are measured at design time on test populations of 20,000 customers from real company names (the registry's, trained on two prefectures and tested on a third) and the personas, with the problems above at rates drawn over their plausible range: 12 scenarios. 768 combinations of the ideas (legal forms, the name model's n-grams and training, every subset of five signals, three combiners) go through successive halving, each judged correct first: the share of companies called company while at most 0.1% of company calls are wrong, and of persons called person while at most 1% are wrong.
 
 | Idea | Best mean over the 12 scenarios |
 |---|---|
@@ -48,7 +48,7 @@ A customer's kind follows from its records: 2 if any record is a company, 1 if n
 | a dictionary of known surnames and given names | 67.6% with it, 67.3% without |
 | training also on the file's own legal-form records | 67.6% (66.8% on public data only) |
 
-The name model it judges is the run's own: trained on `design.generate.kind_training_names`, as `scripts/train_name_model.py` trains it. The pipeline's combination, the run's name model (public training only, so it is trained once) under the study's trees of depth 2, comes 25th of 48 at 65.5%, 2.1 points below the best, which also trains on the file's own legal-form records and adds the dictionary of names. On the company side it decides 74.0% of companies on average and 70.5% in the worst scenario. On the person side, 57.0% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (15–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
+The name model judged is the run's own: trained on `design.generate.kind_training_names`, as `scripts/train_name_model.py` trains it. The pipeline's combination, the run's name model (public training only, so it is trained once) under the study's trees of depth 2, comes 25th of 48 at 65.5%, 2.1 points below the best, which also trains on the file's own legal-form records and adds the dictionary of names. On the company side it decides 74.0% of companies on average and 70.5% in the worst scenario. On the person side, 57.0% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (15–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
 
 **Sole traders.** Counted as individuals, the person side decides 57.0% of persons; counted as businesses on their trade-name records, 7.8%; on every record, 0.1%. A sole trader is legally a person, which is also what the flag means.
 
@@ -83,8 +83,7 @@ The name model it judges is the run's own: trained on `design.generate.kind_trai
 - `er/steps/load.py`: `steps.load.load` (the classifier); `er/steps/cluster.py`: `steps.cluster._gold`, `steps.cluster.customer_kinds` (a customer's kind); `er/report.py`: `qa` (the summary's kind lines)
 - `er/settings.py`: `shared_name`, the settings for one name column
 - `design/generate.py`: `name_model_split`, `kind_problems`, `bank_name`, `kind_training_names`
-- `scripts/choose_kind.py`: the choice above; `scripts/benchmark.py`: `kinds`, the whole run
-- every table: [results.md](../results.md#person-or-company)
+- `scripts/benchmark.py`: `kinds`, the whole run
 
 ## Further reading
 

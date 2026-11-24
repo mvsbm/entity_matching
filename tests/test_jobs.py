@@ -1,4 +1,4 @@
-"""nayose: each command as a user runs it, mistakes in words, the scheduler, the run's reports."""
+"""The jobs as a machine runs them (python -m er), mistakes in words, a run from its file to people's decisions and a batch, the run's reports."""
 import json
 import re
 from pathlib import Path
@@ -13,7 +13,7 @@ from er.engine.duckdb import DuckDB
 from er.config import (InputError)
 from er.settings import load_settings
 
-from conftest import nayose
+from conftest import run_er
 
 
 def _mapping(tmp_path: Path, s, **fields: str) -> Path:  # the project's settings with some fields mapped to other columns, as a private settings file
@@ -26,218 +26,92 @@ def _mapping(tmp_path: Path, s, **fields: str) -> Path:  # the project's setting
     return f
 
 
-def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, population, capsys, monkeypatch):
+def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, population, monkeypatch):
     from er.jobs.build import build
     s, p, g = population
-    monkeypatch.chdir(tmp_path)
-
     phone, postal = s.columns["phone"][0][0], [c for alt in s.columns["postal_code"] for c in alt]
     g.df.assign(**{c: None for c in postal}).to_parquet(tmp_path / "nopostal.parquet", index=False)  # mapped, but never filled
-    from design.probe import probe
-    run = build(tmp_path / "nopostal.parquet", tmp_path / "run", s, p)
-    assert [x["stratum"] for x in probe(run)] == ["phone"]  # an empty group: nothing to draw
     g.df.head(0).to_parquet(tmp_path / "empty.parquet", index=False)
     with pytest.raises(InputError, match="no record, only its header"):
         build(tmp_path / "empty.parquet", tmp_path / "run0", s, p)
     with pytest.raises(InputError, match="both read"):  # one column for two compared fields: one value counted twice
         build(tmp_path / "nopostal.parquet", tmp_path / "run1", load_settings(_mapping(tmp_path, s, postal_code=phone)), p)
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    for words in (("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--compute", "memory_limit=lots"),
-                  ("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--compute", "memroy_limit=8GB"),
-                  ("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--model", tmp_path / "none.json")):
-        code, e = say(*words)
-        assert code == 2 and e["fix"], words  # a mistake people fix: two lines, never a traceback
+    for limit in ("memory_limit=lots", "memroy_limit=8GB", "eight"):
+        code, e = say("build", tmp_path / "all.parquet", "--out", tmp_path / "w", "--compute", limit)
+        assert code == 2 and e["fix"], limit  # a mistake people fix: what is wrong and the fix, never a traceback
+
     def short(*_, **__):  # out of memory in DuckDB
         raise duckdb.OutOfMemoryException("Out of Memory Error: failed to allocate")
-    with monkeypatch.context() as m:
-        m.setattr("er.cli.build", short)
-        code, e = say("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w")
-        assert code == 2 and "out of memory" in e["error"] and "memory_limit" in e["fix"]
+    monkeypatch.setattr("er.__main__.build", short)
+    code, e = say("build", tmp_path / "all.parquet", "--out", tmp_path / "w")
+    assert code == 2 and "out of memory" in e["error"] and "memory_limit" in e["fix"]
 
 
-def test_nayose_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
-    done = nayose("resolve", "records", tmp_path / "none.parquet", "--workspace", tmp_path / "w")
-    assert done.returncode == 2 and done.stderr.splitlines()[0].startswith("✗ no file matches")
-    assert done.stderr.splitlines()[1].lstrip().startswith("fix: ") and "Traceback" not in done.stderr
-    done = nayose("resolve", "records", tmp_path / "none.parquet", "--workspace", tmp_path / "w", "--format", "json")
-    error = json.loads(done.stdout.splitlines()[-1])
-    assert done.returncode == 2 and error["event"] == "error" and error["exit"] == 2 and error["fix"]
-    assert nayose("resolve", "records", tmp_path / "x.parquet").returncode == 2  # --workspace missing: the parser says so
+def test_a_job_prints_a_mistake_as_json_and_exits_with_2(tmp_path):
+    done = run_er("build", tmp_path / "none.parquet", "--out", tmp_path / "w")
+    e = json.loads(done.stdout.splitlines()[-1])
+    assert done.returncode == 2 and "no file matches" in e["error"] and e["fix"] and "Traceback" not in done.stderr
+    assert run_er("build", tmp_path / "x.parquet").returncode == 2  # --out missing: the parser says so
 
 
-def test_a_number_given_is_a_finite_one_and_a_mistyped_workspace_is_refused_unmade(say, tmp_path):
-    (tmp_path / "w").mkdir()
-    for words in (("match", "record", "X=1", "--count", "inf"), ("match", "record", "X=1", "--count", "nan"), ("match", "record", "X=1", "--from=-inf"), ("match", "record", "X=1", "--count", "²")):
-        code, e = say(*words, "--workspace", tmp_path / "w")
-        assert code == 2 and ("not a number" in e["error"] or "a whole number" in e["error"]), words
-    from er import cli
-    for c in cli.COMMANDS:  # every command given a workspace mistyped: refused, and no folder made
-        if not any(p.name == "workspace" for p in c.params) or c.name in cli.MAKES:
-            continue  # the commands that make a workspace
-        words = [c.verb, c.noun]
-        for p in c.params:
-            if p.name == "workspace":
-                words += ["--workspace", tmp_path / "typo"]
-            elif p.positional and not p.optional:
-                words += ["a", "b"] if p.kind == "many" else [p.choices[0] if p.choices else tmp_path / "none.csv" if p.kind == "path" else "x"]
-            elif p.required:
-                words += [f"--{p.name}", p.choices[0] if p.choices else "2000"]
-        try:
-            code = say(*words)[0]
-        except SystemExit as e:  # the parser's refusal
-            code = e.code
-        assert code == 2 and not (tmp_path / "typo").exists(), c.name
+def test_a_job_on_a_folder_that_holds_no_run_is_refused_and_makes_none(say, tmp_path):
+    pd.DataFrame({load_settings().data.unique_id: ["1"], "FULL_NAME_KANA": ["ヤマダタロウ"]}).to_parquet(tmp_path / "one.parquet", index=False)
+    (tmp_path / "empty").mkdir()
+    for words in (("update", tmp_path / "one.parquet"), ("decide",), ("lookup", "--file", tmp_path / "one.parquet"), ("lookup", "--record", "1")):
+        code, e = say(*words, "--out", tmp_path / "typo")
+        assert code == 2 and "no run" in e["error"] and not (tmp_path / "typo").exists(), words  # a mistyped folder: said, never made
+        code, e = say(*words, "--out", tmp_path / "empty")
+        assert code == 2 and e["fix"], words
 
 
-def test_a_long_command_shows_each_step_as_it_ends_and_how_long_is_left(monkeypatch):
-    import io
-    from er import emit
-    clock = [100.0]
-    monkeypatch.setattr(emit.time, "monotonic", lambda: clock[0])
-    out = io.StringIO()  # not a terminal: a line every 30 seconds, never redrawn
-    e = emit.Emit(out=out, title="resolve records · workspaces/w", order=("load", "score", "write"), last={"load": 10, "score": 100, "write": 5}, last_records=1000)
-    e.step(dict(step="load", seconds=12.0, records=2000, set_aside=0))
-    for gap, done in ((10, 100), (10, 200), (25, 450)):  # 10 pairs a second since the first count; the last 45 s into the step
-        clock[0] += gap
-        e.progress(done, 1000, "pairs")
-    e.step(dict(step="score", seconds=45.0, pairs=1000))
-    e.close()
-    lines = out.getvalue().splitlines()
-    assert lines[0] == "resolve records · workspaces/w" and lines[1].split() == ["✓", "load", "12s", "2,000", "records"]  # no zero said
-    assert lines[2].split(None, 3)[1:3] == ["score", "45s"] and lines[2].endswith(
-        "scoring the pairs · 450 of 1,000 pairs · about 55s left · about 1m 05s left in all")  # its own pace; write as last run's, at twice the records
-    assert lines[3].split() == ["✓", "score", "45s", "pairs", "1,000"] and len(lines) == 4 and "\r" not in out.getvalue()
-    out = io.StringIO()
-    e = emit.Emit(out=out, title="resolve records", order=emit.RUN_ORDER)  # a first run: nothing to measure the rest by
-    e.step(dict(step="load", seconds=1.0, records=10))
-    clock[0] += 31
-    e.progress(5, 10, "pairs")
-    assert out.getvalue().splitlines()[-1].endswith("planning the work · 5 of 10 pairs")  # one count gives no pace: no time left said
-    out = io.StringIO()
-    e = emit.Emit(out=out, order=("load", "probe"))  # try method: the steps twice
-    for step in ("load", "probe", "generate"):  # and one outside them
-        e.step(dict(step=step, seconds=1.0))
-    clock[0] += 31
-    e.progress(5, 10, "records")
-    assert out.getvalue().splitlines()[-1].split()[1:4] == ["load", "0.0s", "reading"]  # a count after the last step: the steps again
-    e = emit.Emit(out=out, order=())  # a command whose steps aren't known: each as it ends, and what is under way unnamed
-    e.step(dict(step="generate", seconds=1.0))
-    clock[0] += 31
-    e.progress(5, 10, "rows")
-    assert out.getvalue().splitlines()[-1].endswith("working · 5 of 10 rows")
-    assert emit.step_facts(dict(step="rules", seconds=1.0, kept=23)) == "kept 23"  # a batch's steps carry other facts: said as they are
-    assert emit.step_facts(dict(step="candidates", seconds=1.0, gate_pairs=0, gate_seconds=0.1, generators=[])) == ""
-
-
-def test_text_says_a_result_in_short_and_verbose_says_all_of_it(tmp_path, population, capsys, monkeypatch):
-    from er import folder
-    from er.brief import text
-    from er.cli import COMMANDS, main
+def test_a_name_column_both_kinds_share_is_scored_once_as_mapped_or_by_kind(tmp_path, population):
+    from er.config import load_pipeline
+    from er.jobs.build import build
     s, p, g = population
-    uid = s.data.unique_id
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    monkeypatch.chdir(tmp_path)
-    said = lambda *words: (main([*map(str, words)]), capsys.readouterr().out.splitlines())[1]
-    out = said("resolve", "records", "all.parquet", "--workspace", "workspaces/w")
-    ran = [x["step"] for x in folder.runs(Path("workspaces/w"))[-1]["steps"]]
-    assert out[0] == "resolve records · workspaces/w" and [x.split()[1] for x in out if x.startswith("  ✓ ")] == ran  # each step once, in order
-    at = next(i for i, x in enumerate(out) if x.startswith(f"✓ {len(g.df):,} records → "))
-    assert out.index("next") - at <= 7 and len(out) - out.index("next") - 1 <= 3  # the result in a few lines, then at most 3 commands
-    sheet = pd.read_parquet(Path("workspaces/w") / "review.parquet")
-    sheet.head(1)[[f"{uid}_l", f"{uid}_r"]].assign(decision="match").to_parquet("d.parquet", index=False)
-    said("apply", "decisions", "--file", "d.parquet", "--workspace", "workspaces/w")
-    c = next(c for c in COMMANDS if c.name == "apply decisions")
-    main(["apply", "decisions", "--file", "d.parquet", "--workspace", "workspaces/w", "--format", "json"])  # given again: nothing new, the same result each time
-    r = {k: v for k, v in json.loads(capsys.readouterr().out.splitlines()[-1]).items() if k not in ("event", "command")}
-    full, lines = said("apply", "decisions", "--file", "d.parquet", "--workspace", "workspaces/w", "--verbose"), text(c, r).splitlines()
-    assert full[-len(lines):] == lines and len(full) > len(said("apply", "decisions", "--file", "d.parquet", "--workspace", "workspaces/w"))
-
-
-def test_the_commands_that_read_a_run_say_when_the_workspace_holds_none(say, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    Path("workspaces/w").mkdir(parents=True)
-    pd.DataFrame({load_settings().data.unique_id: ["1"], "FULL_NAME_KANA": ["ヤマダタロウ"]}).to_parquet("one.parquet", index=False)
-    for words in (("build", "index"), ("apply", "decisions"), ("match", "records", "one.parquet")):
-        code, e = say(*words, "--workspace", "workspaces/w")
-        assert code == 2 and "no run" in e["error"] and e["fix"], words  # never a traceback
-
-
-def test_a_name_column_both_kinds_share_is_scored_once_as_mapped_or_by_kind(say, tmp_path, population, monkeypatch):
-    s, p, g = population
-    monkeypatch.chdir(tmp_path)
     person, u = g.df["NYS_CNV_P_NAME_KANA"].isna() & g.df["FULL_NAME_KANA"].notna(), s.data.unique_id
-    g.df.assign(NYS_CNV_P_NAME_KANA=g.df["NYS_CNV_P_NAME_KANA"].where(~person, g.df["FULL_NAME_KANA"])).to_parquet("shared.parquet", index=False)  # every person's name in the company column too
+    g.df.assign(NYS_CNV_P_NAME_KANA=g.df["NYS_CNV_P_NAME_KANA"].where(~person, g.df["FULL_NAME_KANA"])).to_parquet(tmp_path / "shared.parquet", index=False)  # every person's name in the company column too
     by_kind = (s.root / "config" / "settings.toml").read_text(encoding="utf-8")
     for f, kind in (("full_name", "person"), ("person_name", "person"), ("company_name", "company")):  # each name kept on the side its record's kind leans to
         by_kind, n = re.subn(rf"^({f} = \{{ .*?) \}}", rf'\1, kind = "{kind}" }}', by_kind, count=1, flags=re.M)
         assert n == 1, f
-    Path("by-kind.toml").write_text(by_kind, encoding="utf-8")  # a private settings file, as ER_SETTINGS names one
+    (tmp_path / "by-kind.toml").write_text(by_kind, encoding="utf-8")  # a private settings file, as ER_SETTINGS names one
     engine = DuckDB(duckdb.connect())
     engine.register("truth", g.truth)
     said = {}
-    for how in ("as-mapped", "by-kind"):
-        if how == "by-kind":
-            monkeypatch.setenv("ER_SETTINGS", str(Path("by-kind.toml").resolve()))
-        assert say("resolve", "records", "shared.parquet", "--workspace", f"workspaces/{how}")[0] == 0
+    for how, settings in (("as-mapped", s), ("by-kind", load_settings(tmp_path / "by-kind.toml"))):
+        method = load_pipeline(s.root / "config" / "pipeline.toml", settings.standardize, settings.chains, settings.columns)
+        build(tmp_path / "shared.parquet", tmp_path / how, settings, method)
         said[how] = engine.row(f"""SELECT count(*) FILTER (WHERE x.ENTITY_ID <> y.ENTITY_ID AND s.match_weight >= 6), avg(s.match_weight) FILTER (WHERE x.ENTITY_ID = y.ENTITY_ID)
-            FROM read_parquet('workspaces/{how}/scored/*.parquet') s JOIN truth x ON x.CONT_ID = s.{u}_l JOIN truth y ON y.CONT_ID = s.{u}_r""")
+            FROM read_parquet('{tmp_path / how}/scored/*.parquet') s JOIN truth x ON x.CONT_ID = s.{u}_l JOIN truth y ON y.CONT_ID = s.{u}_r""")
     assert said["by-kind"][0] == 0 and said["as-mapped"][0] == 0  # a person's name scored once, not as a company's too, either way
     assert abs(said["by-kind"][1] - said["as-mapped"][1]) < 2
 
 
-def test_every_command_has_its_help(capsys):
-    from er.cli import COMMANDS, parser
-    for c in COMMANDS:
-        with pytest.raises(SystemExit) as done:
-            parser().parse_args([c.verb, c.noun, "--help"])
-        shown = capsys.readouterr().out
-        assert done.value.code == 0 and c.help in shown and c.example in shown
-
-
-def test_nayose_takes_a_file_from_a_run_to_people_s_decisions_and_a_batch(tmp_path, population, capsys):
-    from er import folder
-    from er.cli import COMMANDS, main
+def test_a_run_takes_people_s_decisions_and_a_batch_each_once(tmp_path, population):
+    from er.jobs.build import build
+    from er.jobs.decide import decide
+    from er.jobs.update import update, would_join
     s, p, g = population
     uid, half = s.data.unique_id, len(g.df) // 2
     l, r = f"{uid}_l", f"{uid}_r"
     g.df.iloc[:half].to_parquet(tmp_path / "first.parquet", index=False)
     g.df.iloc[half:].to_parquet(tmp_path / "new.parquet", index=False)
-    run, declared = tmp_path / "run", {c.name: set(c.result) for c in COMMANDS}
-
-    def say(*words: object) -> dict:  # one command, as JSON; its result checked against its declaration
-        code = main([*map(str, words), "--format", "json"])
-        said = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
-        assert code == 0 and said[-1]["event"] == "result", said[-1]
-        r = said[-1]
-        assert set(r) - {"event", "command"} <= declared[r["command"]] and "next" in r
-        return r
-
-    assert say("resolve", "records", tmp_path / "first.parquet", "--workspace", run)["summary"][0][0] == "records"
-    sheet = pd.read_parquet(run / "review.parquet")
-    pair = sheet.iloc[0]
+    run = tmp_path / "run"
+    build(tmp_path / "first.parquet", run, s, p, pipeline_file=s.root / "config" / "pipeline.toml")
+    pair = pd.read_parquet(run / "review.parquet").iloc[0]
     decisions = tmp_path / "decisions.parquet"
     pd.DataFrame({l: [pair[r]], r: [pair[l]], "decision": ["match"]}).to_parquet(decisions, index=False)  # either order
-    assert say("apply", "decisions", "--workspace", run, "--file", decisions)["matches"] == 1
-    assert say("apply", "decisions", "--workspace", run, "--file", decisions)["decisions"] == 0  # given twice: nothing new
+    assert decide(decisions, run, s, p).steps[-1]["matches"] == 1
+    assert decide(decisions, run, s, p).steps[-1]["decisions"] == 0  # given twice: nothing new
     gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
     assert gold.loc[pair[l], "cluster_id"] == gold.loc[pair[r], "cluster_id"]
-    matched = say("match", "records", tmp_path / "new.parquet", "--workspace", run)
-    assert len(matched["records"]) == len(g.df) - half and set(matched["counts"]) <= {"joins an entity", "a new entity"}
-    added = say("add", "records", tmp_path / "new.parquet", "--workspace", run)
-    assert added["summary"][0][1].startswith(f"{len(g.df):,}")
-    again = say("match", "records", tmp_path / "new.parquet", "--workspace", run)  # every record in the run already: each said so
-    assert set(again["counts"]) == {"already in the run"} and len(again["records"]) == len(g.df) - half
-    before = folder.parts(run)
-    assert say("add", "records", tmp_path / "new.parquet", "--workspace", run)["summary"][0][0] == "nothing new" and folder.parts(run) == before  # no copy kept
-    g.df.head(50).rename(columns={uid: "customer_no"}).to_parquet(tmp_path / "renamed.parquet", index=False)
-    assert main(["add", "records", str(tmp_path / "renamed.parquet"), "--workspace", str(run), "--format", "json"]) == 2
-    e = json.loads(capsys.readouterr().out.splitlines()[-1])
-    assert f"write customer_no as {uid} in it" in e["fix"] and folder.parts(run) == before  # a batch has the run's columns; the run's file stays the last
-    name = s.columns["person_name"][0][0]
-    g.df.head(50).rename(columns={uid: "customer_no", name: "name_kana"}).to_parquet(tmp_path / "renamed2.parquet", index=False)
-    assert main(["match", "records", str(tmp_path / "renamed2.parquet"), "--workspace", str(run), "--format", "json"]) == 2  # a preview: the same advice
-    fix = json.loads(capsys.readouterr().out.splitlines()[-1])["fix"]
-    assert fix.count(f"customer_no as {uid}") == 1 and "name_kana" not in fix  # what a run needs and lacks, once: a name it reads elsewhere isn't
+    matched = would_join(tmp_path / "new.parquet", run, s, p)
+    assert len(matched) == len(g.df) - half and set(matched["status"]) <= {"joins an entity", "a new entity"}
+    assert update(tmp_path / "new.parquet", run, s, p).added == len(g.df) - half
+    again = would_join(tmp_path / "new.parquet", run, s, p)  # every record in the run already: each said so
+    assert set(again["status"]) == {"already in the run"} and len(again) == len(g.df) - half
+    assert update(tmp_path / "new.parquet", run, s, p).added == 0  # nothing new: nothing written
 
 
 def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_from(tmp_path, population):
@@ -354,11 +228,11 @@ def test_a_run_and_its_reports_land_together_even_when_the_write_is_cut_short(tm
         real(folder)
     monkeypatch.setattr(er.folder, "finish_writes", killed)
     with pytest.raises(SystemExit):
-        build(tmp_path / "all.parquet", out, s, p, pipeline_file=s.root / "config" / "final.toml")
+        build(tmp_path / "all.parquet", out, s, p, pipeline_file=s.root / "config" / "pipeline.toml")
     monkeypatch.setattr(er.folder, "finish_writes", real)
     again = update(tmp_path / "all.parquet", out, s, p)  # the retry: the next job finishes the moves, and finds nothing new
     assert again.added == 0 and (out / "gold.parquet").exists()
-    assert {"qa.md", "report.txt", "review.parquet"} <= {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
+    assert {"report.txt", "review.parquet"} <= {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
 
 
 def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(tmp_path, population):
@@ -369,7 +243,7 @@ def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(
     dummy = df.index[:100]
     df.loc[dummy, ["PHONE_NUM_4", "GIVEN_NAME_KANA", "POST_CD"]] = ["0000", "タロウ", "1500042"]  # a dummy phone, and one given name and postal code: blocks of 100
     df.to_parquet(tmp_path / "in.parquet", index=False)
-    run = build(tmp_path / "in.parquet", tmp_path / "run", s, p, pipeline_file=s.root / "config" / "final.toml")  # no stop
+    run = build(tmp_path / "in.parquet", tmp_path / "run", s, p, pipeline_file=s.root / "config" / "pipeline.toml")  # no stop
     assert any("phone = 0000" in x and "placeholder" in x for x in run.examples)  # most of the pairs sharing a phone: read as missing, no block
     assert not run.gated["value"].str.contains("0000").any()
     block = run.gated[run.gated["value"].str.contains("タロウ") & (run.gated["generator"] == "given_name_postal")]
@@ -465,7 +339,7 @@ def test_the_run_report_holds_no_record_value(tmp_path, population):
     df.to_parquet(tmp_path / "in.parquet", index=False)
     run = build(tmp_path / "in.parquet", tmp_path / "run", s, p)
     tables = qa(run, [f for f in s.columns if f not in ("id", "entity")])
-    text = report_text(run, tables, s.root / "config" / "final.toml")
+    text = report_text(run, tables, s.root / "config" / "pipeline.toml")
     assert any("9999999999999" in x for x in run.examples) and any("0000" in x for x in run.examples)
     assert not re.search(r"[\u3040-\u30ff\u3400-\u9fff\uff66-\uff9f]", text)  # no kana or kanji: no name, address or town
     assert not any(v in text for c in (uid, "CIF_ID") for v in df[c].dropna())  # no record ID, no customer ID
@@ -480,7 +354,7 @@ def reported(tmp_path_factory, population):  # one full run with a column no fie
     s, p, g = population
     d = tmp_path_factory.mktemp("reported")
     g.df.assign(SPARE_PHONE=g.df["PHONE_NUM_4"]).to_parquet(d / "in.parquet", index=False)
-    run = build(d / "in.parquet", d / "run", s, p, pipeline_file=s.root / "config" / "final.toml")
+    run = build(d / "in.parquet", d / "run", s, p, pipeline_file=s.root / "config" / "pipeline.toml")
     return run, (d / "run" / "report.txt").read_text(encoding="utf-8"), d / "run"
 
 
@@ -556,51 +430,32 @@ def test_the_generator_makes_direct_matches_rare_households_their_own_entities_a
     assert halfwidth("ガッコウ") == "ｶﾞｯｺｳ" and unicodedata.normalize("NFKC", halfwidth("ガッコウ")) == "ガッコウ"
 
 
-def test_test_is_counted_once_per_population(tmp_path):
-    from er.io import append_leaderboard, test_evaluations
-    data = replace(load_settings().data, labels_dir=tmp_path / "labels", experiments_dir=tmp_path / "experiments")
-    data.labels_dir.mkdir()
-    uid, ent = data.unique_id, data.entity_id
-    labels = lambda ids: pd.DataFrame({uid: ids, ent: ["E"] * len(ids)}).to_parquet(data.labels_dir / "test.parquet", index=False)
-    labels(["1", "2"])
-    append_leaderboard(data, "fs:FINAL", ("config", 1), "test", {})
-    labels(["3", "4"])  # a newly generated population: a test nobody has seen
-    append_leaderboard(data, "fs:FINAL", ("config", 2), "test", {})
-    assert test_evaluations(data)["configs_on_test"].max() == 1
-    append_leaderboard(data, "fs:FINAL", ("config", 3), "test", {})  # the same population, a second configuration
-    assert test_evaluations(data)["configs_on_test"].max() == 2
-    (data.labels_dir / "test.parquet").unlink()  # a development round of choose.py: train and val only, test never read
-    dev = replace(data, datasets=("train", "val"))
-    append_leaderboard(dev, "fs:x", ("config", 4), "val", {})
-    assert test_evaluations(dev).empty
-
-
-def test_a_result_s_nested_numbers_print_plainly_and_a_settings_folder_is_said(tmp_path):
-    from er.brief import cell
+def test_a_settings_folder_given_as_a_file_is_said(tmp_path):
     from er.config import toml_of
-    assert cell({"file": 0.5, "peak_gb": 2}) == "file 0.50 peak gb 2"
     with pytest.raises(InputError, match="can't be read"):
         toml_of(tmp_path)
 
 
-def test_a_run_in_a_workspace_on_a_file_without_a_needed_field_says_to_map_it_there(say, tmp_path, population, monkeypatch):
+def test_a_run_on_a_file_without_a_needed_field_says_to_map_it(tmp_path, population):
+    from er.jobs.build import build
     s, p, g = population
     g.df.rename(columns={s.data.unique_id: "customer_no"}).to_parquet(tmp_path / "theirs.parquet", index=False)
-    monkeypatch.chdir(tmp_path)
-    code, e = say("resolve", "records", "theirs.parquet", "--workspace", "workspaces/w")
-    assert code == 2 and "config/settings.toml [columns]" in e["fix"] and 'id = "customer_no"' in e["fix"]
+    with pytest.raises(InputError) as e:
+        build(tmp_path / "theirs.parquet", tmp_path / "w", s, p)
+    assert "config/settings.toml [columns]" in e.value.fix and 'id = "customer_no"' in e.value.fix
     g.df.rename(columns={s.data.unique_id: "id"}).to_parquet(tmp_path / "ids.parquet", index=False)  # its ID column named as the field: read as id_2
-    code, e = say("resolve", "records", "ids.parquet", "--workspace", "workspaces/w", "--overwrite")
-    assert code == 2 and 'id = "id"' in e["fix"] and "id_2" not in e["error"] + e["fix"]  # the file's own name for it
+    with pytest.raises(InputError) as e:
+        build(tmp_path / "ids.parquet", tmp_path / "w", s, p, overwrite=True)
+    assert 'id = "id"' in e.value.fix and "id_2" not in str(e.value) + e.value.fix  # the file's own name for it
 
 
-def test_a_file_with_columns_named_as_the_run_names_its_own_runs(say, tmp_path, population):
+def test_a_file_with_columns_named_as_the_run_names_its_own_runs(tmp_path, population):
+    from er.jobs.build import build
     s, p, g = population
     df = g.df.assign(KIND=(["Person", "Company"] * len(g.df))[:len(g.df)], Address="somewhere")  # unmapped, named as fields and kinds are
     df.to_parquet(tmp_path / "theirs.parquet", index=False)
-    code, r = say("resolve", "records", tmp_path / "theirs.parquet", "--workspace", tmp_path / "run")
-    notes = [v for w, v in r["summary"] if w == "note"]
-    assert code == 0 and any("column KIND read as KIND_2" in n for n in notes) and any("column Address read as Address_2" in n for n in notes)
+    run = build(tmp_path / "theirs.parquet", tmp_path / "run", s, p)
+    assert any("column KIND read as KIND_2" in n for n in run.notes) and any("column Address read as Address_2" in n for n in run.notes)
 
 
 def test_the_commands_the_tests_start_run_this_checkout_s_code(tmp_path):  # from a git worktree too, not the venv's checkout
@@ -623,21 +478,11 @@ def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_p
     copy = one.copy()
     copy[uid] = "copy"
     pd.concat([g.df, pd.DataFrame([member, copy])], ignore_index=True).to_parquet(tmp_path / "in.parquet", index=False)
-    run = build(tmp_path / "in.parquet", tmp_path / "run", s, p, pipeline_file=s.root / "config" / "final.toml")  # with its reports, as nayose runs it
+    run = build(tmp_path / "in.parquet", tmp_path / "run", s, p, pipeline_file=s.root / "config" / "pipeline.toml")  # with its reports, as python -m er runs it
     pairs = f"""SELECT * FROM (VALUES ('{one[uid]}', 'member'), ('{one[uid]}', 'copy')) t("{uid}_l", "{uid}_r")"""
     assert households(run.engine, "records", pairs, uid, run.pipeline) == {(one[uid], "member")}  # the copy: the same given name
     sheet = pd.read_parquet(tmp_path / "run" / "review.parquet")
     assert "household" in sheet and sheet["household"].dtype == bool
-
-
-def test_a_run_s_progress_follows_this_version_s_steps_when_the_last_run_lacked_one(tmp_path):
-    from er import cli, emit, folder
-    ws = tmp_path / "ws"
-    (ws / "state").mkdir(parents=True)
-    old = [{"step": x, "seconds": 1.0, **({"records": 10} if x == "load" else {})} for x in emit.RUN_ORDER if x != "keys"]  # a run before the keys step
-    (ws / folder.STEPS).write_text(json.dumps({"runs": [{"steps": old}]}), encoding="utf-8")
-    got = cli.last_run(str(ws), "resolve records")
-    assert got["order"] == emit.RUN_ORDER and "keys" in got["order"] and got["last"]["candidates"] == 1.0
 
 
 def test_em_on_fields_learns_one_session_blocked_on_each_and_the_fit_owes_an_increment_no_rerun(population, tmp_path):
@@ -662,8 +507,3 @@ def test_a_comparison_s_own_copy_is_no_step_a_setting_may_name(tmp_path):
             load_settings(tmp_path / "settings.toml")
 
 
-def test_a_result_s_values_reach_json_as_python_s_own():
-    from er.emit import plain
-    got = plain({"a": np.int64(3), 1: [True, None, "x", 2.5, float("nan"), np.float32(1.5), pd.NA, np.str_("y"), np.bool_(False), (np.nan, pd.NaT)]})
-    assert got == {"a": 3, "1": [True, None, "x", 2.5, None, 1.5, None, "y", False, [None, None]]}
-    assert [type(x) for x in (got["a"], *got["1"][:4], got["1"][7], got["1"][8])] == [int, bool, type(None), str, float, str, bool]  # numpy's scalars as Python's

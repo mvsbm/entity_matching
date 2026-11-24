@@ -7,19 +7,14 @@ fellegi_sunter  the Fellegi–Sunter model as Splink 5.0 computes it: λ from ne
 """
 import contextlib
 import copy
-import hashlib
 import itertools
-import json
 import math
-import os
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from itertools import combinations, product
-from pathlib import Path
 
-import duckdb
 import numpy as np
 import pandas as pd
 
@@ -93,16 +88,6 @@ def model_dict(model: FSModel, uid: str, u: U | None = None) -> dict:
     return {"link_type": "dedupe_only", "unique_id_column_name": uid,
             "comparisons": [comparison(c, (u or {}).get(c.name)) for c in model.comparisons],
             "blocking_rules_to_generate_predictions": [keys_sql(r) for r in model.em_rules]}
-
-
-def u_values(model_json: dict) -> U:
-    """Estimated u per comparison and level, to reuse for comparisons with the same FSModel.u_keys(). Levels filled with
-    a bound (no sampled pair reached them) are left out: the reusing model recomputes the same bound."""
-    filled = {tuple(x) for x in model_json.get("er", {}).get("filled", {}).get("u", [])}
-    return {c["output_column_name"]: {lv["label_for_charts"]: lv["u_probability"] for lv in c["comparison_levels"]
-                                      if not lv.get("is_null_level") and "u_probability" in lv
-                                      and (c["output_column_name"], lv["label_for_charts"]) not in filled}
-            for c in model_json["comparisons"]}
 
 
 def read_by(settings: dict, *rules: str) -> set[str]:
@@ -282,10 +267,8 @@ def u_bound(model: FSModel, c: Comparison, records: Records, engine: Engine) -> 
 
 
 SCORED_U: dict[tuple[str, int], dict[str, float]] = {}  # (FSModel.u_keys() value, fingerprint of what it reads) → u per level
-# shortcut: one entry per comparison and file this process scores, never dropped; fine for a run or choose.py, a
+# shortcut: one entry per comparison and file this process scores, never dropped; fine for a job, a
 # long-lived process that scores file after file needs a limit
-U_KEPT = 64  # sampled u a workspace keeps (folder.U_SAMPLED), the newest: one per comparison, sample and file, and a few of each
-U_CODE = hashlib.sha256(b"".join((Path(__file__).parent / f).read_bytes() for f in ("match.py", "strings.py", "config.py"))).hexdigest()[:16]
 
 
 def fingerprint(records: Records, cols: list[str], engine: Engine) -> int:
@@ -300,36 +283,19 @@ def fingerprint(records: Records, cols: list[str], engine: Engine) -> int:
             engine.unregister(name)
 
 
-def scored_sample(model: FSModel, df: Records, engine: Engine, uid: str, comparisons: Iterable[Comparison] | None = None, kept: Path | None = None) -> U:
+def scored_sample(model: FSModel, df: Records, engine: Engine, uid: str, comparisons: Iterable[Comparison] | None = None) -> U:
     """u by random sampling on these records, per comparison (all, or these), cached (SCORED_U) by the comparison and
     the values it reads, within this process. Splink picks the sampled pairs by a hash of the record ID, so nothing else
     changes them: a model and its variant share one sample, and so do a fit on a whole small file and the run's u on it
     when both sample as many pairs (fit_u_max_pairs unset). O(N) per comparison for
-    the fingerprint, plus u_max_pairs per comparison not cached yet. With `kept` (a workspace's folder.U_SAMPLED), across
-    processes too: a rerun, or a trial of another method comparing the same way, reads its u, never samples it again,
-    while the comparison, the values, this code and DuckDB's version are as they were."""
+    the fingerprint, plus u_max_pairs per comparison not cached yet."""
     keys, wanted = model.u_keys(), list(model.comparisons if comparisons is None else comparisons)
     reads = {c.name: [uid, *sorted({comp.column(col) for lv in c.levels for col, comp in lv.any_of} | set(c.null_if_missing))] for c in wanted}
     prints = {c.name: fingerprint(df, reads[c.name], engine) for c in wanted}
-    stable = lambda name: hashlib.sha256(repr((keys[name], prints[name], duckdb.__version__, U_CODE)).encode()).hexdigest()
-    try:  # a copy kept never fails a run: unreadable, sampled again
-        on_disk = json.loads(kept.read_text(encoding="utf-8")) if kept and kept.is_file() else {}
-    except (OSError, ValueError):
-        on_disk = {}
-    for c in wanted:
-        if (keys[c.name], prints[c.name]) not in SCORED_U and stable(c.name) in on_disk:
-            SCORED_U[keys[c.name], prints[c.name]] = on_disk[stable(c.name)]
     todo = [c for c in wanted if (keys[c.name], prints[c.name]) not in SCORED_U]
     fresh = sample_u(model, todo, df, engine, uid)
     for name, u in fresh.items():
         SCORED_U[keys[name], prints[name]] = u
-        on_disk.pop(stable(name), None)
-        on_disk[stable(name)] = u  # the newest last
-    if kept and fresh:
-        with contextlib.suppress(OSError):  # a folder people can only read: sampled again next time
-            tmp = kept.with_name(f".{kept.name}.{os.getpid()}")
-            tmp.write_text(json.dumps(dict(list(on_disk.items())[-U_KEPT:])), encoding="utf-8")
-            os.replace(tmp, kept)
     return {c.name: SCORED_U[keys[c.name], prints[c.name]] for c in wanted}
 
 
@@ -351,13 +317,13 @@ def assemble_u(model: FSModel, model_json: dict, sampled: U, exact: U, df: Recor
     return out
 
 
-def scored_u(model: FSModel, model_json: dict, df: Records, engine: Engine, uid: str, kept: Path | None = None) -> tuple[dict, U, U]:
+def scored_u(model: FSModel, model_json: dict, df: Records, engine: Engine, uid: str) -> tuple[dict, U, U]:
     """model_json with u measured on the records to be scored, and the u sampled and counted for it (u_basis reads them).
     In a bigger file, a field whose value set grows with it (address, CIF ID) agrees by chance less often, so u fixed
     from the fitting set under-credits it. Needs no labels; O(N) counts and u_max_pairs sampled, whatever the file's size."""
     exact = exact_u(model, df, engine)
     skip = counted(model, exact)
-    sampled = scored_sample(model, df, engine, uid, [c for c in model.comparisons if c.name not in skip], kept)
+    sampled = scored_sample(model, df, engine, uid, [c for c in model.comparisons if c.name not in skip])
     return assemble_u(model, model_json, sampled, exact, df, engine), sampled, exact
 
 
@@ -470,7 +436,7 @@ def judged(model: FSModel, t: pd.DataFrame, learned: dict[tuple[Key, ...], dict[
     return rows, anchor
 
 
-def train_fs(model: FSModel, df: pd.DataFrame, engine: Engine, uid: str, labels: pd.Series | None = None, kept: Path | None = None,
+def train_fs(model: FSModel, df: pd.DataFrame, engine: Engine, uid: str, labels: pd.Series | None = None,
              u: dict[str, dict[str, float]] | None = None) -> dict:
     """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the model JSON plus "er":
     what scoring needs (the fitting-set size) and which levels had no estimate.
@@ -492,7 +458,7 @@ def train_fs(model: FSModel, df: pd.DataFrame, engine: Engine, uid: str, labels:
     else:
         exact = exact_u(model, t, engine) if model.u_exact_by_counts else {}  # the leading exact levels, exactly
         skip = counted(model, exact)
-        u = {**{c: {} for c in skip}, **scored_sample(model, t, engine, uid, [c for c in model.comparisons if c.name not in skip], kept)}
+        u = {**{c: {} for c in skip}, **scored_sample(model, t, engine, uid, [c for c in model.comparisons if c.name not in skip])}
         u = {c: {**levels, **exact.get(c, {})} for c, levels in u.items()}
         filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]
         u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, engine) for lv in labels_of[c.name]} for c in model.comparisons}
@@ -552,8 +518,6 @@ def train_fs(model: FSModel, df: pd.DataFrame, engine: Engine, uid: str, labels:
 def compared_exactly(model: FSModel) -> list[str]:  # the fields a comparison's first level tests for equality alone: an agreement on them is that level's
     return list(dict.fromkeys(col for c in model.comparisons if c.levels and all(x.function == "exact" for _, x in c.levels[0].any_of)
                               for col, _ in c.levels[0].any_of))
-
-
 
 
 def sensible_m(model: FSModel, model_json: dict, filled: set[tuple[str, str]]) -> list[list]:
@@ -833,17 +797,6 @@ def prior_bits(model_json: dict, n_records: int) -> float:  # the start: two ran
     return math.log2(lam / (1 - lam))
 
 
-def waterfall(model_json: dict, gammas: dict[str, int], n_records: int) -> pd.DataFrame:
-    """One scored pair's match weight as evidence: the prior, then per comparison the bits of the level the pair landed
-    in. The bits sum to the pair's match_weight."""
-    lam = scaled_prior(model_json, n_records)
-    rows = [dict(evidence="prior", level="two random records match", bits=math.log2(lam / (1 - lam)))]
-    for name, by_gamma in levels(model_json).items():
-        label, bits = by_gamma[int(gammas[name])]
-        rows.append(dict(evidence=name, level=label, bits=bits))
-    return pd.DataFrame(rows)
-
-
 def parameters(model_json: dict) -> pd.DataFrame:
     """One row per comparison level: m, u and the match weight log2(m/u) it contributes."""
     rows = []
@@ -858,7 +811,7 @@ def parameters(model_json: dict) -> pd.DataFrame:
 
 
 def pattern_coverage(spec: FSSpec, model_json: dict, n_records: int) -> pd.DataFrame:
-    """The label-free form of window_only: every agreement pattern (one level per comparison, or missing) whose bits
+    """Every agreement pattern (one level per comparison, or missing) whose bits
     reach min_match_weight at n_records, that no equality key is guaranteed to pair, with its share of true matches
     (Π m, the model's own estimate). A level guarantees what its comparators imply: an exact comparator, equality of
     that normalized field and of any longer normalization of it; a distance ≤ 1, a shared one-deletion key. A fuzzy
@@ -919,7 +872,7 @@ def named_sql(fs: FSSpec, s: str = "s") -> str:  # the name check (FSSpec.needs)
 
 
 def search_floor(p: Pipeline) -> float:
-    """Where the search aims: the oversized-block gate counts pairs from here, and the gap's sample at design time,
+    """Where the search aims: the oversized-block gate counts pairs from here,
     [threshold] search_floor or the review floor, whichever is lower. Aiming below review keeps pairs a better model lifts."""
     return min(p.threshold.search_floor, review_floor(p))
 

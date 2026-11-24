@@ -20,7 +20,7 @@ def main() -> None:
     argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
                             epilog=__doc__.split("\n\n", 1)[1]).parse_args()
     s = load_settings()
-    spec = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns).kind
+    spec = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns).kind
     train_name_model(s, spec).save(s.root / NAME_MODEL, name_key(s, spec))
     print(f"wrote {NAME_MODEL}")
 

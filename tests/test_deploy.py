@@ -1,5 +1,5 @@
 """The deploy (deploy/): the image installs the engine at requirements.txt's pins, and each Cloud Run job runs a
-command nayose takes, on a workspace in the bucket. The image itself is built and run by hand (deploy/Dockerfile's
+job python -m er takes, on a run in the bucket. The image itself is built and run by hand (deploy/Dockerfile's
 header), not here: it needs Docker."""
 import json
 import re
@@ -24,11 +24,11 @@ def test_the_image_installs_the_engine_at_the_pins_the_tests_run_with():
 
 
 @pytest.mark.parametrize("job", sorted(p.stem for p in (DEPLOY / "jobs").glob("*.yaml")))
-def test_each_job_runs_a_command_nayose_takes_on_a_workspace_in_the_bucket(job):
-    from er.cli import parser
+def test_each_job_runs_a_job_python_m_er_takes_on_a_run_in_the_bucket(job):
+    from er.__main__ import parser
     spec = (DEPLOY / "jobs" / f"{job}.yaml").read_text(encoding="utf-8")
     args = json.loads(re.search(r"^\s*args: (\[.*\])$", spec, flags=re.M).group(1))
     workspace, *words = args
     assert not workspace.startswith("/") and ".." not in workspace  # a path in the bucket (job.sh puts /gcs/ before it)
-    parser().parse_args([*words, "--workspace", "/tmp/run", "--format", "json"])  # what job.sh runs: nayose takes it
+    parser().parse_args([*words, "--out", "/tmp/run"])  # what job.sh runs: python -m er takes it
     assert all(f"${{{x}}}" in spec for x in ("IMAGE", "SERVICE_ACCOUNT", "BUCKET")) and "parallelism: 1" in spec  # one writer at a time

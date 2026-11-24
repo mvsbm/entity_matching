@@ -5,9 +5,11 @@ each file's footer (its schema), never its rows, so its cost doesn't grow with t
 fixed-size sample. People's decisions are checked here too, and every ID they give must name a record
 (known).
 """
+import contextlib
 import difflib
-import hashlib
+import functools
 import re
+import tempfile
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -30,7 +32,6 @@ class Source:
     columns: list[str]
     notes: list[str] = field(default_factory=list)  # what was detected or fixed, for the run's summary
     files: list[Path] = field(default_factory=list)  # the files read
-    ordered: bool = False                     # a list of files in order: sql holds er_file, each row's file by position
     given: dict[str, str] = field(default_factory=dict)  # a column read under another name (KIND_2) → its name in the file
 
 
@@ -63,14 +64,30 @@ def find(path: str | Path) -> list[Path]:
                      else f"check the path: {folder} {'holds no file like it' if folder.is_dir() else 'does not exist'}")
 
 
-def open_source(path: str | Path | list[Path], engine: Engine, expected: Iterable[str], reserved: Iterable[str] = ()) -> Source:
-    """The files `path` names as one relation of text columns; a list of files is read in order, and each row keeps
-    its file's position (er_file). A column whose name matches an `expected` one but for case, width or separators is
+@contextlib.contextmanager
+def readable(path: str | Path, spec: "intake.InputSpec", told=None):
+    """The records `path` names (a Parquet file, a quoted glob or a folder of them) as a job reads them: read by the
+    intake (er.intake: placeholders and blanks as missing, a number's text as written, control characters out) into a
+    folder of the job's own, which goes once it ends. An error names the files given, not that folder. O(bytes)."""
+    p = Path(path).expanduser()
+    files, root = find(path), p if p.is_dir() else None
+    progress = (lambda done, total: told(done, total, "rows")) if told else None
+    with tempfile.TemporaryDirectory(prefix="er-", ignore_cleanup_errors=True) as t:  # Windows: a file DuckDB still holds can't go yet
+        named = {f: (f.relative_to(root) if root else Path(f.name)).as_posix() for f in files}
+        back = [*((str(Path(t) / x["read"]), str(f)) for f, x in zip(named, intake.take(Path(t), named, spec, progress=progress)["files"])), (t, str(path))]
+        try:
+            yield t
+        except InputError as e:  # said of the files people gave, not of the folder they were read into
+            say = lambda text: functools.reduce(lambda x, pair: x.replace(*pair), back, text)
+            raise InputError(say(str(e)), say(e.fix), e.hints) from None
+
+
+def open_source(path: str | Path, engine: Engine, expected: Iterable[str], reserved: Iterable[str] = ()) -> Source:
+    """The files `path` names as one relation of text columns. A column whose name matches an `expected` one but for case, width or separators is
     given the expected name; one stored as a number is read as text, with a note. One no field reads whose name, in
     any case, is a `reserved` one (a column the run writes itself: a field, kind) or begins with one and __, is read
     under another (KIND_2), with a note: SQL names don't tell case apart."""
-    ordered = isinstance(path, list)
-    files = [x for p in path for x in find(p)] if ordered else find(path)
+    files = find(path)
     for f in files:
         intake.check(f)
     schemas = {}
@@ -124,10 +141,8 @@ def open_source(path: str | Path | list[Path], engine: Engine, expected: Iterabl
                  if kind in ("FLOAT", "DOUBLE", "REAL") else f"CAST({q(c)} AS VARCHAR)")
         cols.append(f"{value} AS {q(name)}")
     paths = ", ".join(lit(f) for f in files)
-    if ordered:
-        cols.append(f"list_position([{paths}], er_path) AS er_file")
-    return Source(sql=f"(SELECT {', '.join(cols)} FROM read_parquet([{paths}], union_by_name = true{", filename = 'er_path'" if ordered else ''}))",
-                  columns=[rename.get(c, c) for c in types], notes=notes, files=files, ordered=ordered,
+    return Source(sql=f"(SELECT {', '.join(cols)} FROM read_parquet([{paths}], union_by_name = true))",
+                  columns=[rename.get(c, c) for c in types], notes=notes, files=files,
                   given={rename[c]: c for c in rename if rename[c] not in expected})
 
 
@@ -169,7 +184,6 @@ def suggest(src: Source, engine: Engine, fields: Iterable[str], patterns: Mappin
     return out
 
 
-CODE = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]  # this module as it is: a copy its older self built is built again
 
 
 def plain(value: str, fold: dict[int, str]) -> str:  # a value as names are looked up: same width, no spaces, katakana, kana folded

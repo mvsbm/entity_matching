@@ -1,6 +1,7 @@
 """Runs: a full run, increments, writes cut short, the probe (design time, on a run), describe matching."""
 import json
 import shutil
+from pathlib import Path
 import math
 from dataclasses import replace
 
@@ -10,12 +11,11 @@ import pytest
 
 from er.config import (InputError, Resolver, bits)
 from er.match import named_sql
-from er.engine.duckdb import connect
 
 
 def test_a_run_refuses_a_resolver_it_cannot_apply(population):
     from er.steps.job import start
-    s, p, _ = population  # choose.py could adopt the constrained resolver; the run would then cluster otherwise
+    s, p, _ = population  # a method could take the constrained resolver; the run would then cluster otherwise
     constrained = Resolver(method="constrained", cannot_link=("given_name",))
     for q in (replace(p, fs=replace(p.fs, resolver=constrained)), replace(p, rules=replace(p.rules, resolver=constrained))):
         with pytest.raises(InputError, match="connected components only"):
@@ -195,7 +195,7 @@ def test_a_full_run_cut_short_in_its_moves_lands_with_its_round(tmp_path, popula
         build(tmp_path / "all.parquet", tmp_path / "run", s, p)
     monkeypatch.undo()
     folder.finish_writes(tmp_path / "run")  # as the next command on the workspace does
-    assert (tmp_path / "run" / "gold.parquet").exists() and len(folder.rounds(tmp_path / "run")) == 1  # the run and its round land together
+    assert (tmp_path / "run" / "gold.parquet").exists() and len(json.loads((tmp_path / "run" / folder.STEPS).read_text(encoding="utf-8"))["runs"]) == 1  # the run and its log land together
 
 
 def test_a_full_run_keeps_the_decisions_people_wrote_in_the_sheet_and_have_not_given_back(tmp_path, population):
@@ -203,13 +203,13 @@ def test_a_full_run_keeps_the_decisions_people_wrote_in_the_sheet_and_have_not_g
     s, p, g = population
     uid, ws = s.data.unique_id, tmp_path / "ws"
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    build(tmp_path / "all.parquet", ws, s, p, pipeline_file=s.root / "config" / "final.toml")  # with its reports: the sheet
+    build(tmp_path / "all.parquet", ws, s, p, pipeline_file=s.root / "config" / "pipeline.toml")  # with its reports: the sheet
     sheet = pd.read_parquet(ws / "review.parquet")
     row = sheet.index[sheet["why"] == "decide"][0]
     keys = {f"{uid}_l": sheet.at[row, f"{uid}_l"], f"{uid}_r": sheet.at[row, f"{uid}_r"]}
     sheet.loc[row, "decision"] = "no_match"  # written in the sheet, not applied
     sheet.to_parquet(ws / "review.parquet", index=False)
-    build(tmp_path / "all.parquet", ws, s, p, overwrite=True, pipeline_file=s.root / "config" / "final.toml")  # a full run makes the sheet again
+    build(tmp_path / "all.parquet", ws, s, p, overwrite=True, pipeline_file=s.root / "config" / "pipeline.toml")  # a full run makes the sheet again
     after = pd.read_parquet(ws / "review.parquet")
     assert after[(after[f"{uid}_l"] == keys[f"{uid}_l"]) & (after[f"{uid}_r"] == keys[f"{uid}_r"])]["decision"].tolist() == ["no_match"]
 
@@ -242,6 +242,8 @@ def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_decisions(tmp_pat
 
     moves, replace_ = [], os.replace
     def cut_short(a, b):  # dies after the first of the moves that replace the old run
+        if not Path(b).is_relative_to(tmp_path / "run"):  # the intake's own, of the file read
+            return replace_(a, b)
         moves.append(b)
         if len(moves) == 3:
             raise KeyboardInterrupt
@@ -305,49 +307,6 @@ def test_an_increment_needs_a_workspace_that_holds_a_run(tmp_path, population):
         update(tmp_path / "all.parquet", tmp_path / "empty", s, p)
 
 
-def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, population):
-    from er.cluster import merge
-    from er.explain import scored_again
-    from design.probe import probe as probed
-    from er.jobs.build import build
-    from er.jobs.decide import decide
-    s, p, g = population
-    uid, ent = s.data.unique_id, s.data.entity_id
-    l, r = f"{uid}_l", f"{uid}_r"
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    few = replace(p, fs=replace(p.fs, blockers=tuple(b for b in p.fs.blockers if b.name in ("cif", "person_name", "company_name"))))  # a method that misses
-    out = tmp_path / "run"
-    probe = probed(build(tmp_path / "all.parquet", out, s, few))
-    engine = connect(s.compute)  # the truth: every true pair scored as the run scores, at its line, that its likely links don't join
-    truth = g.truth[[uid, ent]].merge(g.truth[[uid, ent]], on=ent).query(f"{uid}_x < {uid}_y")
-    engine.register("er_t", truth.rename(columns={f"{uid}_x": l, f"{uid}_y": r})[[l, r]])
-    scored_again(engine, out, uid, "er_t", "er_ts")
-    wide = engine.rows("SELECT * FROM er_ts ORDER BY ALL")
-    scored_again(engine, out, uid, "er_t", "er_ts", narrow=True)  # only the columns the model reads: the same scores
-    assert engine.rows("SELECT * FROM er_ts ORDER BY ALL") == wide \
-        and len(engine.rows("DESCRIBE er_touched")) < len(engine.rows(f"DESCRIBE SELECT * FROM read_parquet('{out}/state/records/*.parquet')"))
-    links = " UNION ALL ".join(f"SELECT {l}, {r} FROM read_parquet('{out / x}/*.parquet')" for x in ("matches", "rule_kept") if any((out / x).glob("*.parquet")))
-    engine.run(f"CREATE TABLE er_one AS SELECT {uid}, {uid} AS cluster_id FROM read_parquet('{out}/gold.parquet')")
-    merge(engine, "er_one", f"({links})", "er_joined", uid)
-    missed = engine.rows(f"""SELECT s.{l}, s.{r} FROM er_ts s JOIN er_joined a ON a.{uid} = s.{l} JOIN er_joined b ON b.{uid} = s.{r}
-        WHERE s.match_weight >= {few.fs.min_match_weight} AND {named_sql(few.fs)} AND a.cluster_id <> b.cluster_id""")
-    phone = g.df.set_index(uid)[s.columns["phone"][0][0]]
-    shared = {(a, b) for a, b in missed if pd.notna(phone[a]) and phone[a] == phone[b]}
-    by = {x["stratum"]: x for x in probe}
-    assert shared and by["phone"]["drawn"] == 1.0 and by["phone"]["hits"] == by["phone"]["missed"] == len(shared)  # every pair drawn: exactly the truth
-    assert {tuple(x[:2]) for x in by["phone"]["examples"]} == shared
-    apart = sorted(shared)[0]  # people say one of them is different: no match missed, then
-    pd.DataFrame({l: [apart[0]], r: [apart[1]], "decision": ["no_match"]}).to_parquet(tmp_path / "apart.parquet")
-    decide(tmp_path / "apart.parquet", out, s, few)
-    again = probed(build(tmp_path / "all.parquet", out, s, few, overwrite=True))
-    phone_again = next(x for x in again if x["stratum"] == "phone")
-    assert phone_again["hits"] == len(shared) - 1 and apart not in {tuple(x[:2]) for x in phone_again["examples"]}
-    sampled = probed(build(tmp_path / "all.parquet", tmp_path / "run2", s, replace(few, probe=replace(few.probe, pairs=200))))[0]
-    assert sampled["drawn"] < 1 and sampled["low"] <= len(shared) <= sampled["high"]  # a share drawn: its interval holds the truth
-    full = probed(build(tmp_path / "all.parquet", tmp_path / "run3", s, p))
-    assert all(x["hits"] <= by[x["stratum"]]["hits"] for x in full)  # the tuned method's keys miss no more
-
-
 def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_each_long_step_says_how_far_it_is(tmp_path, population, monkeypatch):
     from er.jobs.build import build
     s, p, g = population
@@ -387,49 +346,6 @@ def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_each_l
     assert views(sliced) == views(whole)  # each slice's lookups released: memory doesn't grow with the slices
 
 
-def test_a_full_run_reads_the_records_it_cleaned_again_until_anything_they_rest_on_changes(tmp_path, population):
-    from er import folder
-    from er.jobs.build import build
-    s, p, g = population
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    ws = tmp_path / "ws"
-    load = lambda run: next(x for x in run.steps if x["step"] == "load")["prepared"]
-    rows = lambda run: run.engine.frame(f"SELECT * FROM records ORDER BY {run.uid}")
-    first = build(tmp_path / "all.parquet", ws, s, p)
-    gold = pd.read_parquet(ws / "gold.parquet")
-    again = build(tmp_path / "all.parquet", ws, s, p, overwrite=True)
-    assert (load(first), load(again)) == ("made", "kept")
-    pd.testing.assert_frame_equal(rows(first), rows(again))  # as cleaning them again would make them
-    pd.testing.assert_frame_equal(gold, pd.read_parquet(ws / "gold.parquet"))
-    (kept,) = (ws / folder.PREPARED).iterdir()
-    (kept / "records.parquet").write_bytes(b"not parquet")  # a copy that can't be read: made again
-    assert load(build(tmp_path / "all.parquet", ws, s, p, overwrite=True)) == "made"
-    for n in (1, 2):  # other records: other cleaned records, the last two kept
-        g.df.iloc[n:].to_parquet(tmp_path / f"less{n}.parquet", index=False)
-        assert load(build(tmp_path / f"less{n}.parquet", ws, s, p, overwrite=True)) == "made"
-    assert len(list((ws / folder.PREPARED).iterdir())) == folder.KEEP_PREPARED
-    assert load(build(tmp_path / "less1.parquet", ws, s, p, overwrite=True)) == "kept"  # read: the last used
-    g.df.iloc[3:].to_parquet(tmp_path / "less3.parquet", index=False)
-    assert load(build(tmp_path / "less3.parquet", ws, s, p, overwrite=True)) == "made"
-    assert load(build(tmp_path / "less1.parquet", ws, s, p, overwrite=True)) == "kept"  # less2's went: used longest ago
-    import duckdb
-    def full_disk(f):
-        raise duckdb.IOException("no space left on device")
-    (ws / folder.PREPARED / ".k.2147483646.tmp").mkdir()  # left half written by a run long gone
-    folder.keep_prepared(ws, "k", full_disk)  # a copy that can't be written: left out, the run goes on
-    assert not [x for x in (ws / folder.PREPARED).iterdir() if x.name.startswith(".") or x.name == "k"]
-    from dataclasses import replace
-    from er.steps.load import _prepared_key
-    key = lambda settings, inputs=first.inputs, ordered=False: _prepared_key(replace(first.job, settings=settings), first.pipeline, inputs, [], set(), ordered)
-    base = key(s)
-    assert key(replace(s, compute={"threads": "1"})) == base  # the compute limits change no record
-    assert key(replace(s, columns={**s.columns, "phone": (("another_column",),)})) != base  # another mapping: cleaned again
-    assert key(replace(s, flag_company=("X",))) != base  # another cleaning setting
-    assert key(s, ordered=True) == base  # one file read in order: the rows read at once
-    two = [*first.inputs, {**first.inputs[0], "sha256": "0" * 64}]
-    assert key(s, two, True) != key(s, two, False) != base  # files in order: set aside as increments would
-
-
 def test_a_file_s_columns_no_field_reads_never_enter_the_run(tmp_path, population):
     from er.jobs.build import build
     s, p, g = population
@@ -439,21 +355,6 @@ def test_a_file_s_columns_no_field_reads_never_enter_the_run(tmp_path, populatio
     wide = build(tmp_path / "wide.parquet", tmp_path / "b", s, p)
     assert {"NOTE", "MEMO"}.isdisjoint(wide.columns()) and {"NOTE", "MEMO"}.isdisjoint(pd.read_parquet(tmp_path / "b" / "state" / "records").columns)
     pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "a" / "gold.parquet"), pd.read_parquet(tmp_path / "b" / "gold.parquet"))
-
-
-def test_a_run_over_a_log_an_older_version_wrote_keeps_its_runs_without_their_time(tmp_path, population):
-    from er import folder
-    from er.jobs.build import build
-    s, p, g = population
-    g.df.to_parquet(tmp_path / "in.parquet", index=False)
-    ws = tmp_path / "home" / "old"
-    build(tmp_path / "in.parquet", ws, s, p)
-    log = json.loads((ws / "steps.json").read_text(encoding="utf-8"))
-    log["runs"] = [{k: v for k, v in x.items() if k in ("disabled", "part", "steps")} for x in log["runs"]]  # as an older version wrote it
-    (ws / "steps.json").write_text(json.dumps(log), encoding="utf-8")
-    build(tmp_path / "in.parquet", ws, s, p, overwrite=True)  # its write reads the old log into the new one's history
-    history = folder.history(ws)
-    assert [x["at"] for x in history][0] is None and history[-1]["at"]
 
 
 def test_an_increment_scores_its_pairs_a_slice_at_a_time_as_a_full_run_does(tmp_path, population, monkeypatch):

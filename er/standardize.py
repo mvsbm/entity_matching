@@ -76,7 +76,7 @@ def _normalized(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardizatio
 
 
 def address_parts(std: Standardization) -> tuple[tuple[str, Callable[[pd.Series], pd.Series]], ...]:
-    """The address normalizer's parts, in order: normalize() applies them all, prepared() shows each."""
+    """The address normalizer's parts, in order: normalize() applies them all."""
     def rules(s: pd.Series) -> pd.Series:
         for pattern, repl in std.address_replacements:
             s = s.str.replace(pattern, repl, regex=True)
@@ -91,17 +91,6 @@ def cut(s: pd.Series, at: str) -> pd.Series:
     any `at` left (between the city and the town, say); an address with no digit before one keeps all but those."""
     c = re.escape(at)
     return s.str.strip().str.replace(rf"^(.*?[0-9][^{c}]*){c}.*$", r"\1", regex=True).str.replace(at, "", regex=False)
-
-
-def prepared(value: str, steps: tuple[Normalizer, ...], std: Standardization) -> list[tuple[str, str | None]]:
-    """One value through each normalizer, the address one part by part: (step, the value after it). The last is what
-    normalize() gives; the steps between are for people to see what preparing a value did. O(steps·L)."""
-    s, out = pd.Series([value]), []
-    for step in steps:
-        for name, part in address_parts(std) if step == "address" else ((step, lambda x, one=(step,): normalize(x, one, std)),):
-            s = part(s)
-            out.append((name, None if pd.isna(s.iloc[0]) or s.iloc[0] == "" else str(s.iloc[0])))
-    return out
 
 
 def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tuple[str, tuple[Normalizer, ...]]],

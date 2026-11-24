@@ -7,24 +7,17 @@ import collections
 import concurrent.futures
 import contextlib
 import functools
-import hashlib
 import math
 import multiprocessing
 import os
 import sys
 import time
-import unicodedata
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from importlib.metadata import version
 from pathlib import Path
 
-import duckdb
-import numpy as np
 import pandas as pd
-import pyarrow as pa
 
-from er import folder
 from er.config import InputError, Pipeline, lit, q
 from er.kind import KIND_COLUMNS, NAME_MODEL, classifier as kind_classifier
 from er.match import ELSE, compared_exactly
@@ -34,10 +27,6 @@ from er.source import file_facts, filled, open_source, suggest
 from er.standardize import prepare
 from er.steps.job import Job
 
-ER = Path(__file__).resolve().parents[1]
-PREPARING = hashlib.sha256(b"".join([*(f.read_bytes() for f in sorted(ER.rglob("*.py"))),  # every module: what cleans records and reads them
-                                     *(v.encode() for v in (duckdb.__version__, pd.__version__, pa.__version__, np.__version__, version("scikit-learn"), version("scipy"))), sys.version.encode(),
-                                     unicodedata.unidata_version.encode()])).hexdigest()  # sklearn, scipy: the person/company engine
 CHUNK_ROWS = 200_000  # records standardized at a time, each chunk in a process of its own
 CROWD = 64        # the fewest customers a compared field's placeholder is held by, however small the budget's oversized blocks
 SPREAD = 10       # a placeholder is held by this many times the field's records per value, or more
@@ -71,14 +60,12 @@ def ahead(pool: concurrent.futures.Executor, f: Callable, items: Iterable, most:
             w.cancel()
 
 
-def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "records", stored: str | None = None,
-         keep: Path | None = None) -> Loaded:
+def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "records", stored: str | None = None) -> Loaded:
     """Read the file through er.source (Parquet; columns matched to config/settings.toml [columns]); check its fields
     against the method's [fields]; set aside what can't be resolved (set_aside); standardize each chunk with
     er.standardize.prepare (each record on its own, so chunking changes nothing) into the table `into`. `model`: a
     fitted model, which must compare what this file lets the method compare. `stored` (an increment): the run's
-    records, read as the batch's are, and not read again. `keep`: the workspace whose cleaned records are read again
-    while nothing they rest on changed (folder.prepared). The placeholders of a full run are found here; an
+    records, read as the batch's are, and not read again. The placeholders of a full run are found here; an
     increment's, once its batch joins the run's records (placeholders). CHUNK_ROWS records are cleaned at a time."""
     t, engine, s, log, chunk_rows = time.perf_counter(), job.engine, job.settings, job.log, CHUNK_ROWS
     src = open_source(path, engine, {c for f, alts in s.columns.items() if f != "entity" for alt in alts for c in alt},
@@ -108,7 +95,7 @@ def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "
             raise InputError(f"{path}: the model was fitted on other comparison levels (only in the model: {sorted(fitted - here)}; "
                              f"only here: {sorted(here - fitted)})", fix="run without --model: the run then fits its model on this file")
     loaded = Loaded(n=0, pipeline=pipeline, disabled=disabled, present=present, unmapped=unmapped, classifier=None, inputs=inputs)
-    rows = _set_aside(job, src.sql, stored, src.ordered)
+    rows = _set_aside(job, src.sql, stored)
     engine.run(f"DROP TABLE IF EXISTS {into}")
     if not job.count(rows):
         if stored is None and not job.count(src.sql):
@@ -120,39 +107,30 @@ def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "
     if spec and spec.name_field in present:
         loaded.classifier = kind_classifier(s, spec)
         loaded.inputs += file_facts([s.root / NAME_MODEL], "name model")
-    probe, home = pipeline.probe, pipeline.household  # its groups are keys too, and the label's fields: made with the rest
-    normalized, used = [*rules.normalized(), *fs.normalized(), *probe.normalized(), *home.normalized()], rules.used() | fs.used() | probe.used() | home.used()
+    home = pipeline.household  # the label's fields: made with the rest
+    normalized, used = [*rules.normalized(), *fs.normalized(), *home.normalized()], rules.used() | fs.used() | home.used()
     total, done = job.count(rows), 0
     if log.told:
         log.told(0, total, "records")
-    keep = keep if stored is None else None  # an increment's batch is new: nothing kept to read
-    key = _prepared_key(job, pipeline, loaded.inputs, normalized, used, src.ordered) if keep else None
-    if kept := keep and _kept(job, folder.prepared(keep, key), into, total):
-        done = total
-    else:
-        reads = {job.uid, *(c for d in fs.standardize.derived for cols in d.sources for c in cols), *used}  # what cleaning reads: a wide file's other columns never enter the run
-        cols = ", ".join([*(q(c) for c, *_ in engine.rows(f"DESCRIBE SELECT * FROM {rows}") if c in reads), *(f"NULL::VARCHAR AS {q(c)}" for c in extra)])
-        reader = engine.batches(f"SELECT {cols} FROM {rows}", chunk_rows)  # its own cursor: inserts go on alongside
-        workers = min(-(-total // chunk_rows), int(engine.value("SELECT current_setting('threads')")), os.cpu_count() or 1,
-                      61 if sys.platform == "win32" else 1 << 20)  # Windows waits on at most 61 processes
-        batches = (batch.to_pandas().astype("string") for batch in reader)
-        clean = functools.partial(prepare, fs.standardize, normalized=normalized, used=used, kind=loaded.classifier)
-        # spawned on every system: a fork of this process, its DuckDB threads running, may deadlock (Linux before 3.14)
-        with (concurrent.futures.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn")) if workers > 1
-              else contextlib.nullcontext()) as pool:
-            # each chunk cleaned on its own (every step reads one record, or one chunk's values), so in parallel processes
-            # the same records, taken back in order
-            for i, chunk in enumerate(ahead(pool, clean, batches, workers + 1) if pool else map(clean, batches)):
-                engine.register("er_chunk", chunk)
-                engine.run(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
-                engine.unregister("er_chunk")
-                done += len(chunk)
-                if log.told:
-                    log.told(done, total, "records")
-        if keep:
-            folder.keep_prepared(keep, key, lambda f: engine.run(f"COPY {into} TO {lit(f)} (FORMAT parquet, COMPRESSION zstd)"))  # a third of snappy's size, as fast
-    if log.told and kept:
-        log.told(done, total, "records")
+    reads = {job.uid, *(c for d in fs.standardize.derived for cols in d.sources for c in cols), *used}  # what cleaning reads: a wide file's other columns never enter the run
+    cols = ", ".join([*(q(c) for c, *_ in engine.rows(f"DESCRIBE SELECT * FROM {rows}") if c in reads), *(f"NULL::VARCHAR AS {q(c)}" for c in extra)])
+    reader = engine.batches(f"SELECT {cols} FROM {rows}", chunk_rows)  # its own cursor: inserts go on alongside
+    workers = min(-(-total // chunk_rows), int(engine.value("SELECT current_setting('threads')")), os.cpu_count() or 1,
+                  61 if sys.platform == "win32" else 1 << 20)  # Windows waits on at most 61 processes
+    batches = (batch.to_pandas().astype("string") for batch in reader)
+    clean = functools.partial(prepare, fs.standardize, normalized=normalized, used=used, kind=loaded.classifier)
+    # spawned on every system: a fork of this process, its DuckDB threads running, may deadlock (Linux before 3.14)
+    with (concurrent.futures.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn")) if workers > 1
+          else contextlib.nullcontext()) as pool:
+        # each chunk cleaned on its own (every step reads one record, or one chunk's values), so in parallel processes
+        # the same records, taken back in order
+        for i, chunk in enumerate(ahead(pool, clean, batches, workers + 1) if pool else map(clean, batches)):
+            engine.register("er_chunk", chunk)
+            engine.run(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
+            engine.unregister("er_chunk")
+            done += len(chunk)
+            if log.told:
+                log.told(done, total, "records")
     engine.run("DROP TABLE IF EXISTS er_in")  # the file kept once, read: a copy of it no step reads again
     loaded.n = job.count(into)
     if stored is None:  # an increment's batch: read as missing with the run's records (jobs.update)
@@ -161,8 +139,7 @@ def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "
     if loaded.classifier is not None:  # how many records each kind holds
         kinds = dict(engine.rows(f"SELECT kind, count(*) FROM {into} GROUP BY 1"))
         kinds = {"companies": kinds.get(2, 0), "persons": kinds.get(1, 0), "not sure": kinds.get(0, 0), "flagged": job.count(f"{into} WHERE kind_flagged")}
-    log.done("load", "O(N·L)", f"O({loaded.n:,}·L)", t, records=loaded.n, disabled=len(disabled), set_aside=job.count("set_aside"), **kinds,
-             **({"prepared": "kept" if kept else "made"} if keep else {}))
+    log.done("load", "O(N·L)", f"O({loaded.n:,}·L)", t, records=loaded.n, disabled=len(disabled), set_aside=job.count("set_aside"), **kinds)
     return loaded
 
 
@@ -225,41 +202,13 @@ def placeholders(job: Job, pipeline: Pipeline, table: str, known: dict[str, list
     return out
 
 
-def _prepared_key(job: Job, pipeline: Pipeline, inputs: list[dict], normalized: list, used: set[str], ordered: bool) -> str:
-    """All the cleaned records rest on, as one hash: the records files (their SHA-256, in order) and how they are read
-    and matched to fields, the cleaning, the columns the method cleans and reads, the person/company engine (its
-    name model) and the code. Not the compute limits: they change no record."""
-    s, files = job.settings, [f["sha256"] for f in inputs if f["role"] in ("records", "name model")]
-    ordered = ordered and sum(f["role"] == "records" for f in inputs) > 1  # one file read in order sets aside what it would read at once: a rerun reads the first run's
-    return hashlib.sha256(repr((files, ordered, s.data, s.columns, s.input, s.standardize, s.flag_company, pipeline.fs.standardize,
-                                normalized, sorted(used), pipeline.kind, PREPARING)).encode()).hexdigest()[:16]
-
-
-def _kept(job: Job, path: Path | None, into: str, n: int) -> bool:  # the cleaned records kept, read into `into`; False if none, or one that can't be read whole
-    if path is None:
-        return False
-    try:
-        job.engine.run(f"CREATE TABLE {into} AS SELECT * FROM read_parquet({lit(path)})")
-        if job.count(into) == n:
-            return True
-    except duckdb.Error:
-        pass
-    job.engine.run(f"DROP TABLE IF EXISTS {into}")
-    folder.forget_prepared(path.parent.parent, path.parent.name)
-    return False
-
-
-def _set_aside(job: Job, src: str, stored: str | None, ordered: bool = False) -> str:
+def _set_aside(job: Job, src: str, stored: str | None) -> str:
     """The records a run can resolve. Rows identical in every column are kept once. Set aside, with the reason, in
     the table set_aside (written to set_aside/, to be fixed and added by an increment): a record without an ID;
     every record of an ID that holds different content; with `stored` (an increment), a record already in the run.
-    `ordered` (files read in order, er_file: a rerun) sets aside as an increment would have: an ID's records stand
-    from the first file that holds it once, earlier ones held different content, later ones were already in the
-    run. O(N) to count; the rest only when something is off."""
+    O(N) to count; the rest only when something is off."""
     engine, log, u = job.engine, job.log, q(job.uid)
     blank, known = f"NOT {filled(job.uid)}", f"{u} IN (SELECT {u} FROM {stored})" if stored else "FALSE"  # blank as describe reads it
-    if ordered:
-        return _set_aside_in_order(job, src, blank)
     n, ids, empty, clash = engine.row(f"""SELECT count(*), count(DISTINCT {u}), count(*) FILTER (WHERE {blank}),
         count(*) FILTER (WHERE {known}) FROM {src}""")
     engine.run(f"CREATE OR REPLACE TABLE set_aside AS SELECT *, ''::VARCHAR AS reason FROM {src} WHERE FALSE")
@@ -275,22 +224,3 @@ def _set_aside(job: Job, src: str, stored: str | None, ordered: bool = False) ->
         WHERE {blank} OR {known} OR {u} IN (SELECT {u} FROM er_in GROUP BY {u} HAVING count(*) > 1)""")
     log.notes += [f"{k:,} records set aside: {reason}" for reason, k in engine.rows("SELECT reason, count(*) FROM set_aside GROUP BY 1 ORDER BY 1")]
     return f"(SELECT * FROM er_in WHERE NOT ({blank}) AND {u} NOT IN (SELECT {u} FROM set_aside WHERE {u} IS NOT NULL))"
-
-
-def _set_aside_in_order(job: Job, src: str, blank: str) -> str:
-    """_set_aside on files read in order: per ID, the first file holding it exactly once (er_first); within a file,
-    rows identical in every column are kept once. O(N)."""
-    engine, log, u = job.engine, job.log, q(job.uid)
-    n = job.count(src)
-    if n and not job.count(f"{src} WHERE NOT ({blank})"):
-        raise InputError(f"no record has an ID in column {job.uid}", fix="map id in config/settings.toml [columns] to the column holding each record's ID")
-    engine.run(f"""CREATE OR REPLACE TABLE er_in AS WITH d AS (SELECT DISTINCT * FROM {src}),
-        once AS (SELECT {u}, min(er_file) AS er_first FROM (SELECT {u}, er_file FROM d WHERE NOT ({blank}) GROUP BY ALL HAVING count(*) = 1) GROUP BY 1)
-        SELECT d.*, once.er_first FROM d LEFT JOIN once USING ({u})""")
-    if (kept := job.count("er_in")) < n:
-        log.notes.append(f"{n - kept:,} rows identical to another in every column, kept once")
-    keep = f"NOT ({blank}) AND coalesce(er_file = er_first, FALSE)"
-    engine.run(f"""CREATE OR REPLACE TABLE set_aside AS SELECT * EXCLUDE (er_file, er_first), CASE WHEN {blank} THEN 'no ID'
-        WHEN er_file > er_first THEN 'already in the run' ELSE 'the same ID with different content' END AS reason FROM er_in WHERE NOT ({keep})""")
-    log.notes += [f"{k:,} records set aside: {reason}" for reason, k in engine.rows("SELECT reason, count(*) FROM set_aside GROUP BY 1 ORDER BY 1")]
-    return f"(SELECT * EXCLUDE (er_file, er_first) FROM er_in WHERE {keep})"

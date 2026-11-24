@@ -1,4 +1,4 @@
-"""What the tests share: small hand-made frames, a generated population for whole runs, and nayose as a user runs it
+"""What the tests share: small hand-made frames, a generated population for whole runs, and python -m er as a machine runs it
 (in this process, and in its own). A test that uses a whole-run fixture is marked slow: run the fast ones with
 -m "not slow"."""
 import json
@@ -71,7 +71,7 @@ def population():
     """A small generated population and the final pipeline, for whole runs: made once for every test that runs one."""
     from design.generate import generate as make, load_reference, load_spec
     s = load_settings()
-    p = load_pipeline(ROOT / "tests" / "method.toml", s.standardize, s.chains, s.columns)  # the tests' own method: a method round changes config/final.toml, never what they count on
+    p = load_pipeline(ROOT / "tests" / "method.toml", s.standardize, s.chains, s.columns)  # the tests' own method: a method round changes config/pipeline.toml, never what they count on
     g = make(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=400, households={}),  # the tests count on this population; choose.py measures households
              *load_reference(s.paths["reference"]))
     return s, p, g
@@ -107,35 +107,29 @@ def dirty_csv(df: pd.DataFrame, name: str, address: str, path: Path) -> tuple[in
     return cp932, spilled, garbled
 
 
-def nayose(*words: object, check: bool = False, timeout: float = 600):  # the command line, as a user runs it, in a process of its own
+def clustered(engine, base: pd.DataFrame, edges: pd.DataFrame, ids: pd.Series, uid: str) -> pd.Series:
+    """`base` (uid, cluster_id) with `edges` added, as a run clusters (er.cluster.merge), in the order of ids."""
+    from er.cluster import merge
+    engine.register("er_base_df", base)
+    engine.register("er_edges_df", edges[[f"{uid}_l", f"{uid}_r"]])
+    engine.run("CREATE OR REPLACE TABLE er_base AS SELECT * FROM er_base_df")
+    engine.run("CREATE OR REPLACE TABLE er_edges AS SELECT * FROM er_edges_df")
+    merge(engine, "er_base", "er_edges", "er_clusters", uid)
+    return engine.frame("SELECT * FROM er_clusters").set_index(uid)["cluster_id"].astype("string").reindex(ids.to_numpy())
+
+
+def run_er(*words: object, check: bool = False, timeout: float = 600):  # a job, as a machine runs it, in a process of its own
     import subprocess
     import sys
-    return subprocess.run([sys.executable, "-m", "er.cli", *map(str, words)], capture_output=True, encoding="utf-8", errors="replace", check=check, timeout=timeout)
+    return subprocess.run([sys.executable, "-m", "er", *map(str, words)], capture_output=True, encoding="utf-8", errors="replace", check=check, timeout=timeout)
 
 
 @pytest.fixture
 def say(capsys):
-    """nayose in this process, as a user runs it: say(*words) → (its exit code, its last event)."""
-    from er.cli import main
+    """python -m er in this process: say(*words) → (its exit code, the JSON it printed)."""
+    from er.__main__ import main
 
     def run(*words: object) -> tuple[int, dict]:
-        code = main([*map(str, words), "--format", "json"])
+        code = main([*map(str, words)])
         return code, json.loads(capsys.readouterr().out.splitlines()[-1])
     return run
-
-
-@pytest.fixture
-def fake_cli(tmp_path, monkeypatch):
-    """fake(code): the nayose commands the code under test starts (python -m er.cli WORDS) run `code` instead, a Python
-    script given WORDS as sys.argv[1:] (json, os, shutil, sys and time imported), in a process of its own, on any
-    system; any other process (git) runs as it is."""
-    import subprocess
-    import sys
-    real = subprocess.Popen
-
-    def fake(code: str) -> None:
-        script = tmp_path / "fake_cli.py"
-        script.write_text("import json, os, shutil, sys, time\n" + code, encoding="utf-8")
-        swap = lambda cmd: [sys.executable, str(script), *cmd[3:]] if list(cmd[1:3]) == ["-m", "er.cli"] else cmd
-        monkeypatch.setattr(subprocess, "Popen", lambda cmd, *a, **k: real(swap(cmd), *a, **k))
-    return fake

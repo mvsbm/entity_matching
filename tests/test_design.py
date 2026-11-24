@@ -65,10 +65,10 @@ def parse(name: str) -> tuple[dict[str, tuple[str, str]], list[tuple[str, str]],
 
 
 PACKAGES = ("er", "design")  # the engine, and design time's code beside it
-PACKAGE = {f.stem: pkg for pkg in PACKAGES for f in (ROOT / pkg).glob("*.py") if f.stem != "__init__"}  # each module's package
+PACKAGE = {f.stem: pkg for pkg in PACKAGES for f in (ROOT / pkg).glob("*.py") if f.stem not in ("__init__", "__main__")}  # each module's package
 NESTED = {f.relative_to(ROOT).as_posix() for pkg in PACKAGES for f in (ROOT / pkg).glob("*/*.py") if f.stem != "__init__"}  # er/engine/duckdb.py: named by path
 MODULES = set(PACKAGE)
-RANK = {"tools_design": 5, "tools_run": 4, "design": 3, "run": 2, "steps": 1, "configuration": 0}  # components.puml: each layer imports only those below; a design-time tool may drive nayose
+RANK = {"tools_design": 5, "tools_run": 4, "design": 3, "run": 2, "steps": 1, "configuration": 0}  # components.puml: each layer imports only those below
 CLASSES = {"Job": "er.steps.job", "Ran": "er.steps.job", "Log": "er.steps.job", "Classifier": "er.kind", "NameModel": "er.kind", "Fitted": "er.kind"}
 SUBPACKAGES = ("steps", "jobs", "engine")  # a module of er/<one of these>/ is named by both: steps.load.load
 RUN_LAYER = ("jobs.build", "jobs.update", "jobs.decide", "steps.job", "steps.load", "steps.budget", "steps.fit", "steps.rules",  # the run's modules:
@@ -131,6 +131,7 @@ class RunCode:
 
     def __init__(self):
         self.local, self.names = {}, {}  # module.function → its ast; per module, each name it sees → module.function
+        self.modules: set[str] = set()  # the modules outside the run layer a run module imports by name: jobs.index
         for m in RUN_LAYER:
             tree = ast.parse((ROOT / "er" / f"{m.replace('.', '/')}.py").read_text(encoding="utf-8"))
             names = self.names[m] = {}
@@ -138,7 +139,10 @@ class RunCode:
                 if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("er."):
                     mod, key = importlib.import_module(node.module), node.module.removeprefix("er.")
                     for a in node.names:
-                        if callable(getattr(mod, a.name)) and not isinstance(getattr(mod, a.name), type):  # functions, not classes
+                        if (ROOT / "er" / key.replace(".", "/") / f"{a.name}.py").is_file():  # a module: from er.jobs import index, index.build
+                            names[a.asname or a.name] = f"{key}.{a.name}"
+                            self.modules.add(f"{key}.{a.name}")
+                        elif callable(getattr(mod, a.name)) and not isinstance(getattr(mod, a.name), type):  # functions, not classes
                             names[a.asname or a.name] = f"{key}.{a.name}"
                 elif isinstance(node, ast.ImportFrom) and node.module == "er":  # from er import folder: folder.stage
                     names.update({a.asname or a.name: a.name for a in node.names})
@@ -164,6 +168,11 @@ class RunCode:
                 if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and names.get(node.value.id) in RUN_LAYER:
                     found = f"{names[node.value.id]}.{node.attr}"  # called by its module's name: a function, not a constant
                     found = found if found in self.local else None
+                elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and names.get(node.value.id) in self.modules:
+                    found = f"{names[node.value.id]}.{node.attr}"  # another module's function, by its module's name: index.build
+                    found = found if callable(getattr(importlib.import_module(f"er.{names[node.value.id]}"), node.attr, None)) else None
+                elif isinstance(node, ast.Name) and names.get(node.id) in self.modules:
+                    continue  # the module itself, passed: what it calls is named where it is called
                 elif isinstance(node, ast.Name) and node.id in names and "." in names[node.id]:
                     found = names[node.id]
                 if found in steps:
@@ -257,7 +266,7 @@ def logged_runs(tmp: Path) -> tuple:
     from design.generate import generate, load_reference, load_spec
     from er.settings import load_settings
     s = load_settings()  # the tests' population (tests/conftest.py)
-    p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
+    p = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)
     g = generate(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=400), *load_reference(s.paths["reference"]))
     batch = np.random.default_rng(0).random(len(g.df)) < 0.2
     g.df[~batch].to_parquet(tmp / "first.parquet", index=False)
@@ -266,7 +275,7 @@ def logged_runs(tmp: Path) -> tuple:
     from er.jobs.build import build
     from er.jobs.decide import decide
     from er.jobs.update import update
-    out, pipeline, logs = tmp / "run", s.root / "config" / "final.toml", {mode: Logged() for mode in ("full", "increment", "decisions")}
+    out, pipeline, logs = tmp / "run", s.root / "config" / "pipeline.toml", {mode: Logged() for mode in ("full", "increment", "decisions")}
     with mock.patch("er.steps.job.connect", logs["full"].connect):
         build(tmp / "first.parquet", out, s, p, pipeline_file=pipeline, echo=logs["full"].echo)
     with mock.patch("er.steps.job.connect", logs["increment"].connect):
@@ -294,7 +303,7 @@ def layers() -> dict[str, str]:
 def test_the_components_diagram_holds_every_module_once_and_draws_the_imports_between_its_layers():
     _, edges, _ = parse("components")
     layer = layers()
-    files = {f"{PACKAGE[m]}/{m}.py" for m in MODULES} | NESTED | {f.relative_to(ROOT).as_posix() for f in (ROOT / "scripts").glob("*.py")}
+    files = {f"{PACKAGE[m]}/{m}.py" for m in MODULES} | NESTED | {f.relative_to(ROOT).as_posix() for f in (ROOT / "scripts").glob("*.py")} | {"er/__main__.py"}
     assert files == set(layer), f"components.puml: modules to place {sorted(files - set(layer))}, to remove {sorted(set(layer) - files)}"
     code = {(layer[a], layer[b]) for a, b in imports() if layer[a] != layer[b]}
     drawn = {(a, b) for a, b in edges if a in layer.values() and b in layer.values()}
@@ -357,7 +366,7 @@ def test_the_data_diagram_holds_the_run_folder_s_files_and_columns(runs):
     s, out, _ = runs
     uid = s.data.unique_id
     elements, _, fields = parse("data")
-    norm = lambda p: re.sub(r"part-\d+", "part-n", re.sub(r"^prepared/[0-9a-f]{16}/", "prepared/<key>/", p.relative_to(out).as_posix()))
+    norm = lambda p: re.sub(r"part-\d+", "part-n", re.sub(r"^index/[0-9a-f]{12}(-\d+)?", lambda m: "index/<id>" + ("-<n>" if m.group(1) else ""), p.relative_to(out).as_posix()))
     on_disk = {norm(f) for f in out.rglob("*") if f.is_file() and f.name != ".lock"}
     drawn = {label for kind, label in elements.values() if kind == "entity"} - TRANSIENT
     assert on_disk == drawn, f"data.puml: files to draw {sorted(on_disk - drawn)}, to remove {sorted(drawn - on_disk)}"
@@ -391,12 +400,6 @@ def test_each_svg_is_rendered_from_its_puml(puml):
         f"{svg.name} is older than its source: plantuml -tsvg {puml.relative_to(ROOT)}"
 
 
-def test_the_commands_reference_is_the_declarations():
-    from er.cli import reference
-    assert (ROOT / "docs" / "commands.md").read_text(encoding="utf-8") == reference() + "\n", \
-        "docs/commands.md differs from er/cli.py's declarations: .venv/bin/python scripts/document_commands.py"
-
-
 # ---------- the engineering rules (CONTRIBUTING.md) that code can check ----------
 
 def calls(tree: ast.AST) -> list[tuple[str, int]]:  # every call, by its dotted name: print, sys.exit, contextlib.redirect_stderr
@@ -405,20 +408,20 @@ def calls(tree: ast.AST) -> list[tuple[str, int]]:  # every call, by its dotted 
     return [(name(n.func), n.lineno) for n in ast.walk(tree) if isinstance(n, ast.Call)]
 
 
-def test_code_nayose_runs_never_prints_or_exits():
-    """Rule 1, errors are values: the command line (er/cli.py, its events written by er/emit.py) owns the terminal; the code its commands run raises
-    InputError or returns, so a job that calls it decides what to say and when to stop."""
-    runs = {f for f, box in layers().items() if f.startswith("er/") and box in ("tools_run", "run", "steps", "configuration")} - {"er/cli.py", "er/emit.py"}
+def test_code_a_job_runs_never_prints_or_exits():
+    """Rule 1, errors are values: the jobs' entry (er/__main__.py) owns the terminal; the code a job runs raises
+    InputError or returns, so whatever calls it decides what to say and when to stop."""
+    runs = {f for f, box in layers().items() if f.startswith("er/") and box in ("tools_run", "run", "steps", "configuration")} - {"er/__main__.py"}
     found = []
     for f in sorted(runs):
         tree = ast.parse((ROOT / f).read_text(encoding="utf-8"))
         found += [f"{f}:{line} {c}" for c, line in calls(tree) if c in ("print", "exit", "quit", "sys.exit", "os._exit")]
         found += [f"{f}:{n.lineno} raise SystemExit" for n in ast.walk(tree) if isinstance(n, ast.Raise) and "SystemExit" in ast.unparse(n)]
-    assert not found, f"print or exit outside er/cli.py and er/emit.py: {found}"
+    assert not found, f"print or exit outside er/__main__.py: {found}"
 
 
 def test_no_code_in_er_changes_process_wide_state():
-    """Rule 2: a process is shared: by the progress line's thread (er.emit), and by the code a job calls; streams, working folder and environment are every caller's."""
+    """Rule 2: a process is shared by the code a job calls: streams, working folder and environment are every caller's."""
     banned_calls = ("redirect_stdout", "redirect_stderr", "os.chdir", "os.putenv", "os.environ.update", "os.environ.pop",
                     "os.environ.setdefault", "os.environ.clear", "sys.path.insert", "sys.path.append")
     found = []

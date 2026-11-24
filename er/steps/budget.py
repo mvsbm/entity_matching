@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from er.candidates import estimate
-from er.config import InputError, TfidfNeighbours
+from er.config import InputError
 from er.engine.engine import Engine
 from er.steps.job import Job
 
@@ -34,8 +34,8 @@ def budget(job: Job, n: int, stop: bool = True) -> Budget:
     m = p.fs.budget.min_oversized()
     estimates = {}
     for kind, x in [*(("rule", k) for k in p.rules.blockers()), *(("generator", g) for g in p.fs.blockers)]:
-        est = estimate(x, "records", 0 if kind == "rule" else n, job.engine, oversized_from=m)
-        if kind == "generator" and not isinstance(x, TfidfNeighbours):  # TF-IDF's rests on the query, which the rules make
+        est = estimate(x, "records", job.engine, oversized_from=m)
+        if kind == "generator":
             estimates[x.name] = est
         rows.append(dict(kind=kind, name=x.name, **est))
     plan = pd.DataFrame(rows).assign(per_record=lambda d: (d["est_pairs"] / max(n, 1)).round(2),

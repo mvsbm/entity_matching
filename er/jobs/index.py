@@ -28,7 +28,6 @@ import shutil
 import threading
 import time
 import unicodedata
-from bisect import bisect_left
 from pathlib import Path
 
 import duckdb
@@ -39,22 +38,21 @@ import pyarrow.parquet as pq
 from er.engine.engine import Engine
 from er import folder
 from er.candidates import _filled, deletions_sql
-from er.config import DeletionKeys, hashed, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, lit, q
+from er.config import DeletionKeys, hashed, InputError, KeyBlocker, Pipeline, lit, q
 from er.intake import tidy
 from er.kind import Classifier, classifier
-from er.match import _gammas, levels, prior_bits, read_by, review_floor, search_floor
-from er.explain import run_model
+from er.match import _gammas, levels, prior_bits, read_by, review_floor, saved, search_floor
+from er.report import no_run
 from er.steps.write import run_config
 from er.settings import Settings, fit_to_file, present_fields
 from er.standardize import KATAKANA, SEPARATORS, prepare
 from er.engine.duckdb import connect
 
 INDEX = "index"
-SPARSE = 1024  # a sorted generator keeps every this many keys apart: a bisect there, then one read of at most this many rows
 ROWS = 2048  # a row group's rows in the records' database: a lookup reads whole row groups of each column it fetches, so small ones read little
 SHOWN = ("full_name", "person_name", "company_name", "address", "postal_code", "phone", "birth_date", "customer_id")  # a record, as a person reads it
 ALIKE = {"any_name": "name", "given_name__kana_fold": "name", "address__address": "address", "postal_code": "postal_code", "phone": "phone",
-         "customer_id": "customer_id", "birth_date": "birth_date", "address_code": "address_code"}  # shortcut: the columns config/final.toml's standardizing writes that tell tied records apart by prefix (_agree), each with its field; another method's are added here
+         "customer_id": "customer_id", "birth_date": "birth_date", "address_code": "address_code"}  # shortcut: the columns config/pipeline.toml's standardizing writes that tell tied records apart by prefix (_agree), each with its field; another method's are added here
 REVERSED = ("any_name",)  # also read by its end: a given name typed alone, the family name before it
 DIGITS = ("phone", "postal_code", "customer_id")  # fields held as digits: what a person writes between them (_typed), as the project's mapping drops it
 REBUILD = 0.1  # shortcut: the records added since the build reaching this share of it build it again, so the delta stays small; lower it if lookups slow
@@ -78,7 +76,7 @@ def _pipeline(ws: Path, s: Settings, p: Pipeline, columns: list[str]) -> Pipelin
     config = ws / "state" / "config.txt"
     if config.exists() and config.read_text(encoding="utf-8") != run_config(p, s):
         raise InputError(f"the pipeline or the column mapping changed since the run in {ws}: its records would be looked up otherwise",
-                         fix=f"run it again first: nayose resolve records FILE --workspace {ws} --overwrite")
+                         fix=f"build it again first: python -m er build FILE --out {ws} --overwrite")
     return to_file(s, p, columns)
 
 
@@ -87,8 +85,16 @@ def to_file(s: Settings, p: Pipeline, columns: list[str]) -> Pipeline:  # the pi
     return fit_to_file(p, s, [*columns, *(c for alts in s.columns.values() for alt in alts for c in alt if c not in columns and c.casefold() in folded)])[0]
 
 
+def run_model(out: Path) -> dict:  # the model the run in `out` scored with: its u from the file, else as fitted
+    scoring, fitted = out / "state" / "scoring.json", out / "state" / "model.json"
+    if not fitted.exists():
+        raise no_run(out)
+    model = json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads(fitted.read_text(encoding="utf-8"))
+    return saved(model, f"the run in {out}", fix=f"build it again: python -m er build FILE --out {out} --overwrite")
+
+
 def _tables(p: Pipeline) -> list[tuple[str, object]]:  # each index table of keys, by name: its generator or (stage, rule)
-    return [*((f"g{i}", b) for i, b in enumerate(p.fs.blockers) if isinstance(b, (KeyBlocker, DeletionKeys, SortedNeighbourhood))),
+    return [*((f"g{i}", b) for i, b in enumerate(p.fs.blockers) if isinstance(b, (KeyBlocker, DeletionKeys))),
             *((f"r{i}", (st, rule)) for i, st, rule in p.rules.each() if st.keys(rule))]
 
 
@@ -104,8 +110,8 @@ def _hashed(x: object, side: str = "") -> str:  # the SQL of a table's key hash,
 def _keys(x: object) -> list[str]:  # the columns a table's rows must all hold
     if isinstance(x, KeyBlocker):
         return [k.name for k in x.keys]
-    if isinstance(x, (DeletionKeys, SortedNeighbourhood)):
-        return [x.key.name, *(w.name for w in getattr(x, "within", ()))]
+    if isinstance(x, DeletionKeys):
+        return [x.key.name, *(w.name for w in x.within)]
     st, rule = x
     return list(st.keys(rule))
 
@@ -127,18 +133,12 @@ def _entities(ws: Path, uid: str) -> str:  # each record's entity, and whether t
 
 def _write(engine: Engine, into: str, src: str, p: Pipeline, ws: Path, uid: str, records: str | None = None) -> dict[str, list]:
     """The index's tables in the database `into`, of the records in `src`: the records (each with its entity and whether
-    the rules joined it; in the database `records`, else `into`), each key's (hash, uid), each window's (pos, key, uid)
-    with every SPARSE-th, each sorted. Each table's [rows, seconds]."""
+    the rules joined it; in the database `records`, else `into`), each key's (hash, uid), each sorted by hash. Each table's [rows, seconds]."""
     u, jobs, records = q(uid), {}, records or into
     jobs["records"] = [f"CREATE TABLE {records}.records AS SELECT {hashed(f's.{u}')} AS h, s.*, e.entity, coalesce(e.resolved, FALSE) AS resolved "
                        f"FROM {src} s LEFT JOIN {_entities(ws, uid)} e USING ({u}) ORDER BY h"]
     for name, x in _tables(p):
-        if isinstance(x, SortedNeighbourhood):  # positions in the run's own window order: key, then uid
-            k = q(x.key.name)
-            jobs[name] = [f"CREATE TABLE {into}.{name} AS SELECT row_number() OVER (ORDER BY {k}, {u}) AS pos, {k} AS key, {u} AS uid FROM {src} WHERE {k} IS NOT NULL ORDER BY pos",
-                          f"CREATE TABLE {into}.{name}_sparse AS SELECT pos, key, uid FROM {into}.{name} WHERE (pos - 1) % {SPARSE} = 0 ORDER BY pos"]
-        else:
-            jobs[name] = [f"CREATE TABLE {into}.{name} AS {_rows(x, src, uid)} ORDER BY h"]
+        jobs[name] = [f"CREATE TABLE {into}.{name} AS {_rows(x, src, uid)} ORDER BY h"]
 
     made = {}
     for name, sqls in jobs.items():
@@ -185,7 +185,7 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
     t0, uid = time.perf_counter(), s.data.unique_id
     parts = sorted((ws / "state" / "records").glob("part-*.parquet"))
     if not parts or not (ws / "gold.parquet").exists():
-        raise InputError(f"{ws} holds no run to index", fix=f"find matches first: nayose resolve records <file> --workspace {ws}")
+        raise InputError(f"{ws} holds no run to index", fix=f"build it first: python -m er build FILE --out {ws}")
     src = f"read_parquet([{', '.join(lit(x) for x in parts)}], union_by_name = true)"
     have = list(dict.fromkeys(c for f in parts for c in pq.read_schema(f).names))  # as union_by_name orders them
     fitted, model = _pipeline(ws, s, p, have), run_model(ws)
@@ -278,7 +278,7 @@ def _since(m: dict | None, now: dict) -> str | None:
     if m is None:
         return "no index yet"
     if m.get("indexing") != INDEXING:
-        return "built by another version of nayose"
+        return "built by another version of the code"
     was = m["built_on"]
     changed = sorted(f for f in set(was) | set(now) if f not in MOVES and was.get(f) != now.get(f) and not (f.startswith("state/records/") and f not in was))
     return f"{', '.join(changed[:3])}{' …' if len(changed) > 3 else ''} changed" if changed else None
@@ -302,7 +302,7 @@ def stale(ws: Path, m: dict | None = None) -> str | None:
     if m is None:
         return "no index yet"
     if m.get("indexing") != INDEXING:
-        return "built by another version of nayose"
+        return "built by another version of the code"
     now = _stamp(Path(ws))
     changed = sorted(set(now) ^ set(m["stamp"]) | {f for f in now if f in m["stamp"] and now[f] != m["stamp"][f]})
     return f"{', '.join(changed[:3])}{' …' if len(changed) > 3 else ''} changed since it was built" if changed else None
@@ -325,7 +325,7 @@ def _open(ws: Path, s: Settings, p: Pipeline) -> tuple[dict, Pipeline, Engine, C
     for again in (True, False):
         m = manifest(ws)
         if (why := stale(ws, m)) is not None:
-            raise InputError(f"the index of {ws}: {why}", fix=f"build it: nayose build index --workspace {ws}")
+            raise InputError(f"the index of {ws}: {why}", fix=f"build the run again: python -m er build FILE --out {ws} --overwrite")
         fitted, key = _pipeline(ws, s, p, m["columns"]), str(Path(ws).resolve())
         try:
             with _OPENING:
@@ -503,8 +503,8 @@ def _query(engine: Engine, s: Settings, p: Pipeline, values: dict | None, record
         given = [f"{c}={v}" for c, v in (values or {}).items() if v not in (None, "")]
         raise InputError(f"{', '.join(given)}: read as missing, as a file's would be" if given else "no value given",
                          fix="give a value a record holds: a name, a phone, a postal code")
-    rules, fs, probe = p.rules, p.fs, p.probe
-    normalized, used = [*rules.normalized(), *fs.normalized(), *probe.normalized()], rules.used() | fs.used() | probe.used()
+    rules, fs = p.rules, p.fs
+    normalized, used = [*rules.normalized(), *fs.normalized()], rules.used() | fs.used()
     return prepare(fs.standardize, row, normalized, used, kind=kind).astype("string")
 
 
@@ -516,7 +516,7 @@ def _sources(p: Pipeline, values: dict | None) -> list[str]:  # the columns a fi
 
 
 def _candidates(engine: Engine, p: Pipeline, uid: str, me: str, extra: int = 1) -> tuple[dict[str, set[str]], list[dict]]:
-    """The stored records each generator lists with the record (its blocks and windows), and per generator what was
+    """The stored records each generator lists with the record (its blocks), and per generator what was
     looked up: rows found, or why none (a key the record lacks, a block too big). `extra`: what the record adds to a
     block, 1 for a new one, 0 for a stored one looked up as new. O(G·(log N + b))."""
     found: dict[str, set[str]] = {}
@@ -531,12 +531,6 @@ def _candidates(engine: Engine, p: Pipeline, uid: str, me: str, extra: int = 1) 
     for name, x in tables.items():
         if isinstance(x, tuple):
             continue
-        if isinstance(x, SortedNeighbourhood):
-            near = _window(engine, name, x, me, engine.value(f"SELECT {q(x.key.name)} FROM qry"))
-            for v in near:
-                found.setdefault(v, set()).add(x.name)
-            checked.append(dict(key=x.name, found=len(near)) if near or _held(engine, x) else dict(key=x.name, found=0, why="the record has no value for it"))
-            continue
         hs = hashes.get(name, [])
         if not hs:
             checked.append(dict(key=x.name, found=0, why="the record has no value for it"))
@@ -549,37 +543,6 @@ def _candidates(engine: Engine, p: Pipeline, uid: str, me: str, extra: int = 1) 
                 found.setdefault(v, set()).add(x.name)
         checked.append(dict(key=x.name, found=len(rows), **({"big": [dict(h=h, records=sizes[(name, h)] + extra) for h in big]} if big else {})))
     return found, checked
-
-
-def _held(engine: Engine, x: SortedNeighbourhood) -> bool:  # whether the record has a value for the window's key
-    return engine.value(f"SELECT {q(x.key.name)} IS NOT NULL FROM qry")
-
-
-def _window(engine: Engine, name: str, x: SortedNeighbourhood, me: str, key: str | None) -> list[str]:
-    """The window-1 records on each side of the record in (key, uid) order, as the run's window places it among them:
-    the nearest of the index's and of what changed since, merged. O(log N + SPARSE)."""
-    if key is None or x.window < 2:
-        return []
-    w, before, after = x.window - 1, [], []
-    for db in ("ix", "dx"):
-        b, a = _near(engine, db, name, me, key, w)
-        before += b
-        after += a
-    return [u for _, u in sorted(before)[-w:]] + [u for _, u in sorted(after)[:w]]
-
-
-def _near(engine: Engine, db: str, name: str, me: str, key: str, w: int) -> tuple[list[tuple], list[tuple]]:
-    """The w (key, uid) rows of one database's window table before the record and the w after it: a bisect in the
-    sparse table, then one read of the rows between two of its keys. O(log N + SPARSE)."""
-    sparse = engine.rows(f"SELECT pos, key, uid FROM {db}.{name}_sparse ORDER BY pos")
-    at = bisect_left([(k, u) for _, k, u in sparse], (key, me))  # the first sparse row at or after the record
-    lo = sparse[at - 1][0] if at else 1
-    hi = sparse[at][0] if at < len(sparse) else lo + SPARSE
-    block = engine.rows(f"SELECT pos, key, uid FROM {db}.{name} WHERE pos BETWEEN {lo} AND {hi} ORDER BY pos")
-    start = next((pos for pos, k, u in block if (k, u) >= (key, me)), block[-1][0] + 1 if block else lo)  # its place: before the first row past it, else after the last
-    rows = engine.rows(f"SELECT key, uid FROM {db}.{name} WHERE pos BETWEEN {start - w - 1} AND {start + w} ORDER BY pos")
-    rows = [(k, u) for k, u in rows if u != me]  # a stored record looked up as new: the window as if it weren't there
-    return [r for r in rows if r < (key, me)][-w:], [r for r in rows if r > (key, me)][:w]
 
 
 def _gate(engine: Engine, p: Pipeline, model: dict, uid: str, me: str, found: dict[str, set[str]],

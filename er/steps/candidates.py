@@ -122,5 +122,5 @@ def _gated(job: Job, records: list[dict]) -> pd.DataFrame:  # the oversized bloc
         job.log.examples.append(f"{x.generator}: {x.value} holds {x.records:,} records: {x.decision}")
     if len(gated) > 5:
         kept = (gated["decision"] == "kept").sum()
-        job.log.notes.append(f"{len(gated):,} oversized blocks in all: {kept:,} kept, {len(gated) - kept:,} skipped (qa.md lists them)")
+        job.log.notes.append(f"{len(gated):,} oversized blocks in all: {kept:,} kept, {len(gated) - kept:,} skipped")
     return gated

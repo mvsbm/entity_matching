@@ -1,4 +1,4 @@
-"""Benchmark the chosen pipeline (config/final.toml) as it runs on real files: er.jobs.build, without labels, on DuckDB
+"""Benchmark the chosen pipeline (config/pipeline.toml) as it runs on real files: er.jobs.build, without labels, on DuckDB
 tables. Writes reports/benchmark.md. Nothing is re-tuned.
 
     .venv/bin/python scripts/benchmark.py                 # scenarios and the cost curve up to 60,000 entities
@@ -7,12 +7,10 @@ tables. Writes reports/benchmark.md. Nothing is re-tuned.
 The report starts with the command that wrote it.
 
 Quality: each scenario generates a population with design.generate (config/generator.toml, varied), fits λ and m on
-its train split without labels, resolves its test split with u measured on it, and compares the clusters with the truth;
-and estimates, without labels, the matches no key lists: the gap (design.gap) and the probe (design.probe), which run here
-only, where the keys are chosen.
+its train split without labels, resolves its test split with u measured on it, and compares the clusters with the truth.
 Person or company: populations with every kind problem on (design.generate.kind_problems) and one name column, resolved
 with names routed by the truth, by the file's flag alone, and by the kind step.
-Cost: populations of growing size, each resolved by nayose resolve records in a process of its own, so the peak memory is
+Cost: populations of growing size, each resolved by `python -m er build` in a process of its own, so the peak memory is
 that run's alone. Past the memory limit (--memory-limit, else config/settings.toml [compute]) DuckDB spills to disk.
 """
 import argparse
@@ -30,13 +28,11 @@ import pandas as pd
 
 from er.config import load_pipeline
 from design.evaluate import cluster_metrics, false_pairs, labelled, pair_metrics
-from design.gap import gap
 from design.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec, split_by_entity
 from er.io import markdown, read_parquet
-from design.probe import probe
 from er.report import qa
 from er.steps.fit import fit
-from er.steps.job import Ran, start
+from er.steps.job import start
 from er.steps.load import load
 from er.jobs.build import build
 from er.settings import load_settings, shared_name
@@ -44,7 +40,7 @@ from er.settings import load_settings, shared_name
 logging.disable(logging.WARNING)
 S = load_settings()
 UID, ENT = S.data.unique_id, S.data.entity_id
-FINAL = load_pipeline(S.root / "config" / "final.toml", S.standardize, S.chains, S.columns)
+FINAL = load_pipeline(S.root / "config" / "pipeline.toml", S.standardize, S.chains, S.columns)
 SPEC, SPLIT = load_spec(S.root / "config" / "generator.toml")
 PERSONS, COMPANIES, TOWNS = load_reference(S.paths["reference"])
 OUT = S.paths["artifacts"] / "benchmark"
@@ -79,19 +75,9 @@ def quality(run: Path, truth: pd.DataFrame) -> dict:
                 false_links=int(false_pairs(x[f"{UID}_l"], x[f"{UID}_r"], entity, household).sum()))
 
 
-def unlisted(run: Ran) -> dict:
-    """The matches the keys miss, estimated without labels on a run that has clustered: the gap at the model's line
-    (design.gap) and the probe's, summed over its strata (design.probe), each with its 95% interval."""
-    line = next(x for x in gap(run)["thresholds"] if x["bits"] == run.pipeline.fs.min_match_weight)
-    strata = probe(run)
-    total = lambda k: sum(x[k] or 0 for x in strata)
-    return dict(gap_at_line=f"{line['missed']:,} ({line['missed_lo']:,}–{line['missed_hi']:,})",
-                probe_missed=f"{total('missed'):,} ({total('low'):,}–{total('high'):,})")
-
-
 def scenarios() -> pd.DataFrame:
     base = SPEC
-    measured = FINAL.fs.model.prior_recall  # what choose.py measured on train
+    measured = FINAL.fs.model.prior_recall  # as config/pipeline.toml sets it
     with_prior = lambda x: replace(FINAL, fs=replace(FINAL.fs, model=replace(FINAL.fs.model, prior_recall=x * measured)))
     variants = {"as reported (seed 0)": (base, FINAL), "seed 1": (replace(base, seed=1), FINAL), "seed 2": (replace(base, seed=2), FINAL),
                 "typos doubled": (replace(base, name_typo_rate=2 * base.name_typo_rate, phone_typo_rate=2 * base.phone_typo_rate,
@@ -115,8 +101,8 @@ def scenarios() -> pd.DataFrame:
         job.pipeline = loaded.pipeline
         model = fit(job, loaded.n).model
         job.engine.close()
-        run = build(d / "test.parquet", OUT / f"scenario_{i}", S, p, model=model, overwrite=True)  # this script's own folders
-        rows.append(dict(scenario=name, **quality(OUT / f"scenario_{i}", truth), **unlisted(run)))
+        build(d / "test.parquet", OUT / f"scenario_{i}", S, p, model=model, overwrite=True)  # this script's own folders
+        rows.append(dict(scenario=name, **quality(OUT / f"scenario_{i}", truth)))
         print(rows[-1], flush=True)
     return pd.DataFrame(rows)
 
@@ -134,7 +120,7 @@ def kinds(entities: int) -> pd.DataFrame:
     and a true company."""
     std, reg = S.standardize, load_registry(S.paths["reference"])
     s = shared_name(S, "NAME_KANA")
-    p = load_pipeline(S.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
+    p = load_pipeline(S.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)
     flag_only = replace(p, kind=replace(p.kind, trust_flag=True))
     rows = []
     for i, (name, problems) in enumerate(FLAGS.items()):
@@ -165,7 +151,7 @@ def kinds(entities: int) -> pd.DataFrame:
 
 
 def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
-    """Each population written to Parquet and resolved by nayose resolve records, fitted on the file itself, as a real run."""
+    """Each population written to Parquet and resolved by `python -m er build`, fitted on the file itself, as a real run."""
     rows = []
     for n in entities:
         records, truth = population(replace(SPEC, entities=n))
@@ -175,8 +161,8 @@ def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
         size = len(records)
         del records
         compute = [f"memory_limit={memory_limit}"] if memory_limit else []
-        shutil.rmtree(d / "run", ignore_errors=True)  # every step measured: no cleaned records kept from the run before
-        done = subprocess.run([sys.executable, "-m", "er.cli", "resolve", "records", str(d / "records.parquet"), "--workspace", str(d / "run"),
+        shutil.rmtree(d / "run", ignore_errors=True)  # a fresh folder: the run measured whole
+        done = subprocess.run([sys.executable, "-m", "er", "build", str(d / "records.parquet"), "--out", str(d / "run"),
                                "--overwrite", "--compute", *compute, f"temp_directory={OUT / 'spill'}"], cwd=S.root, capture_output=True, encoding="utf-8", errors="replace")
         if done.returncode:
             print(f"{size:,} records: failed\n{done.stderr[-2000:]}", flush=True)
@@ -205,16 +191,13 @@ def main() -> None:
     robust, kind, curve = scenarios(), kinds(20_000), cost(args.entities, args.memory_limit)
     limit = args.memory_limit or "DuckDB's default (80% of RAM)"
     report = ["# Benchmark", "",
-              f"Written by `{shlex.join(['scripts/benchmark.py', *sys.argv[1:]])}`: `config/final.toml` through `jobs.build.build`, the run "
+              f"Written by `{shlex.join(['scripts/benchmark.py', *sys.argv[1:]])}`: `config/pipeline.toml` through `jobs.build.build`, the run "
               "without labels on DuckDB tables, on generated populations. Nothing is re-tuned.", "",
               "## Quality: scenarios", "",
               "Each population's test split, with λ and m fitted on its train split without labels and u measured on the test split, as a run does. `false_merges` are pairs of "
               "records in one cluster that are two entities; `false_links` are the model's links between two entities, and "
               "`expected_false` the false links the model expects among its own (the sum of 1 − match probability), which a run "
-              "reports without labels. `gap_at_line` and `probe_missed` estimate, without labels, the matches no key lists, with their "
-              "95% intervals: the gap pairs a sample of records with every record that shares a value or a near one (`design.gap`); "
-              "the probe samples pairs within a phone or a postal area (`design.probe`). They run here, where the keys are chosen, "
-              "not in a run.", "", markdown(robust), "",
+              "reports without labels.", "", markdown(robust), "",
               "## Person or company: end to end", "",
               "Populations with one name column for every kind (`design.generate.kind_problems`): real company names from the registry, "
               "held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of "
@@ -225,7 +208,7 @@ def main() -> None:
               "a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; "
               "`wrong_*` the records called 2 that are persons and called 1 that are companies.", "", markdown(kind), "",
               f"## Cost: files of growing size (time grows like N^{curve.attrs['alpha']})", "",
-              f"Each file is resolved by `nayose resolve records` in a process of its own, fitted on the file itself; DuckDB memory limit: "
+              f"Each file is resolved by `python -m er build` in a process of its own, fitted on the file itself; DuckDB memory limit: "
               f"{limit}. Peak memory is the process's, Python included. Step columns are seconds. `fit` (on {FINAL.fit_rows:,} "
               f"records) and the u sample of the file inside it ({FINAL.fs.model.u_max_pairs:,.0f} pairs) grow far slower than the file (the fit's sample is fixed; only u's exact counts read every record), so at "
               f"these sizes the total grows far slower than N. Above {len(PERSONS):,} entities personas repeat, so those rows measure "

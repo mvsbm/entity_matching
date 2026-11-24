@@ -8,32 +8,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from er.engine.duckdb import DuckDB
-from er.config import InputError
-
-
-def test_a_sorted_window_places_the_record_as_the_run_s_window_does_at_either_end_and_among_equal_keys():
-    import duckdb
-    from er.jobs import index
-    from er.config import Key, SortedNeighbourhood
-    rng = np.random.default_rng(0)
-    x = SortedNeighbourhood(name="w", key=Key("k"), window=4)
-    for n in (1, 5, 1024, 1025, 1500, 2049):
-        stored = [(f"k{rng.integers(0, n // 3 + 2):05d}", f"r{i:05d}") for i in range(n)]  # many equal keys: the ID orders them
-        later = rng.random(n) < 0.1  # added since the index was built: the window of both
-        engine = DuckDB(duckdb.connect())
-        for db, part in (("ix", [r for r, x in zip(stored, later) if not x]), ("dx", [r for r, x in zip(stored, later) if x])):
-            engine.run(f"ATTACH ':memory:' AS {db}")
-            engine.register("src", pd.DataFrame(part, columns=["k", "uid"], dtype="string"))
-            engine.run(f"CREATE TABLE {db}.g0 AS SELECT row_number() OVER (ORDER BY k, uid) AS pos, k AS key, uid FROM src ORDER BY pos")
-            engine.run(f"CREATE TABLE {db}.g0_sparse AS SELECT pos, key, uid FROM {db}.g0 WHERE (pos - 1) % {index.SPARSE} = 0 ORDER BY pos")
-            engine.unregister("src")
-        order = sorted(stored)
-        for key, me in [("a", "q"), ("zzz", "q"), (order[0][0], "q"), (order[-1][0], "q"), (order[n // 2][0], "r99999"), *order[:3], order[-1]]:
-            rest = [r for r in order if r[1] != me]  # a stored record looked up as new: the window as if it weren't there
-            at = sum(r < (key, me) for r in rest)
-            want = [u for _, u in rest[max(0, at - 3):at] + rest[at:at + 3]]
-            assert index._window(engine, "g0", x, me, key) == want, (n, key, me)
 
 
 def answers(ws, s, p, asks: list[tuple[dict | None, str | None]]) -> list[dict]:  # what each lookup answers, all of it but its time
@@ -46,11 +20,15 @@ def answers(ws, s, p, asks: list[tuple[dict | None, str | None]]) -> list[dict]:
 
 
 def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_and_the_index_kept_up_to_date_answers_as_one_built_again(tmp_path, population, monkeypatch):
-    from er import brief, cli
+    from er.__main__ import main
+    from er.config import load_pipeline
     from er.jobs import index
+    from er.jobs.build import build, indexed
+    from er.jobs.decide import decide
+    from er.jobs.update import update
+    from er.jobs.index import run_model
     from er.candidates import candidates
     from er.match import review_floor, score_fs
-    from er.explain import run_model
     from er.engine.duckdb import connect
     s, p, g = population
     uid, rng = s.data.unique_id, np.random.default_rng(0)
@@ -61,10 +39,8 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     df[~held].to_parquet(tmp_path / "first.parquet", index=False)
     df[held].to_parquet(tmp_path / "new.parquet", index=False)
     ws = tmp_path / "ws"
-    assert cli.main(["resolve", "records", str(tmp_path / "first.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
-    with pytest.raises(InputError, match="no index yet"):
-        cli.match_record({"workspace": str(ws), "values": ["PHONE_NUM_4=1234"], "record": None, "from": None, "count": None}, None)
-    s2, p2, _ = cli.setup({"workspace": str(ws)})
+    s2, p2 = s, load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)  # as python -m er runs it
+    assert build(tmp_path / "first.parquet", ws, s2, p2).index["records"] == (~held).sum() and index.stale(ws) is None  # the run, then its index
     built = index.build(ws, s2, p2)
     assert built["records"] == (~held).sum()
 
@@ -119,17 +95,15 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     engine.close()
 
     rec = df[held].iloc[0]
-    said = cli.match_record({"workspace": str(ws), "values": [f"{c}={rec[c]}" for c in ("FULL_NAME_KANA", "PHONE_NUM_4") if pd.notna(rec[c])],
-                             "record": None, "from": "-1000", "count": "5"}, None)
+    said = index.look_up(ws, s2, p2, values={c: rec[c] for c in ("FULL_NAME_KANA", "PHONE_NUM_4") if pd.notna(rec[c])}, at_least=-1000, most=5)
     assert said["found"] >= len(said["entities"]) and len(said["entities"]) <= 5 and said["seconds"] and said["record"]["full_name"]
     gold = pd.read_parquet(ws / "gold.parquet")
     pairs = gold[gold.duplicated("cluster_id", keep=False)].sort_values(uid)
     if len(pairs):  # a stored record, as if new: its entity's other records, itself left out
         one = pairs.iloc[0]
-        got = cli.match_record({"workspace": str(ws), "values": None, "record": one[uid], "from": "-1000", "count": "50"}, None)
+        got = index.look_up(ws, s2, p2, record=one[uid], at_least=-1000, most=50)
         assert one["cluster_id"] in {e["entity"] for e in got["entities"]} and one[uid] not in {e["record"] for e in got["entities"]}
-    with pytest.raises(InputError, match="one of them"):
-        cli.match_record({"workspace": str(ws), "values": ["PHONE_NUM_4=1"], "record": "x", "from": None, "count": None}, None)
+    assert main(["lookup", "--out", str(ws), "PHONE_NUM_4=1", "--record", "x"]) == 2  # one of them, never both
 
     before = (ws / "index" / "manifest.json").read_text(encoding="utf-8")
     monkeypatch.setattr(index, "_publish", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))  # its files all written, none yet in place
@@ -146,28 +120,28 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     asks = [*((None, r) for r in first[uid].head(4)), *((None, r) for r in stored[uid].head(3)), *pick(first, 3), *pick(later, 3),
             *(({c: r[c] for c in sources if c in r and pd.notna(r[c])}, None) for _, r in later.head(3).iterrows())]
 
-    def kept(*words: str) -> dict:  # a command that changes the run, then what its index answers, against an index of all of it built again
-        assert cli.main([*words, "--workspace", str(ws), "--format", "json"]) == 0
+    def kept(job, path) -> dict:  # a job that changes the run, then what its index answers, against an index of all of it built again
+        job(path, ws, s2, p2)
         m = index.manifest(ws)
-        assert index.stale(ws) is None  # brought up to date by the command
+        assert index.stale(ws) is None  # brought up to date by the job
         again = tmp_path / f"again-{m['updates']}"
         shutil.copytree(ws, again, ignore=shutil.ignore_patterns(index.INDEX))
         index.build(again, s2, p2)
-        assert answers(ws, s2, p2, asks) == answers(again, s2, p2, asks), words  # what changed, written beside it, answers as one built again
+        assert answers(ws, s2, p2, asks) == answers(again, s2, p2, asks), path  # what changed, written beside it, answers as one built again
         return m
 
     monkeypatch.setattr(index, "REBUILD", 1.0)  # each change written beside the same index, one after another
-    m = kept("add", "records", str(tmp_path / "first_new.parquet"))
+    m = kept(update, tmp_path / "first_new.parquet")
     assert m["added"] == len(first) and m["updates"] == 1 and m["records"] == (~held).sum()  # written beside the index, not built again
     entity = pd.read_parquet(ws / "gold.parquet").set_index(uid)["cluster_id"]
     pairs = pd.read_parquet(ws / "scored")  # a pair of stored records in two entities: a "same" joins them
     stored_pair = pairs[~pairs[f"{uid}_l"].isin(first[uid]) & ~pairs[f"{uid}_r"].isin(first[uid])
                         & (pairs[f"{uid}_l"].map(entity) != pairs[f"{uid}_r"].map(entity))].iloc[0]
     pd.DataFrame({f"{uid}_l": [stored_pair[f"{uid}_l"]], f"{uid}_r": [stored_pair[f"{uid}_r"]], "decision": ["match"]}).to_parquet(tmp_path / "same.parquet", index=False)
-    m = kept("apply", "decisions", "--file", str(tmp_path / "same.parquet"))
+    m = kept(decide, tmp_path / "same.parquet")
     assert m["moved"] >= 1 and m["added"] == len(first) and m["updates"] == 2  # the entity the decision joined, moved; the records added, still beside it
     monkeypatch.setattr(index, "REBUILD", 0.01)
-    assert cli.main(["add", "records", str(tmp_path / "later_new.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
+    update(tmp_path / "later_new.parquet", ws, s2, p2)
     assert index.manifest(ws)["records"] == len(df) and index.manifest(ws)["added"] == 0 and index.stale(ws) is None  # past REBUILD of it: built again
     monkeypatch.undo()
     assert {f.name for f in (ws / "index").iterdir()} == {"manifest.json", *(f for f in index.manifest(ws)["files"].values() if f)}  # the files it names, no other
@@ -179,7 +153,7 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     assert index.look_up(ws, s2, p2, record=stored[uid].iloc[0], at_least=-1e9)["index"]["records"] == len(df)  # it reads the new one
     monkeypatch.undo()
     monkeypatch.setattr(index, "update", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
-    assert cli.indexed({"workspace": str(ws)}) == dict(error="OSError: disk full", fix=f"build it: {brief.nayose('build', 'index', '--workspace', ws)}")  # the run stands: why its index waits
+    assert indexed(ws, s2, p2, index.update) == dict(error="OSError: disk full", fix="run the job again")  # the run stands: why its index waits
 
 
 def _records(ws, uid: str, entity: str) -> set[str]:  # an entity's records, as the run holds them
@@ -188,17 +162,17 @@ def _records(ws, uid: str, entity: str) -> set[str]:  # an entity's records, as 
 
 
 def test_a_look_up_that_reaches_nothing_says_how_near_it_came_and_reads_values_typed_otherwise_as_records_hold_them(tmp_path, population, monkeypatch):
-    from er import cli
+    from er.config import load_pipeline
     from er.jobs import index
+    from er.jobs.build import build
     s, p, g = population
     df = g.df.dropna(subset=["FULL_NAME_KANA"])
     uid, dummy = s.data.unique_id, df.head(80).copy()  # a placeholder name on 80 customers: read as missing in every field built from its columns
     dummy[uid], dummy["CIF_ID"], dummy["FULL_NAME_KANA"] = [f"D{i}" for i in range(80)], [f"9{i:07d}" for i in range(80)], "テストタロウ"
     pd.concat([g.df, dummy], ignore_index=True).to_parquet(tmp_path / "all.parquet", index=False)
     ws = tmp_path / "ws"
-    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
-    assert cli.main(["build", "index", "--workspace", str(ws), "--format", "json"]) == 0
-    s2, p2, _ = cli.setup({"workspace": str(ws)})
+    s2, p2 = s, load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)  # as python -m er runs it
+    build(tmp_path / "all.parquet", ws, s2, p2)  # its index with it
     assert json.loads((ws / "state" / "placeholders.json").read_text(encoding="utf-8")).get("person_name")
     stored = pd.read_parquet(ws / "state" / "records").set_index(uid)
     looked = index.look_up(ws, s2, p2, values={"FULL_NAME_KANA": "テストタロウ"}, at_least=-1e9)["record"]
@@ -209,7 +183,7 @@ def test_a_look_up_that_reaches_nothing_says_how_near_it_came_and_reads_values_t
     assert r["closest"]["shown"].get("full_name", "").startswith(name[:2])  # of those tied, one named as typed
     typed = {"FULL_NAME_KANA": "まつもと", "PHONE_NUM_4": "１２-３４", "BIRTH_DATE": "93-05-25"}
     assert index._folded(s2, typed) == typed  # its mapping prepares them so already: one reading
-    old = cli.setup({"workspace": str(ws)})[0]
+    old = s2
     old = replace(old, standardize=replace(old.standardize, derived=tuple(replace(d, normalize=tuple(x for x in d.normalize if x not in ("katakana", "strip_separators")))
                                                                            for d in old.standardize.derived)))
     assert index._folded(old, typed) == {"FULL_NAME_KANA": "マツモト", "PHONE_NUM_4": "1234", "BIRTH_DATE": "93-05-25"} and index._typed("〒", "digits") == "〒"  # a mapping without them

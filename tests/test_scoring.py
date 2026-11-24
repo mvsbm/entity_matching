@@ -8,16 +8,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from er.config import (Budget, Comparator, Comparison, FSModel, Key, Level, Resolver, Rule, RulesSpec, Stage, ThresholdRule)
-from design.evaluate import adopt, fp_upper, paired_test, wilson
-from er.match import exact_u, parameters, rule_edges, sample_u, score_fs, train_fs, u_values, waterfall
-from design.pipeline import (accept_curve, clustered, select_threshold)
+from er.config import (Budget, Comparator, Comparison, FSModel, Key, Level, Resolver, Rule, RulesSpec, Stage)
+from design.evaluate import fp_upper, paired_test, wilson
+from er.match import exact_u, parameters, rule_edges, sample_u, score_fs, train_fs
 from er.settings import load_settings
 from er.standardize import normalize
 from er.engine.duckdb import connect
-from design.tune import pick_within_noise
 
-from conftest import PAIR, UID, model
+from conftest import PAIR, UID, clustered, model
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SPLINK = json.loads((FIXTURES / "splink-5.0.0.json").read_text(encoding="utf-8"))  # what Splink 5.0.0 gave, recorded
@@ -35,7 +33,7 @@ def test_the_spill_folder_is_the_person_s_own_or_refused(tmp_path, monkeypatch):
     from er.config import InputError
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     engine = connect()
-    spill = tmp_path / f"nayose-spill-{getpass.getuser()}"
+    spill = tmp_path / f"er-spill-{getpass.getuser()}"
     assert engine.value("SELECT current_setting('temp_directory')") == str(spill) and spill.stat().st_mode & 0o777 == 0o700
     spill.chmod(0o755)  # open to others: spilled records could be read
     with pytest.raises(InputError, match="isn't yours alone"):
@@ -61,7 +59,7 @@ def test_a_u_sample_is_drawn_once_per_set_of_records(engine, records, monkeypatc
     engine.register("er_shuffled", records.sample(frac=1, random_state=0))  # the same records as a table, in another order
     table = M.scored_sample(model(), "er_shuffled", engine, UID)
     assert sampled == []
-    assert table == M.scored_sample(model(), records, engine, UID) == u_values(other) == u_values(fresh)
+    assert table == M.scored_sample(model(), records, engine, UID) == u_of(other) == u_of(fresh)
     M.SCORED_U.clear()
     again = train_fs(model("labels"), records, engine, UID, labels)
     assert sampled == ["name", "phone"] and parameters(fresh).fillna(0).round(12).equals(parameters(again).fillna(0).round(12))
@@ -85,33 +83,6 @@ def test_a_u_sample_counted_in_one_pass_gives_splink_s_u_to_the_last_bit(engine)
         drawn = gaps[[int(hashlib.md5(f"{x}_{m.seed}".encode()).hexdigest()[:15], 16) % 1_000_000_000 < max(1, round(share * 1e9)) for x in gaps[UID]]]
         assert 0 < len(drawn) < len(gaps)
         assert ours == sample_u(replace(m, u_max_pairs=1e9), list(m.comparisons), drawn.reset_index(drop=True), engine, UID)
-
-
-def test_a_u_sample_kept_by_a_workspace_is_read_again_and_drawn_again_once_what_it_rests_on_changes(engine, records, monkeypatch, tmp_path):
-    import er.match as M
-    kept = tmp_path / "u_sampled.json"
-    M.SCORED_U.clear()
-    first = M.scored_sample(model(), records, engine, UID, kept=kept)
-    assert kept.is_file() and len(json_loads(kept)) == len(model().comparisons)
-    sampled, real = [], M.sample_u
-    monkeypatch.setattr(M, "sample_u", lambda m, comps, *a: sampled.extend(c.name for c in comps) or real(m, comps, *a))
-    M.SCORED_U.clear()  # another process: nothing in memory
-    assert M.scored_sample(model(), records, engine, UID, kept=kept) == first and sampled == []  # read, never drawn
-    monkeypatch.setattr(M, "U_CODE", "another")  # the code that samples changed: drawn again, the same u
-    M.SCORED_U.clear()
-    assert M.scored_sample(model(), records, engine, UID, kept=kept) == first and sampled == ["name", "phone"]
-    kept.write_text("{cut short", encoding="utf-8")  # a copy that can't be read: drawn again, never a failure
-    M.SCORED_U.clear()
-    assert M.scored_sample(model(), records, engine, UID, kept=kept) == first
-    monkeypatch.setattr(M, "U_KEPT", 2)
-    for seed in range(3):  # bounded: the newest U_KEPT
-        M.scored_sample(replace(model(), seed=seed), records, engine, UID, kept=kept)
-    assert len(json_loads(kept)) == 2
-
-
-def json_loads(f):
-    import json
-    return json.loads(f.read_text(encoding="utf-8"))
 
 
 def test_each_distinct_value_normalized_once_gives_the_column_value_by_value_and_the_keys_normalizers_fold_as_said():
@@ -183,24 +154,10 @@ def test_pairs_score_as_splink_s_predict_scored_them_to_the_last_bit(engine):
         assert (both[f"{c}_native"] == both[f"{c}_registered"]).all(), c
 
 
-def test_waterfall_bits_sum_to_the_match_weight(engine, records):
-    model_json = train_fs(model(), records, engine, UID)
-    pairs = pd.DataFrame({"uid_l": ["001a", "000a", "000a"], "uid_r": ["001b", "000b", "059b"]}, dtype="string")
-    scored = score_fs(model_json, records, pairs, engine, UID)  # exact name, close name, different entity
-    for _, row in scored.iterrows():
-        bits = waterfall(model_json, {c: row[f"gamma_{c}"] for c in ("name", "phone")}, len(records))
-        assert bits["bits"].sum() == pytest.approx(row["match_weight"])
-
-
 def test_a_saved_model_adjusting_by_term_frequency_is_refused_where_it_is_read(tmp_path):
-    from er.cli import model_from
     from er.config import InputError
-    from er.explain import run_model
+    from er.jobs.index import run_model
     tf = {"comparisons": [], "er": {"fit_rows": 10, "tf": {"name": {"サトウ": 0.1}}}}
-    (tmp_path / "model.json").write_text(json.dumps(tf), encoding="utf-8")
-    with pytest.raises(InputError, match="term frequency") as e:
-        model_from(str(tmp_path / "model.json"))
-    assert e.value.fix == "leave --model out to fit one on the file"
     (tmp_path / "state").mkdir()
     (tmp_path / "state" / "model.json").write_text(json.dumps(tf), encoding="utf-8")
     with pytest.raises(InputError, match="term frequency"):  # a workspace's: the index, sizes and scoring again read it so
@@ -218,6 +175,13 @@ def test_prior_is_rescaled_to_the_scored_set_size(engine, records):
     expected = math.log2(scaled / (1 - scaled)) - math.log2(lam / (1 - lam))
     assert score_fs(model_json, padded, PAIR, engine, UID)["match_weight"].item() - \
         score_fs(model_json, records, PAIR, engine, UID)["match_weight"].item() == pytest.approx(expected)
+
+
+def u_of(model_json: dict) -> dict:  # the u a fit sampled: each level's but those filled with a bound
+    filled = {tuple(x) for x in model_json["er"]["filled"]["u"]}
+    return {c["output_column_name"]: {lv["label_for_charts"]: lv["u_probability"] for lv in c["comparison_levels"]
+                                      if not lv.get("is_null_level") and (c["output_column_name"], lv["label_for_charts"]) not in filled}
+            for c in model_json["comparisons"]}
 
 
 def test_shared_connection_gives_the_same_rules_and_clusters_as_a_fresh_one(engine):
@@ -244,42 +208,9 @@ def test_uncertainty():
     assert (t["TP_gains"], t["TP_losses"], t["FP_added"]) == (1, 0, 1)
 
 
-def test_threshold_rule_takes_the_first_safe_weight_plus_margin():
-    curve = pd.DataFrame(dict(min_match_weight=[0, 2, 4, 6, 8], pairs_FP=[3, 1, 0, 0, 0],
-                              stage_fp_rate_hi=[0.03, 0.02, 0.016, 0.019, 0.02]))
-    weight, _ = select_threshold(curve, ThresholdRule(grid=(0, 2, 4, 6, 8), max_fp=0, max_fp_rate_hi=0.05, margin_steps=1))
-    assert weight == 6
-
-
-def test_accept_curve_counts_pairs_over_folds():
-    class Fold:  # accept_curve reads only the scored pairs
-        def __init__(self, weights: list[float], fp: list[bool]):
-            self.scored = pd.DataFrame(dict(match_weight=weights, fp=fp, named=True))
-    curve = accept_curve([Fold([1, 5, 9], [True, False, False]), Fold([3, 7], [True, False])], [0, 4, 8])
-    assert curve[["accepted", "pairs_FP"]].to_numpy().tolist() == [[5, 2], [3, 0], [1, 0]]
-    assert curve["stage_fp_rate_hi"].iloc[1] == pytest.approx(fp_upper(0, 3))
-
-
-def test_adopt_by_rule():
-    sel = dict(TP_gains=10, TP_losses=0, p=0.002, FP_added=0, FP_removed=0)
-    val = dict(TP_gains=1, TP_losses=0, FP_added=0, FP_removed=0)
-    assert adopt("better", sel, val, 0.05)
-    assert not adopt("better", sel | dict(FP_added=1), val, 0.05)       # adds a false pair on the selection set
-    assert not adopt("better", sel | dict(p=0.2), val, 0.05)            # gain within noise
-    assert not adopt("better", sel, val | dict(TP_losses=2), 0.05)       # loses on val
-    assert adopt("cheaper", dict(sel, TP_gains=0, p=1.0), val, 0.05)
-    assert not adopt("cheaper", sel | dict(TP_losses=1), val, 0.05)
-
-
-def test_pick_within_noise_prefers_the_cheaper_tie():
-    front = pd.DataFrame(dict(recall=[0.90, 0.91], lo=[0.87, 0.88], hi=[0.93, 0.94], ok=[True, True], cost=[100, 900]))
-    assert pick_within_noise(front, "recall", "lo", "hi", "ok", "cost") == 0
-    assert pick_within_noise(front.assign(ok=False), "recall", "lo", "hi", "ok", "cost") is None  # no fallback to failing rows
-
-
 def test_settings_resolve_paths_from_any_working_folder(monkeypatch):
     root = load_settings().root
-    monkeypatch.chdir(root / "notebooks")
+    monkeypatch.chdir(root / "config")
     assert load_settings().data.bronze_dir == root / "data" / "medallion" / "bronze"
 
 
@@ -474,7 +405,7 @@ def test_one_name_in_a_person_field_and_the_company_field_is_compared_on_its_kin
     from er.settings import load_settings
     from er.standardize import prepare
     s = load_settings()
-    p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
+    p = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)
     records = pd.DataFrame({"CONT_ID": ["1", "2", "3"], "FULL_NAME_KANA": ["ヤマダタロウ", None, "スズキハナコ"], "O_PERSON_NAME_KANA": [None] * 3,
                             "LAST_NAME_KANA": [None] * 3, "GIVEN_NAME_KANA": [None] * 3,
                             "NYS_CNV_P_NAME_KANA": ["ﾔﾏﾀﾞﾀﾛｳ", "ｶﾌﾞｼｷｶﾞｲｼｬﾔﾏﾀﾞｼｮｳｼﾞ", "ﾀﾅｶｼｮｳｼﾞ"]}, dtype="string")

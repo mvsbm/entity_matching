@@ -1,4 +1,4 @@
-[README](../../README.md) · **Guide:** **1 Task** · [2 Variants](02-the-same-fact-written-differently.md) · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · [6 Measuring](06-measuring-and-choosing.md) · [7 Kinds](07-person-or-company.md)
+[README](../../README.md) · **Guide:** **1 Task** · [2 Variants](02-the-same-fact-written-differently.md) · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · [7 Kinds](07-person-or-company.md)
 
 # 1. Entity matching, entity resolution, and our task
 
@@ -45,7 +45,7 @@ Research on the problem goes back more than sixty years. Four ideas shape this r
 
 **Weighing the evidence.** In 1959, Howard Newcombe and colleagues linked vital records (births, marriages and deaths) by computer. Their insight was that some agreements say more than others: sharing a rare surname is stronger evidence than sharing a common one. In 1969, Ivan Fellegi and Alan Sunter turned this into a mathematical model. Each field adds evidence for or against a match, and a pair is accepted when the total is high enough. They proved that this is the best possible rule, as long as the fields are independent of one another. *This is the model we use ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).*
 
-**Comparing only likely pairs.** The number of pairs grows with the square of the file size. Database researchers answered with *blocking*: only compare records that already share something, such as a phone number or a postcode. Surveys by Peter Christen (2012) and by George Papadakis and colleagues (2020) describe dozens of variants. *We use two of them, and measure two more ([chapter 3](03-far-too-many-pairs.md)).*
+**Comparing only likely pairs.** The number of pairs grows with the square of the file size. Database researchers answered with *blocking*: only compare records that already share something, such as a phone number or a postcode. Surveys by Peter Christen (2012) and by George Papadakis and colleagues (2020) describe dozens of variants. *We use two of them, and [chapter 3](03-far-too-many-pairs.md) says why two more are left out.*
 
 **Learning from labelled examples.** From the 2000s on, researchers trained classifiers on pairs that people had labelled "match" or "not a match". Magellan (2016) packaged this into a toolkit. The `dedupe` library asks a person to label only the most useful pairs. DeepMatcher (2018) brought in deep learning and found it helps most with messy text, but not with tidy records like ours. Ditto (2020) used pre-trained language models and needed about half as many labels as earlier methods.
 
@@ -102,7 +102,7 @@ On real data there are no labelled examples. So the method must learn without la
 | C5 | Evidence is partial and uncertain | one true pair has a name typo, a phone typo and a new CIF ID at once | add up evidence from every field, in bits | [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C6 | Fields are often empty | some columns are filled for only 65% of records | an empty field counts as no evidence either way | [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C7 | Answers about pairs don't make groups | A matches B, and B matches C | group with connected components, behind a strict threshold | [5](05-uncertain-evidence-fellegi-sunter.md) |
-| C8 | No answer key, and every choice can overfit | real data has no truth to learn from or measure against | synthetic data with known truth; a rule for every choice; test used once | [1](#where-does-the-truth-come-from), [6](06-measuring-and-choosing.md) |
+| C8 | No answer key, and every choice can overfit | real data has no truth to learn from or measure against | synthetic data with known truth; a rule for every choice; test used once | [1](#where-does-the-truth-come-from) |
 
 **Why two stages?** Rules are cheap, easy to audit and, on our data, never wrong. So they go first and settle the clear cases: 11.9% of the true pairs on val. What remains is messy, with typos in two fields at once, or a move plus a new CIF ID. Messy pairs need evidence weighed, not all-or-nothing conditions, so a probabilistic model handles them.
 
@@ -150,7 +150,15 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 | val | 10,496 | confirming each choice |
 | test | 10,393 | the final report, scored once |
 
-**In short:** real names, invented behaviour, exact truth.
+### A rule for every choice
+
+Every choice in `config/pipeline.toml` is measured at design time on these splits, by one rule:
+
+- **The threshold.** On cross-validated train (each third scored by a model fitted on the other two, so every score is out-of-fold), the lowest weight with no false pair and a false-pair rate bound of at most 5%, then one grid step stricter: 6 bits.
+- **A change** is adopted if it is *better* (a significant paired gain on cross-validated train, p < 0.05, and no false pair added), *cheaper* (no true pair lost, no false pair added), *safer* (the same test, for a change that adds pairs whose gain shows only at scale) or *chosen* (the owner's call, for a gain too small to show on files of 10,000 records; no false pair added). Then, on val, a better, cheaper or safer change may not lose more true pairs than it gains.
+- **Households are counted apart.** Two people of one household share the family name, the address and the phone, so their pair can score as high as a duplicate. It is neither true nor false, and people decide it, labelled "maybe one household".
+
+**In short:** real names, invented behaviour, exact truth, and one rule for every choice.
 
 ## Words used in this guide
 
@@ -159,31 +167,30 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 | record, entity | one row of a file; the person or company behind one or more records | 1 |
 | true pair | two records of the same entity | 1 |
 | matching, resolution | deciding pair by pair; turning the accepted pairs into groups | 1 |
-| train, val, test | the three splits: fit and choose; confirm; report, once | 1, 6 |
-| field | a logical part of a record (name, address, phone), mapped from the file's columns by `[columns]` | [usage](../usage.md#2--map-your-columns) |
+| train, val, test | the three splits: fit and choose; confirm; report, once | 1 |
+| field | a logical part of a record (name, address, phone), mapped from the file's columns by `[columns]` | 2 |
 | standardize | rewrite each value in one form, so equal facts compare equal | 2 |
 | rule | a condition that accepts a pair outright, such as the same customer ID and the same name | 4 |
 | key, block | a value records share, such as the same address and phone; records with one key form a block, and only pairs inside a block are listed | 3 |
-| candidate generator | one way of listing pairs: a key, one-letter deletions of a name, or a sorted window | 3 |
+| candidate generator | one way of listing pairs: a key, or one-letter deletions of a value | 3 |
 | candidates | every generator's pairs together: the only pairs scored | 3 |
 | potential match | a true pair whose fields would reach the threshold, if it were scored | 3 |
 | m | how often two records of the **same** entity land in a comparison level, such as "same address" | 5 |
 | u | how often two **different** entities land there by chance | 5 |
 | λ | the chance that two random records are the same entity: the starting point | 5 |
 | bits, match weight | log₂(λ / (1 − λ)) plus log₂(m / u) for each field; each bit doubles the odds | 5 |
-| threshold | the weight a pair needs to be accepted: 6 bits | 5, 6 |
+| threshold | the weight a pair needs to be accepted: 6 bits | 1, 5 |
 | cluster | records joined by accepted pairs, directly or through others: one entity | 5 |
-| recall | the share of true pairs found | 6 |
-| false merge | two different entities put in one cluster; "at most 0.26%" is the 95% upper bound when none was seen | 6 |
-| cross-validation | fitting on two thirds of train and scoring the other third, three times, so a choice is never judged on the data it was fitted on | 6 |
-| the chosen pipeline, `FINAL` | every change `scripts/choose.py` adopted, written to `config/final.toml`; the reports call it `FINAL` | 6 |
-| increment | a batch of new records added to a written run | [usage](../usage.md#5--add-new-records) |
+| recall | the share of true pairs found | 1 |
+| false merge | two different entities put in one cluster; "at most 0.26%" is the 95% upper bound when none was seen | 1 |
+| cross-validation | fitting on two thirds of train and scoring the other third, three times, so a choice is never judged on the data it was fitted on | 1 |
+| the method | `config/pipeline.toml`: the fields, rules, keys, model and threshold every job runs | 1 |
+| increment | a batch of new records added to a written run | [architecture](../architecture.md#5--an-increment) |
 
 ## In the code
 
 - `config/settings.toml`: paths, datasets, `[columns]` (which of a file's columns hold each field)
 - `design/generate.py`: the generator (`Spec`, `Split`, `generate`, `check`, and `profile`, how hard the population is), configured by `config/generator.toml` and run by `scripts/generate.py`
-- `notebooks/demo.ipynb`, section 2: a small population generated and charted
 - `data/reference/SOURCES.md`: where each reference file came from
 - reference details: [data.md](../data.md)
 

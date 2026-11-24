@@ -34,8 +34,8 @@ def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss:
 class Log:
     """What a job tells as it goes. `steps`: each step's facts as it ends (steps.json), `echo` called with each, for
     people; `told(done, total, unit, **facts)` as a long step goes; `notes`: what the steps detected or fixed, for the
-    summary, never a record's value; `examples`: notes that quote one (the summary and qa.md show them, report.txt
-    doesn't)."""
+    summary, never a record's value; `examples`: notes that quote one, kept in memory for
+    whoever runs the job, never written: report.txt holds no value)."""
     echo: Callable[[dict], None] | None = None
     told: Callable[..., None] | None = None
     steps: list[dict] = field(default_factory=list)
@@ -118,6 +118,7 @@ class Ran:
     rule_seconds: dict[str, float] = field(default_factory=dict)  # each rule's join
     config: str = ""                          # the run's fingerprint: what an increment needs the full run's to be (steps.write.run_config)
     tables: dict = field(default_factory=dict)  # qa's tables, the summary first, once the report step built them
+    index: dict = field(default_factory=dict)  # the lookup index as the job left it (er.jobs.index), or why it couldn't
 
     engine = property(lambda self: self.job.engine)
     settings = property(lambda self: self.job.settings)

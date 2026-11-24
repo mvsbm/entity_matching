@@ -1,4 +1,5 @@
 """Workspaces: their files, the review sheet and people's decisions."""
+from pathlib import Path
 import math
 import os
 from dataclasses import replace
@@ -19,31 +20,6 @@ def wide_band(population):
     pairs to decide on a small population."""
     s, p, g = population
     return s, replace(p, threshold=replace(p.threshold, margin_steps=4), fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 6)), g
-
-
-def test_design_time_measures_the_run_s_own_gold_pairs_and_rule_clusters(tmp_path, population):
-    """scripts/choose.py measures through design.pipeline, which reads the tables of an er.run.Run: it must report the gold,
-    the accepted pairs and their weights, and the rules' clusters that the run writes."""
-    from design.pipeline import automatic, run_fs, run_rules
-    from er.jobs.build import build
-    s, p, g = population
-    p = replace(p, fs=replace(p.fs, needs=("name", "company")))  # a pair with no name compared is held back
-    uid = s.data.unique_id
-    l, r = f"{uid}_l", f"{uid}_r"
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    run = build(tmp_path / "all.parquet", tmp_path / "run", s, p)
-    res = run_fs(p, s, tmp_path / "all.parquet", g.truth, run.model)
-    labelled = (res.records.set_index(uid)[["CLUSTER_ID", "MATCH_STAGE", "MATCH_RULE"]]
-                .set_axis(["cluster_id", "resolved_stage", "resolved_by"], axis=1).astype("string"))
-    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)[list(labelled.columns)].astype("string")
-    pd.testing.assert_frame_equal(gold, labelled.loc[gold.index], check_index_type=False)
-    key = lambda d: d[[l, r, "match_weight"]].astype({l: "string", r: "string"}).sort_values([l, r], ignore_index=True)
-    design, ran = key(res.scored[automatic(res.scored, p.fs.min_match_weight) & res.scored["keep"]]), key(pd.read_parquet(tmp_path / "run" / "matches"))
-    assert len(design) > 0
-    pd.testing.assert_frame_equal(design, ran, check_exact=False, atol=1e-9)
-    rules = run_rules(p, s, tmp_path / "all.parquet", g.truth).records.set_index(uid)["CLUSTER_ID"]
-    stored = pd.read_parquet(tmp_path / "run" / "state" / "rule_clusters.parquet").set_index(uid)["cluster_id"].astype("string")
-    assert rules.loc[stored.index].tolist() == stored.tolist()
 
 
 def test_a_pair_with_no_name_compared_is_left_to_people(tmp_path, population):
@@ -150,19 +126,11 @@ def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_aga
         decide(tmp_path / "blank.parquet", tmp_path / "a", s, p)
 
 
-def test_a_workspace_holding_its_own_method_or_mapping_and_a_pipeline_with_a_trust_line_are_refused(tmp_path):
-    from er import folder
+def test_a_pipeline_with_a_trust_line_is_refused():
     from er.config import pipeline_from, toml_of
-    for f in ("method.toml", "columns.toml"):  # what no run reads: it would silently run otherwise
-        ws = tmp_path / f.removesuffix(".toml")
-        ws.mkdir()
-        (ws / f).write_text("", encoding="utf-8")
-        with pytest.raises(InputError, match=f"holds its own {f}") as stop:
-            folder.current(ws)
-        assert f in stop.value.fix
     s = load_settings()
     with pytest.raises(InputError, match=r"\[trust\] sets nothing"):
-        pipeline_from(toml_of(s.root / "config" / "final.toml") | {"trust": {"steps": [12.0]}}, s.standardize, s.chains)
+        pipeline_from(toml_of(s.root / "config" / "pipeline.toml") | {"trust": {"steps": [12.0]}}, s.standardize, s.chains)
 
 
 def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison(tmp_path, population, monkeypatch):
@@ -219,9 +187,10 @@ def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path
         pd.DataFrame({"CONT_ID": [f"{d}{i}" for i in range(3)]}).to_parquet(tmp_path / "home" / "exports" / d / "part.parquet")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # Windows' home folder
-    from er import folder as folders, intake
-    part, _ = folders.take_in(tmp_path / "ws_home", "~/exports", intake.InputSpec())
-    assert intake.report(part)["rows"] == 6
+    from er import intake
+    from er.source import readable
+    with readable("~/exports", intake.InputSpec()) as part:
+        assert intake.report(Path(part))["rows"] == 6
     (tmp_path / "empty").mkdir()
     with pytest.raises(InputError, match="holds no Parquet file"):  # a folder with no records file: said so, not "did you mean" itself
         open_source(tmp_path / "empty", engine, [])
@@ -261,7 +230,7 @@ def test_a_run_sets_aside_what_it_cannot_resolve_and_suggests_a_mapping(tmp_path
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux's mount table and its paths: on Windows every folder is a disk (io.object_store)")
-def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(say, tmp_path, monkeypatch):
+def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(tmp_path, monkeypatch):
     from er import folder, io
     root = tmp_path.resolve()
     mounts = tmp_path / "mountinfo"
@@ -285,29 +254,29 @@ def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(say, 
 
 
 def test_people_s_latest_decision_stands_a_file_given_twice_changes_nothing_and_a_full_run_reads_them_back(say, tmp_path, population, monkeypatch):
-    from er.review_state import applied
+    from er.report import applied
     s, p, g = population
     uid, ent = s.data.unique_id, s.data.entity_id
     l, r = f"{uid}_l", f"{uid}_r"
     g.df.to_parquet(tmp_path / "theirs.parquet", index=False)
     monkeypatch.chdir(tmp_path)
-    ws, at = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w")
+    ws, at = tmp_path / "workspaces" / "w", ("--out", "workspaces/w")
     truth = g.truth.set_index(uid)[ent]
     latest = lambda a, b: applied(ws, uid).set_index([l, r])["decision"].get((a, b))
-    assert say("resolve", "records", "theirs.parquet", *at)[0] == 0
+    assert say("build", "theirs.parquet", *at)[0] == 0
     sheet = pd.read_parquet(ws / "review.parquet")
     same = sheet[sheet[l].map(truth) == sheet[r].map(truth)].iloc[0]
     pd.DataFrame({l: [same[l]], r: [same[r]], "decision": ["match"]}).to_parquet(tmp_path / "same.parquet")
     pd.DataFrame({l: [same[l]], r: [same[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "other.parquet")  # another person: different
-    assert say("apply", "decisions", "--file", "same.parquet", *at)[1]["matches"] == 1 and latest(same[l], same[r]) == "match"
-    assert say("apply", "decisions", "--file", "same.parquet", *at)[1]["decisions"] == 0  # given twice: nothing new
-    assert say("apply", "decisions", "--file", "other.parquet", *at)[0] == 0 and latest(same[l], same[r]) == "no_match"  # the latest stands
+    assert say("decide", "same.parquet", *at)[1]["matches"] == 1 and latest(same[l], same[r]) == "match"
+    assert say("decide", "same.parquet", *at)[1]["decisions"] == 0  # given twice: nothing new
+    assert say("decide", "other.parquet", *at)[0] == 0 and latest(same[l], same[r]) == "no_match"  # the latest stands
 
     found = pd.read_parquet(ws / "matches").sort_values("match_weight", ascending=False)
     link = found[found[l].map(truth) == found[r].map(truth)].iloc[0]  # a pair the run joined: people say different
     pd.DataFrame({l: [link[l]], r: [link[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "false.parquet")
-    assert say("apply", "decisions", "--file", "false.parquet", *at)[0] == 0
-    assert say("resolve", "records", "theirs.parquet", *at, "--overwrite")[0] == 0  # a full run reads people's decisions back
+    assert say("decide", "false.parquet", *at)[0] == 0
+    assert say("build", "theirs.parquet", *at, "--overwrite")[0] == 0  # a full run reads people's decisions back
     x = pd.read_parquet(ws / "matches")
     assert not ((x[l] == link[l]) & (x[r] == link[r])).any()  # never joined again
     assert latest(same[l], same[r]) == "no_match"

@@ -8,7 +8,7 @@ Each record gets kind (2 company, 1 person, 0 not sure: the codes a person/compa
 it is sure (a written legal form, or a name past name_line either way; a person's name never against a company
 flag), else the file's flag. kind_p (the probability of a company), kind_by (engine or flag), name_p (what its name
 alone says), kind_flagged (the engine sure against the flag: matched as the engine says). A name routed by kind (er.standardize.prepare) goes to the side of its kind.
-scripts/choose_kind.py chose these parts. O(N·L·g) to score N records (g n-gram lengths), O(T·L·g) once to train on T
+Chosen at design time, on labelled synthetic data. O(N·L·g) to score N records (g n-gram lengths), O(T·L·g) once to train on T
 reference names.
 """
 import hashlib

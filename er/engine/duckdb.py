@@ -168,8 +168,8 @@ COMPUTE = ("threads", "memory_limit", "temp_directory", "max_temp_directory_size
 def connect(compute: dict | None = None) -> "DuckDB":
     """The DuckDB engine on a connection of its own, every cl_<function> registered. `compute` (config/settings.toml
     [compute]) sets threads, memory_limit, temp_directory and max_temp_directory_size: past the memory limit, DuckDB
-    spills to that folder (none set: one of the person's own in the system's temporary folder, never the folder nayose starts from). A limit
-    nayose doesn't set, or one DuckDB refuses, is an InputError."""
+    spills to that folder (none set: one of the person's own in the system's temporary folder, never the folder a job starts from). A limit
+    no job sets, or one DuckDB refuses, is an InputError."""
     from er.config import InputError, lit  # here, not above: er.config reads this module's functions
     con = DuckDB(duckdb.connect())
     con.run("SET enable_progress_bar = false")  # a long query's bar would land in stdout, between the JSON lines
@@ -179,7 +179,7 @@ def connect(compute: dict | None = None) -> "DuckDB":
             who = getpass.getuser()
         except (KeyError, OSError):  # a uid with no name, as in a container
             who = str(os.getuid()) if hasattr(os, "getuid") else "user"
-        (spill := Path(tempfile.gettempdir()) / f"nayose-spill-{who}").mkdir(mode=0o700, exist_ok=True)
+        (spill := Path(tempfile.gettempdir()) / f"er-spill-{who}").mkdir(mode=0o700, exist_ok=True)
         if hasattr(os, "getuid") and ((st := spill.lstat()).st_uid != os.getuid() or st.st_mode & 0o077):  # made before, by someone else, open to them, or a link
             raise InputError(f"{spill}: the spill folder isn't yours alone, so spilled records could be read by others",
                              fix="give --compute temp_directory=<a folder of your own> (or [compute] temp_directory), or remove that folder")
@@ -187,7 +187,7 @@ def connect(compute: dict | None = None) -> "DuckDB":
     where = "--compute, or config/settings.toml [compute]"
     for key, value in limits.items():
         if key not in COMPUTE:
-            raise InputError(f"{key}: not a limit nayose sets ({where})", fix=f"one of {', '.join(COMPUTE)}, as KEY=VALUE")
+            raise InputError(f"{key}: not a limit a job sets ({where})", fix=f"one of {', '.join(COMPUTE)}, as KEY=VALUE")
         try:
             con.run(f"SET {key} = {lit(value)}")
         except duckdb.Error as e:

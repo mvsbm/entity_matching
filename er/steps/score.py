@@ -9,9 +9,15 @@ from dataclasses import dataclass
 
 from er.config import bits, hashed, q
 from er.match import bound_tests, named_sql, review_floor, score_fs
-from er.results import BANDS, banded
 from er.steps.job import Job
 from er.steps.rules import alone
+
+
+BANDS = (-20, -10, 0, 6, 8, 10, 12, 16, 20)  # the score chart's edges, in points: as report.txt's SCORES
+
+
+def banded(col: str = "match_weight") -> str:  # the SQL of a weight's band in the score chart: 0 below BANDS[0], len(BANDS) at its last edge or above
+    return "CASE " + " ".join(f"WHEN {col} < {e} THEN {i}" for i, e in enumerate(BANDS)) + f" ELSE {len(BANDS)} END"
 
 SCORE_PAIRS = 5_000_000  # pairs scored at a time: each slice says how far scoring is, and bounds its memory; each joins every record again
 
@@ -65,15 +71,14 @@ def score(job: Job, scoring: dict, listed: int) -> Scored:
     return Scored(scored)
 
 
-def _bands(job: Job) -> list[int]:  # the pairs in `scores` by the score chart's bands (results.BANDS), each by its own weight
+def _bands(job: Job) -> list[int]:  # the pairs in `scores` by the score chart's bands (BANDS), each by its own weight
     n = dict(job.engine.rows(f"SELECT {banded()}, count(*) FROM scores GROUP BY 1"))
     return [n.get(i, 0) for i in range(len(BANDS) + 1)]
 
 
 def patterns(job: Job) -> dict:
     """The patterns the pairs in `scores` fall in, one step per comparison: per pattern its pairs, their mean weight,
-    how many merge and how many wait for people as steps.cluster will take them, and three of them (explain.list_patterns,
-    results.describe_results). A full run's and each increment's: together, every pair the run scored."""
+    how many merge and how many wait for people as steps.cluster will take them, and three of them. A full run's and each increment's: together, every pair the run scored."""
     fs, l, r = job.pipeline.fs, q(job.l), q(job.r)
     at, floor = bits(fs.min_match_weight), bits(review_floor(job.pipeline))
     gammas = [c for c, *_ in job.engine.rows("DESCRIBE scores") if c.startswith("gamma_")]

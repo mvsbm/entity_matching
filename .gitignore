@@ -13,15 +13,15 @@ Thumbs.db
 # a file written beside itself and renamed over it (er.io.replace_text, folder.stage), left by a write cut short
 *.tmp
 
-# Generated data: rebuilt by scripts/generate.py and scripts/choose.py.
+# Generated data: rebuilt by scripts/generate.py.
 # data/reference/ stays tracked: the generator's frozen snapshot of public sources (see its SOURCES.md).
 data/medallion/bronze/
 data/medallion/gold/
 data/labels/
 data/artifacts/
 
-# People's workspaces (nayose create workspace): their records and results, never committed
+# People's runs (python -m er build … --out workspaces/…): their records and results, never committed
 workspaces/
 
-# a mapping change in progress (er.folder.writing)
+# one writer at a time (er.folder.run_lock)
 .*.lock
