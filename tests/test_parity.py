@@ -31,7 +31,7 @@ TABLES = {  # each table as compared: its rows in an order of their own
 
 def digest(frame: pd.DataFrame) -> str:
     rounded = frame.apply(lambda c: c.round(9) if c.dtype.kind == "f" else c)
-    return f"{len(frame)}:" + hashlib.sha256(rounded.to_csv(index=False, na_rep="").encode()).hexdigest()[:16]
+    return f"{len(frame)}:" + hashlib.sha256(rounded.to_csv(index=False, na_rep="", lineterminator="\n").encode()).hexdigest()[:16]
 
 
 def taken(engine: DuckDB, step: str, out: dict) -> None:
