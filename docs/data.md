@@ -18,7 +18,7 @@ Records as Parquet. Locally, a file, a folder of them or a quoted glob, joined b
 
 ## The mapping: columns to fields
 
-`nayose/mapping.sql` turns the input's columns into the fields the method reads. The repository's maps the generated data. Each deployment has its own, in the same form, kept out of the repository: in prod the secret `nayose-mapping`, locally the file `NAYOSE_MAPPING` names. It makes two tables: `input_rows`, every distinct row as given with its ID, and `mapped`, one row a record. Each column is read through `read_value(column, numeric, @nulls)`; a column that isn't text is cast first. A field with several sources takes the first whose columns are all filled (`A || B` is missing when either part is).
+`nayose/mapping.sql` turns the input's columns into the fields the method reads. The repository's maps the generated data. Each deployment has its own, in the same form, kept out of the repository: in prod the secret `nayose-mapping`, locally the file `NAYOSE_MAPPING` names. It makes two temporary tables, and nothing else: `input_rows`, every distinct row as given with its ID, and `mapped`, one row a record. A mapping that writes any other table, or makes a function of its own, is refused before it runs, by the deploy and by a job: a build makes again every table it writes, and a function of its own would replace one of the method's on BigQuery alone. Each column is read through `read_value(column, numeric, @nulls)`; a column that isn't text is cast first. A field with several sources takes the first whose columns are all filled (`A || B` is missing when either part is).
 
 | Field | The generated data's columns | Read by |
 |---|---|---|

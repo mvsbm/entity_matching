@@ -69,6 +69,22 @@ def test_the_mapping_parses_as_bigquery_and_translates(path):
         duckdb_sql(sql)
 
 
+@pytest.mark.parametrize("bad", ["CREATE OR REPLACE TABLE mapped AS SELECT 1 AS id;",
+                                 "INSERT INTO records SELECT * FROM mapped;",
+                                 "-- a helper of its own\nCREATE TEMP FUNCTION blank(v STRING) AS (v IS NULL);"])
+def test_a_mapping_that_makes_more_than_temporary_tables_is_refused_by_the_deploy_and_by_a_job(tmp_path, monkeypatch, bad):
+    from nayose.engines import procedures
+    given = tmp_path / "mapping.sql"
+    given.write_text((nayose.HERE / "mapping.sql").read_text(encoding="utf-8") + "\n" + bad + "\n", encoding="utf-8")
+    with pytest.raises(nayose.InputError, match="temporary tables alone"):
+        procedures("p.run", given)
+    monkeypatch.setenv("NAYOSE_MAPPING", str(given))
+    engine = DuckDB()
+    with pytest.raises(nayose.InputError, match="temporary tables alone"):
+        nayose.records(engine, [tmp_path / "none.parquet"])  # refused before the file is read, so none is needed
+    assert engine.con.execute("SELECT COUNT(*) FROM duckdb_tables()").fetchone()[0] == 0  # nor anything written
+
+
 VALUES = ["ヤマダタロウ", "ヤマダ　タロウ", " サトウ", "サトウ ", "　", "  ", "NULL", " NULL ", "－", "譁ｰ縺励＞", "abc\x01", "タ​ナカ", "a\tb",
           "ﾔﾏﾀﾞ", "�", "", None, "東京" * 100, "①", "😀", "Ｓｕｚｕｋｉ", "plain", " plain", "１２.０", " ", "ア　",
           '["大分県"]', '　["大分県"]　', "[1] ", "[株]", '["a", "b"]', "[]", "['大分市']", "[0708612]", ' ["x"] ',
