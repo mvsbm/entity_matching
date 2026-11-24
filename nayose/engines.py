@@ -201,6 +201,7 @@ class DuckDB:
         self.con.create_function("nfkc", nfkc, ["VARCHAR"], "VARCHAR", type="arrow")
         self.con.create_function("one_byte_hash", one_byte_hash, ["VARCHAR"], "VARCHAR", type="arrow")
         self.con.create_function("fit_model", em.fit, ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR", null_handling="special")  # EM: Python, as on BigQuery
+        self.con.create_function("resampled", em.resampled, ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR", null_handling="special")
         self.con.create_function("entities_of", entities.of, ["VARCHAR"], "VARCHAR")  # decide's components: the same
 
     def run(self, sql: str, values: dict | None = None) -> None:
@@ -254,7 +255,7 @@ def functions(dataset: str) -> list[str]:
     """The statements the deploy runs once in `dataset` (project.dataset): each comparison of FUNCTIONS in JavaScript
     (cl_<name>, and cl_<name>_cut: the same score, its threshold unread), or over BigQuery's own (BUILT_IN), the
     portable hash (er_hash), nfkc,
-    one_byte_hash, and the Python UDFs: EM's fit_model (nayose/em.py) and decide's entities_of (nayose/entities.py)."""
+    one_byte_hash, and the Python UDFs: EM's fit_model and resampled (nayose/em.py) and decide's entities_of (nayose/entities.py)."""
     library = STRINGS.read_text(encoding="utf-8")
     out = []
     for name in FUNCTIONS:
@@ -272,7 +273,8 @@ def functions(dataset: str) -> list[str]:
     out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.nfkc(x STRING) AS (NORMALIZE(x, NFKC))")
     out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.one_byte_hash(x STRING) AS "
                "(CODE_POINTS_TO_STRING(ARRAY(SELECT 33 + MOD(c, 94) FROM UNNEST(TO_CODE_POINTS(x)) AS c WITH OFFSET AS i ORDER BY i)))")
-    for module, name, args, entry in ((em, "fit_model", "counts STRING, settings STRING, stored STRING", "fit"), (entities, "entities_of", "pairs STRING", "of")):
+    for module, name, args, entry in ((em, "fit_model", "counts STRING, settings STRING, stored STRING", "fit"),
+                                      (em, "resampled", "counts STRING, settings STRING, stored STRING", "resampled"), (entities, "entities_of", "pairs STRING", "of")):
         source = Path(module.__file__).read_text(encoding="utf-8")  # BigQuery's Python UDF: python-3.11, standard library only
         assert "'''" not in source, f"{module.__name__}: no triple single quotes, which end BigQuery's raw string"
         out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.{name}({args}) RETURNS STRING LANGUAGE python "
@@ -325,7 +327,9 @@ def procedures(dataset: str, functions: str, mapping: Path | None = None) -> lis
                     made.setdefault(m[2], TEMP_FUNCTION.sub(lambda x: f"{x[1]}CREATE OR REPLACE FUNCTION `{dataset}`.{x[2]}", sql, count=1))
                 else:
                     sql = re.sub(r"@(\w+)", r"v_\1", sql)
-                    body.append(in_dataset(sql, dataset) if VIEW.match(sql) else sql)
+                    guard = nayose.WHEN.match(sql)  # read before in_dataset, whose SQL keeps no comment
+                    sql = in_dataset(sql, dataset) if VIEW.match(sql) else sql
+                    body.append(f"IF {guard[1]} THEN\n{sql};\nEND IF" if guard else sql)
         bodies[job] = (body, {k: v for k, v in declared.items() if k not in ARGUMENTS.get(job, {})})
     own = re.compile(r"(?<![\w.`])(" + "|".join(sorted(made, key=len, reverse=True)) + r")\s*\(")
     ours = lambda sql: own.sub(lambda m: f"`{dataset}`.{m[1]}(", BigQuery.CALLS.sub(lambda m: f"`{functions}`.{m[1]}(", sql))
@@ -370,7 +374,7 @@ class BigQuery:
     `functions`' (project.dataset, the deploy's: functions()). `client`: a google.cloud.bigquery.Client (made when not
     given); `bigquery`: the module its job configurations come from (imported when not given)."""
     name = "bigquery"
-    CALLS = re.compile(r"(?<![\w.`])(" + "|".join([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc", "one_byte_hash", "fit_model", "entities_of"]) + r")\s*\(", re.I)
+    CALLS = re.compile(r"(?<![\w.`])(" + "|".join([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc", "one_byte_hash", "fit_model", "resampled", "entities_of"]) + r")\s*\(", re.I)
 
     def __init__(self, dataset: str, functions: str, client: object = None, bigquery: object = None) -> None:
         self.bigquery = bigquery or importlib.import_module("google.cloud.bigquery")

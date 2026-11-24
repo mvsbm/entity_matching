@@ -458,12 +458,17 @@ def stage(engine, name: str, scratch: set | None = None, until: str | None = Non
 
 def run_file(engine, path: Path, scratch: set | None = None, until: str | None = None, **values: object) -> None:
     """The SQL file at `path` on `engine`, its statements in order. Each is given the values it names as @name, and only
-    those: BigQuery refuses a parameter a statement doesn't read. `scratch`: as a lookup runs it, writing the
-    temporary tables it names alone (scratched); `until`: up to the statement that makes that table."""
+    those: BigQuery refuses a parameter a statement doesn't read. A statement whose comments say `-- when: <condition>`
+    runs only where the condition holds (on BigQuery, the procedure's IF: engines.procedures). `scratch`: as a lookup
+    runs it, writing the temporary tables it names alone (scratched); `until`: up to the statement that makes that table."""
     for sql in statements(path.read_text(encoding="utf-8")):
         named = set(re.findall(r"@(\w+)", re.sub(r"--[^\n]*|'(?:[^'\\]|\\.)*'", "", sql)))
-        if missing := named - set(values):
+        guard = WHEN.match(sql)
+        told = set(re.findall(r"@(\w+)", guard[1])) if guard else set()
+        if missing := (named | told) - set(values):
             raise ValueError(f"{path.name} names @{', @'.join(sorted(missing))}, which no value gives")
+        if guard and not engine.value(f"SELECT {guard[1]}", {k: values[k] for k in told}):
+            continue
         made = WRITE.match(sql)
         if scratch is not None and (sql := scratched(sql, scratch)) is None:
             continue
@@ -472,6 +477,7 @@ def run_file(engine, path: Path, scratch: set | None = None, until: str | None =
             return
 
 
+WHEN = re.compile(r"\A(?:\s*--(?! when:)[^\n]*\n)*\s*-- when: ([^\n]+)")  # a statement's condition, in its leading comments
 LEAD = r"(?:\s*--[^\n]*\n|\s*/\*.*?\*/)*\s*"  # a statement's leading comments
 WRITE = re.compile(rf"^({LEAD})(CREATE\s+OR\s+REPLACE\s+TEMP(?:ORARY)?\s+TABLE|CREATE\s+OR\s+REPLACE\s+TABLE|"
                    r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS|CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW|CREATE\s+TABLE|"

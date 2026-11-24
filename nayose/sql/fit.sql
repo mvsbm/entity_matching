@@ -29,9 +29,13 @@ SELECT
   address__address_one_byte_hash, postal_code, phone, customer_id, birth_date
 FROM records;
 
+-- when: @refit
 CREATE OR REPLACE TABLE fit_sample AS
 SELECT compared.* FROM compared
 JOIN (SELECT id FROM records WHERE @refit ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_rows) USING (id);
+
+-- when: NOT @refit
+CREATE OR REPLACE TABLE fit_sample AS SELECT * FROM compared WHERE FALSE;  -- an update learns nothing: no sample
 
 
 -- 2. λ, how likely two random records are one customer, from the pairs the near-certain rules find: each pair once,
@@ -183,9 +187,19 @@ LEFT JOIN substituted AS s USING (scope, comparison)
 LEFT JOIN swapped AS w USING (scope, comparison)
 LEFT JOIN longer AS l USING (scope, comparison);
 
--- 4d. The rest sampled, as Splink samples: the records whose hash of ID and seed falls under their scope's cut, every
+-- 4d. The records, and how many fill the column a comparison is filled most by: what bounds a level no sampled pair
+--     reached
+CREATE OR REPLACE TABLE u_filled AS
+SELECT
+  scope, COUNT(*) AS records, COUNT(person_name) AS name, COUNT(company_name) AS company,
+  GREATEST(COUNT(address_code), COUNT(address), COUNT(postal_code)) AS address,
+  COUNT(phone) AS phone, COUNT(customer_id) AS cif, COUNT(birth_date) AS birth
+FROM u_records GROUP BY scope;
+
+-- 4e. The rest sampled, as Splink samples: the records whose hash of ID and seed falls under their scope's cut, every
 --     pair of them, each pair's level of each comparison, counted. A comparison counted to its else level (each of
---     its levels counted, pairs left for its else level) isn't sampled.
+--     its levels counted, pairs left for its else level) isn't sampled. An update samples only once refresh would
+--     sample a comparison again (em.py's stale: resampled, from the counts above); else its sample would go unused.
 CREATE OR REPLACE TEMP TABLE u_plan AS
 SELECT
   o.scope,
@@ -197,6 +211,20 @@ JOIN u_counted AS c ON c.scope = o.scope AND c.comparison = o.comparison AND c.l
 JOIN u_near AS n ON n.scope = o.scope AND n.comparison = o.comparison
 GROUP BY o.scope;
 
+-- when: NOT @refit
+CREATE OR REPLACE TEMP TABLE u_again AS  -- the comparisons an update samples again, comma-separated: none, mostly
+SELECT resampled(TO_JSON_STRING(STRUCT(
+  (SELECT ARRAY_AGG(t) FROM levels AS t) AS levels, (SELECT ARRAY_AGG(t) FROM u_outside AS t) AS outside,
+  (SELECT ARRAY_AGG(t) FROM u_counted AS t) AS counted, (SELECT ARRAY_AGG(t) FROM u_near AS t) AS near,
+  (SELECT ARRAY_AGG(t) FROM u_filled AS t) AS filled, (SELECT ARRAY_AGG(t) FROM u_plan AS t) AS plan
+)), @settings, (SELECT fitted FROM fit)) AS comparisons;
+
+-- when: @refit
+CREATE OR REPLACE TEMP TABLE u_again AS SELECT 'each' AS comparisons;  -- a build samples, as fit_model's learn needs
+
+CREATE TABLE IF NOT EXISTS u_sampled (scope STRING, comparison STRING, gamma INT64, pairs INT64);  -- a build's, sampling none
+
+-- when: (SELECT comparisons FROM u_again) <> ''
 CREATE OR REPLACE TEMP TABLE u_drawn AS  -- the share: of a scope's n records, about max_pairs pairs, as Splink draws
 WITH share AS (
   SELECT 'sample' AS scope, CAST(0.5 AS FLOAT64) * (SQRT(8 * @fit_u_max_pairs + 1) + 1) / GREATEST((SELECT COUNT(*) FROM fit_sample), 1) AS share
@@ -206,6 +234,7 @@ WITH share AS (
 SELECT u_records.* FROM u_records JOIN share USING (scope)
 WHERE share >= 1 OR MOD(er_hash(id || '_' || @seed), 1000000000) < GREATEST(1, ROUND(share * 1000000000));
 
+-- when: (SELECT comparisons FROM u_again) <> ''
 CREATE OR REPLACE TEMP TABLE u_patterns AS  -- the pairs' patterns of levels, counted as they are made: none is stored
 WITH paired AS (  -- the drawn pairs, the two records whole, their names' Jaro–Winkler once (name_score)
   SELECT l.scope, l, r, name_score(l, r) AS s_name FROM u_drawn AS l JOIN u_drawn AS r ON l.scope = r.scope AND l.id < r.id
@@ -217,6 +246,7 @@ SELECT
 FROM paired AS p JOIN u_plan AS plan ON plan.scope = p.scope
 GROUP BY 1, 2, 3, 4, 5, 6, 7;
 
+-- when: (SELECT comparisons FROM u_again) <> ''
 CREATE OR REPLACE TABLE u_sampled AS
 SELECT scope, 'name' AS comparison, name AS gamma, SUM(pairs) AS pairs FROM u_patterns GROUP BY scope, name
 UNION ALL SELECT scope, 'company', company, SUM(pairs) FROM u_patterns GROUP BY scope, company
@@ -224,15 +254,6 @@ UNION ALL SELECT scope, 'address', address, SUM(pairs) FROM u_patterns GROUP BY 
 UNION ALL SELECT scope, 'phone', phone, SUM(pairs) FROM u_patterns WHERE phone IS NOT NULL GROUP BY scope, phone
 UNION ALL SELECT scope, 'cif', cif, SUM(pairs) FROM u_patterns WHERE cif IS NOT NULL GROUP BY scope, cif
 UNION ALL SELECT scope, 'birth', birth, SUM(pairs) FROM u_patterns WHERE birth IS NOT NULL GROUP BY scope, birth;
-
--- 4e. The records, and how many fill the column a comparison is filled most by: what bounds a level no sampled pair
---     reached
-CREATE OR REPLACE TABLE u_filled AS
-SELECT
-  scope, COUNT(*) AS records, COUNT(person_name) AS name, COUNT(company_name) AS company,
-  GREATEST(COUNT(address_code), COUNT(address), COUNT(postal_code)) AS address,
-  COUNT(phone) AS phone, COUNT(customer_id) AS cif, COUNT(birth_date) AS birth
-FROM u_records GROUP BY scope;
 
 
 -- 5. The model: fit_model learns it from every count above, given as one JSON text, and gives it back as one: each

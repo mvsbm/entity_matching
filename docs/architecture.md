@@ -132,7 +132,8 @@ names the latest. An update (`nayose.update`) runs the build's stages on a new b
   made again with that value read as missing.
 - **fit** with `@refit` false: the build's model is kept (`fit.fitted`), so there is no sample and no EM. u is
   measured again on the run's records. A level counted exactly is counted again. A sampled comparison is sampled
-  again only once its drift outweighs its sampling error (`em.refresh`).
+  again only once its drift outweighs its sampling error (`em.stale`). That test runs on the exact counts first
+  (`resampled`, a Python function like `fit_model`), so an update with none stale draws no sample at all.
 - **score**: only the pairs touching the batch are scored, and they are added to `scored` and `rule_pairs`.
 - **decide**: the entities are made again.
 
@@ -182,6 +183,11 @@ record. It also reports, key by key, what was looked up and what the gate decide
 **BigQuery** runs the SQL as written, in one session per job, so the temporary tables die with the job. The run's
 dataset is the session's default, so statements name tables alone. Calls to the deploy's functions are qualified with
 the dataset (`BigQuery.CALLS`).
+
+**A statement that may not need to run** says when it does, in a comment: `-- when: <condition>`, a SQL condition
+on the job's values and tables. `run_file` asks the engine and skips the statement where it is false. The deploy
+makes it the procedure's `IF <condition> THEN … END IF`. BigQuery bills a statement's scans whatever its result, so a
+statement that isn't run is the only one that bills nothing.
 
 **DuckDB** runs the SQL after `duckdb_sql` translates it (sqlglot, BigQuery to DuckDB, cached per statement). Some
 forms would translate into another result, and `avoided` refuses each one by name, saying what to write instead:

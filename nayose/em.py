@@ -58,13 +58,33 @@ def refresh(stored: dict, got: dict) -> str:
     model, basis = stored["model"], stored["basis"]
     levels, n = model["levels"], got["n"]
     exact = exact_u(levels, got)
-    check = stale_u(levels, basis, exact, n)
-    again = [x for x in comparisons(levels) if check[x]["drift_bits"] > check[x]["se_bits"] and ELSE not in exact.get(x, {})]
+    again, check = stale(levels, basis, exact, n)
     basis = {**basis, **u_basis(got, sampled_u(levels, got, again), exact, again)}
     for name, x in check.items():
         basis[name]["last_check"] = {k: v if math.isfinite(v) else None for k, v in x.items()}
     scoring = assemble(model, got, {name: b["sampled"] for name, b in basis.items()})
     return given(model, scoring, n, basis, [dict(comparison=x, **basis[x]["last_check"]) for x in again])
+
+
+def stale(levels: list[dict], basis: dict, exact: dict, n: int) -> tuple[list[str], dict]:
+    """An update's comparisons to sample again: those stale_u finds stale whose else level isn't counted exactly; and
+    stale_u's check of each."""
+    check = stale_u(levels, basis, exact, n)
+    return [x for x in comparisons(levels) if check[x]["drift_bits"] > check[x]["se_bits"] and ELSE not in exact.get(x, {})], check
+
+
+def resampled(counts: str, settings: str, stored: str | None = None) -> str:
+    """The comparisons fit samples u for, from fit.sql's exact counts alone (nothing sampled yet), comma-separated:
+    an update's, those refresh samples again (stale); a build's, or one given a model, each not counted whole. None:
+    an update's sample would go unused, so fit.sql draws none."""
+    c, s = json.loads(counts), json.loads(settings)
+    got = measured(c, s)["file"]
+    if stored is not None and (kept := json.loads(stored))["basis"] is not None:
+        levels = kept["model"]["levels"]
+        return ",".join(stale(levels, kept["basis"], exact_u(levels, got), got["n"])[0])
+    levels = sorted(c["levels"], key=lambda lv: (lv["position"], -lv["gamma"]))
+    exact = exact_u(levels, got)
+    return ",".join(x for x in comparisons(levels) if ELSE not in exact.get(x, {}))
 
 
 def given(model: dict, scoring: dict, n: int, basis: dict, again: list[dict]) -> str:  # what fit gives back: fit()'s
@@ -112,7 +132,7 @@ def measured(c: dict, s: dict) -> dict[str, dict]:
     """fit.sql's u counts by scope (sample, file); each scope's max_pairs, what its sample drew from."""
     out = {}
     for scope, most in (("sample", float(s["fit_u_max_pairs"])), ("file", float(s["u_max_pairs"]))):
-        mine = lambda table: [r for r in c[table] or [] if r["scope"] == scope]
+        mine = lambda table: [r for r in c.get(table) or [] if r["scope"] == scope]  # a table missing (resampled: sampled), none
         filled = next(iter(mine("filled")), {"records": 0})
         out[scope] = dict(n=filled["records"], max_pairs=most, filled=filled, plan=next(iter(mine("plan")), {}),
                           outside={r["comparison"]: r["pairs"] for r in mine("outside")},
