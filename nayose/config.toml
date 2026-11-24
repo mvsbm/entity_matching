@@ -1,0 +1,48 @@
+# The values nayose's SQL reads, a section per stage file (nayose/sql/). The method itself (the fields, keys, rules and
+# comparisons) is the SQL; what is here are its numbers and lists. A change here changes the run's fingerprint, so
+# increments refuse until a full run (nayose.fingerprint).
+
+[records]  # sql/records.sql
+nulls = ["NULL", "null", "Null", "\\N", "NaN", "nan", "None", "none", "N/A", "n/a", "#N/A", "-", "－"]  # a value written as one of these is missing
+kana_fold_from = "ガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴァィゥェォッャュョヮヵヶヲー"  # kana folding, character by character: voiced → unvoiced, small → large, ヴ/ヂ/ヅ/ヲ, ー → ウ
+kana_fold_to   = "カキクケコサシスセソタチツテトハヒフヘホハヒフヘホフアイウエオツヤユヨワカケオウ"
+# legal forms, after NFKC: anywhere in a name (with small kana also written large); bank abbreviations first, カ)〇〇, or last, 〇〇(カ
+legal_forms = [
+  "株式会社", "有限会社", "合同会社", "合資会社", "合名会社", "相互会社", "医療法人社団", "医療法人財団",
+  "医療法人", "一般社団法人", "公益社団法人", "一般財団法人", "公益財団法人", "特定非営利活動法人", "社会福祉法人", "学校法人",
+  "宗教法人", "(株)", "(有)", "(同)", "(資)", "(名)", "カブシキガイシャ", "ユウゲンガイシャ",
+  "ゴウドウガイシャ", "ゴウシガイシャ", "ゴウメイガイシャ", "ソウゴガイシャ", "イリョウホウジンシャダン", "イリョウホウジンザイダン", "イリョウホウジン", "イッパンザイダンホウジン",
+  "コウエキザイダンホウジン", "イッパンシャダンホウジン", "コウエキシャダンホウジン", "シュウキョウホウジン", "ガッコウホウジン", "シャカイフクシホウジン", "コウセイホゴホウジン", "トクテイヒエイリカツドウホウジン",
+  "ドクリツギョウセイホウジン", "ベンゴシホウジン", "ギョウセイショシホウジン", "シホウショシホウジン", "ゼイリシホウジン", "ユウゲンセキニンチュウカンホウジン", "ムゲンセキニンチュウカンホウジン", "コクリツダイガクホウジン",
+  "コウリツダイガクホウジン", "ノウジクミアイホウジン", "カンリクミアイホウジン", "シャカイホケンロウムシホウジン", "コクリツケンキュウカイハツホウジン", "(カ)", "(ユ)", "(メ)",
+  "(シ)", "(ド)", "(ソ)", "(ホゴ)", "(ギヨ)", "(シホウ)", "(ゼイ)", "(ダイ)",
+  "(ノウ)", "(ケン)", "カ)", "ユ)",
+]
+legal_front = [
+  "カ", "ユ", "メ", "シ", "ド", "ソ", "イ", "ザイ", "シヤ", "シユウ", "ガク", "フク",
+  "ホゴ", "トクヒ", "ドク", "ベン", "ギヨ", "シホウ", "ゼイ", "チユウ", "ダイ", "ノウ", "ケン",
+]
+legal_end = [
+  "カ", "ユ", "メ", "シ", "ド", "ソ", "イ", "ギヨ", "シホウ", "ゼイ", "ダイ", "ノウ",
+  "カンリ", "ロウム",
+]
+prefectures = [
+  "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県",
+  "東京都", "神奈川県", "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県", "静岡県", "愛知県", "三重県",
+  "滋賀県", "京都府", "大阪府", "兵庫県", "奈良県", "和歌山県", "鳥取県", "島根県", "岡山県", "広島県", "山口県", "徳島県",
+  "香川県", "愛媛県", "高知県", "福岡県", "佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県",
+]  # an address's own prefecture, cut off its start
+flag_company = ["2"]  # the values of kind_flag that say company; any other says person
+name_line = 0.99  # the name model calls a kind it is at least this sure of
+ngram = 3  # the name model reads a name's character n-grams of 1 to this many characters (config/kind_names.npz)
+trust_flag = false  # true: the file's flag decides every record's kind
+shared_name_column = false  # true: one column holds every name, a person's or a company's; each goes to the side its kind leans to
+min_block = 64  # records a block holds before it is oversized; the fewest a placeholder is held by
+spread = 10  # a placeholder is held by this many times the field's records per value, or more
+crowd = 64  # the fewest customers a compared field's placeholder is held by
+
+[input]  # mapping.sql
+# every column mapping.sql reads; one a file lacks is read as missing
+columns = ["CONT_ID", "FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA", "NYS_CNV_P_NAME_KANA",
+           "STD_ADDRESS", "ORIGINAL_ADDRESS", "SOURCE_ADDR_CD", "POST_CD", "POST_CD_KANA", "ADDRESS_ONE", "ADDR_CD", "ADDRESS_TWO",
+           "PHONE_NUM_4", "CIF_ID", "BIRTH_DATE", "PERSON_ORG_CODE"]
