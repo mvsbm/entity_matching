@@ -192,8 +192,8 @@ def test_python_s_statements_on_bigquery_call_the_deploy_s_functions_and_make_no
     client = Recorded()
     engine = BigQuery("p.run", "p.fn", client=client, bigquery=MODULE)
     nayose.stage(engine, "functions")
-    engine.run("SELECT gamma_name(x, y), cl_jaro_winkler(a, b) FROM t")
-    assert not [s for s in client.sent if "TEMP FUNCTION" in s] and "`p.run`.gamma_name(x, y), `p.fn`.cl_jaro_winkler(a, b)" in client.sent[-1]
+    engine.run("SELECT gamma_company(x, y), cl_jaro_winkler(a, b) FROM t")
+    assert not [s for s in client.sent if "TEMP FUNCTION" in s] and "`p.run`.gamma_company(x, y), `p.fn`.cl_jaro_winkler(a, b)" in client.sent[-1]
 
 
 def test_every_function_python_calls_on_bigquery_is_one_the_deploy_makes():  # else a lookup would call one never made

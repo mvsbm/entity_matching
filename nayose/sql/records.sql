@@ -35,12 +35,12 @@ CREATE OR REPLACE TABLE this_batch AS SELECT COALESCE(MAX(batch) + 1, 0) AS batc
 
 CREATE OR REPLACE TABLE set_aside AS
 SELECT * EXCEPT (nayose_id),
-  CASE WHEN nayose_id IS NULL OR REGEXP_CONTAINS(nayose_id, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$') THEN 'no ID'
+  CASE WHEN nayose_id IS NULL OR blank(nayose_id) THEN 'no ID'
        WHEN nayose_id IN (SELECT id FROM records) THEN 'already in the run'
        ELSE 'the same ID with different content' END AS reason
 FROM input_rows
 WHERE nayose_id IS NULL
-   OR REGEXP_CONTAINS(nayose_id, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
+   OR blank(nayose_id)
    OR nayose_id IN (SELECT id FROM records)
    OR nayose_id IN (SELECT nayose_id FROM input_rows GROUP BY nayose_id HAVING COUNT(*) > 1);
 
@@ -48,7 +48,7 @@ CREATE OR REPLACE TEMP TABLE kept AS
 SELECT DISTINCT m.*
 FROM mapped AS m
 WHERE m.id IS NOT NULL
-  AND NOT REGEXP_CONTAINS(m.id, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
+  AND NOT blank(m.id)
   AND m.id NOT IN (SELECT id FROM records)
   AND m.id NOT IN (SELECT nayose_id FROM input_rows GROUP BY nayose_id HAVING COUNT(*) > 1);
 
@@ -106,7 +106,7 @@ WITH judged AS (
                              @legal_pattern), FALSE) AS written,
     IF(s.any_name IS NULL, NULL, @intercept + COALESCE(n.s, CAST(0 AS FLOAT64))) AS logit,
     CASE WHEN s.kind_flag IS NULL THEN NULL
-         WHEN REGEXP_REPLACE(nfkc(s.kind_flag), r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]+|[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]+$', '')
+         WHEN trimmed(nfkc(s.kind_flag))
               IN UNNEST(@flag_company) THEN 2
          ELSE 1 END AS flag
   FROM standardized AS s
@@ -252,7 +252,9 @@ WITH made AS (  -- the batch's records, and the run's made again: their fields, 
          (SELECT batch FROM this_batch) AS batch
   FROM sided
   UNION ALL
-  SELECT * FROM redone_fields
+  SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
+         birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name, company_name, batch
+  FROM redone_fields
 ),
 blanked AS (  -- the placeholders read as missing: a name in person_name with full_name, given_name and any_name
   SELECT * REPLACE (
@@ -277,9 +279,7 @@ copies AS (
     NULLIF(REGEXP_REPLACE(
       REPLACE(
         REGEXP_REPLACE(
-          REGEXP_REPLACE(
-            REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(nfkc(address), r'(\d+)丁目', r'\1-'), r'(\d+)番地?', r'\1-'), r'(\d+)号', r'\1'),
-            r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]+|[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]+$', ''),
+          trimmed(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(nfkc(address), r'(\d+)丁目', r'\1-'), r'(\d+)番地?', r'\1-'), r'(\d+)号', r'\1')),
           r'^(.*?[0-9][^ ]*) .*$', r'\1'),
         ' ', ''),
       @prefecture_pattern, ''), '') AS address__address,

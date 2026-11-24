@@ -17,6 +17,7 @@
 -- (each oversized block the batch reaches, its sample and whether it was kept), scored (every pair kept). rule_pairs
 -- and scored hold every batch's; a batch adds the pairs touching its records.
 
+-- 0. The batch's records, the generators and the rules.
 CREATE OR REPLACE TEMP TABLE fresh AS SELECT id FROM records WHERE batch = (SELECT batch FROM this_batch);
 
 -- The generators and the rules, by name, in order: a generator's position is its bit in sources, a rule's its rank
@@ -50,18 +51,18 @@ FROM (SELECT x FROM UNNEST(@keys) AS x WHERE x NOT IN (SELECT name FROM generato
 CREATE OR REPLACE TABLE rule_keys CLUSTER BY k AS  -- each rule's key of each record, with how many records hold it (n)
 SELECT i, k, id, n, id IN (SELECT id FROM fresh) AS new FROM (
   SELECT i, k, id, COUNT(*) OVER (PARTITION BY i, k) AS n FROM (
-    SELECT 0 AS i, customer_id || CHR(31) || full_name AS k, id FROM records
-    UNION ALL SELECT 1, customer_id || CHR(31) || company_name, id FROM records
-    UNION ALL SELECT 2, customer_id || CHR(31) || phone, id FROM records
-    UNION ALL SELECT 3, full_name || CHR(31) || address_code || CHR(31) || phone, id FROM records
-    UNION ALL SELECT 4, company_name || CHR(31) || address_code || CHR(31) || phone, id FROM records
-    UNION ALL SELECT 5, address_code || CHR(31) || phone, id FROM records
-    UNION ALL SELECT 6, phone || CHR(31) || address__address_first3, id FROM records
-    UNION ALL SELECT 7, customer_id, id FROM records
-    UNION ALL SELECT 8, person_name || CHR(31) || address_code, id FROM records
-    UNION ALL SELECT 9, phone || CHR(31) || postal_code, id FROM records
-    UNION ALL SELECT 10, address_code || CHR(31) || phone, id FROM records
-    UNION ALL SELECT 11, given_name || CHR(31) || address_code || CHR(31) || phone, id FROM records
+    SELECT 0 AS i, customer_id || CHR(31) || full_name AS k, id FROM records                            -- X1_CIF_PERSON_NAME
+    UNION ALL SELECT 1, customer_id || CHR(31) || company_name, id FROM records                         -- X2_CIF_COMPANY_NAME
+    UNION ALL SELECT 2, customer_id || CHR(31) || phone, id FROM records                                -- X3_CIF_PHONE
+    UNION ALL SELECT 3, full_name || CHR(31) || address_code || CHR(31) || phone, id FROM records       -- X4_PERSON_NAME_ADDRCD_PHONE
+    UNION ALL SELECT 4, company_name || CHR(31) || address_code || CHR(31) || phone, id FROM records    -- X5_COMPANY_NAME_ADDRCD_PHONE
+    UNION ALL SELECT 5, address_code || CHR(31) || phone, id FROM records                               -- F1_NAME~_ADDRCD_PHONE
+    UNION ALL SELECT 6, phone || CHR(31) || address__address_first3, id FROM records                    -- F2_NAME~_ADDRESS~_PHONE
+    UNION ALL SELECT 7, customer_id, id FROM records                                                    -- F3_NAME~_CIF
+    UNION ALL SELECT 8, person_name || CHR(31) || address_code, id FROM records                         -- F4_NAME_ADDRCD_PHONE~
+    UNION ALL SELECT 9, phone || CHR(31) || postal_code, id FROM records                                -- F5_COMPANY~_PHONE_POSTAL
+    UNION ALL SELECT 10, address_code || CHR(31) || phone, id FROM records                              -- F6_COMPANY~_ADDRCD_PHONE
+    UNION ALL SELECT 11, given_name || CHR(31) || address_code || CHR(31) || phone, id FROM records     -- F7_GIVEN_ADDRCD_PHONE
   ) WHERE k IS NOT NULL AND i IN (SELECT i FROM rules WHERE used)
 );
 
@@ -73,8 +74,14 @@ WITH found AS (
   FROM rule_keys AS a JOIN rule_keys AS b ON a.i = b.i AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
   JOIN compared AS x ON x.id = a.id JOIN compared AS y ON y.id = b.id  -- a row a function reads: the columns compared, not the record's all
   WHERE a.new AND a.n < @oversized
-    AND CASE a.i WHEN 5 THEN near_name(x, y) WHEN 6 THEN near_name(x, y) AND near_address(x, y) WHEN 7 THEN near_name(x, y)
-                 WHEN 8 THEN near_phone(x, y) WHEN 9 THEN near_company(x, y) WHEN 10 THEN near_company(x, y) ELSE TRUE END
+    AND CASE a.i  -- the fuzzy rules' tests; the exact rules' (X1-X5) and F7's are their keys alone
+          WHEN 5 THEN near_name(x, y)                         -- F1_NAME~_ADDRCD_PHONE
+          WHEN 6 THEN near_name(x, y) AND near_address(x, y)  -- F2_NAME~_ADDRESS~_PHONE
+          WHEN 7 THEN near_name(x, y)                         -- F3_NAME~_CIF
+          WHEN 8 THEN near_phone(x, y)                        -- F4_NAME_ADDRCD_PHONE~
+          WHEN 9 THEN near_company(x, y)                      -- F5_COMPANY~_PHONE_POSTAL
+          WHEN 10 THEN near_company(x, y)                     -- F6_COMPANY~_ADDRCD_PHONE
+          ELSE TRUE END
 )
 SELECT f.l, f.r, rules.rule, rules.stage
 FROM (SELECT l, r, MIN(i) AS i FROM found GROUP BY l, r) AS f JOIN rules USING (i);
@@ -138,13 +145,15 @@ GROUP BY 1, 2;
 
 
 -- 3. The model's bits, as a score reads them: the prior's, and each comparison's by level (gamma + 1: the missing
---    level, -1, weighs 0). A pair's weight: the prior and its levels' bits, added in the model's order.
+--    level, -1, weighs 0). A pair's weight: the prior and its levels' bits, added in the model's order; and its
+--    upper bound, from equalities and lengths alone (bound_of).
 CREATE OR REPLACE TEMP TABLE weights AS
-WITH prior AS (  -- λ at the run's size: as fit found it, or for a lookup's (the run's records and the one asked), rescaled
-  SELECT IF(f.records = n.n, f.prior_bits, LOG(lam / (1 - lam), 2)) AS bits
-  FROM fit AS f, (SELECT COUNT(*) + @outside AS n FROM records) AS n,
-       (SELECT LEAST(f.probability * (f.fit_rows - 1) / GREATEST(n.n - 1, 1), 1 - CAST(0.000000001 AS FLOAT64)) AS lam
-        FROM fit AS f, (SELECT COUNT(*) + @outside AS n FROM records) AS n)
+WITH size AS (SELECT COUNT(*) + @outside AS n FROM records),  -- the run's records, and a lookup's beyond the records it read
+lam AS (  -- λ rescaled to that size, a per-pair rate, as em.fitted rescales it
+  SELECT LEAST(f.probability * (f.fit_rows - 1) / GREATEST(n.n - 1, 1), 1 - CAST(0.000000001 AS FLOAT64)) AS lam FROM fit AS f, size AS n
+),
+prior AS (  -- λ's bits: as fit found them at the run's size, else rescaled
+  SELECT IF(f.records = n.n, f.prior_bits, LOG(l.lam / (1 - l.lam), 2)) AS bits FROM fit AS f, size AS n, lam AS l
 )
 SELECT
   (SELECT bits FROM prior) AS prior,
