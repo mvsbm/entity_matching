@@ -472,36 +472,42 @@ def run_file(engine, path: Path, scratch: set | None = None, until: str | None =
             return
 
 
-WRITE = re.compile(r"^((?:\s*--[^\n]*\n)*\s*)(CREATE OR REPLACE TEMP TABLE|CREATE OR REPLACE TABLE|CREATE TABLE IF NOT EXISTS|"
-                   r"CREATE OR REPLACE VIEW|INSERT INTO|DELETE FROM|UPDATE)\s+(\w+)", re.I)
+LEAD = r"(?:\s*--[^\n]*\n|\s*/\*.*?\*/)*\s*"  # a statement's leading comments
+WRITE = re.compile(rf"^({LEAD})(CREATE\s+OR\s+REPLACE\s+TEMP(?:ORARY)?\s+TABLE|CREATE\s+OR\s+REPLACE\s+TABLE|"
+                   r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS|CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW|CREATE\s+TABLE|"
+                   r"INSERT(?:\s+INTO)?|DELETE(?:\s+FROM)?|UPDATE|MERGE(?:\s+INTO)?|TRUNCATE\s+TABLE)\s+`?(\w+)`?", re.I | re.S)
+READ = re.compile(rf"^{LEAD}(SELECT|WITH|CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+(?:FUNCTION|TABLE))\b", re.I | re.S)
 
 
 def scratched(sql: str, temp: set) -> str | None:
     """`sql` as a lookup runs it, so that it never writes the run: a table or a view it makes, a temporary table (added
-    to `temp`: BigQuery's views read the run's tables, never a session's);
+    to `temp`: BigQuery's views read the run's tables, never a session's), unclustered;
     one it would make if missing, skipped where `temp` holds it already (a run's table copied first: lookup's
-    asked); a table it changes, refused unless `temp` holds it. A statement reads a temporary table before the run's
-    of the same name, on both engines."""
+    asked); a table it changes, refused unless `temp` holds it; any other statement but a read or a temporary
+    function, refused. A statement reads a temporary table before the run's of the same name, on both engines."""
     m = WRITE.match(sql)
     if not m:
-        return sql
-    lead, verb, name, rest = m.group(1), m.group(2).upper(), m.group(3), sql[m.end():]
+        if READ.match(sql):
+            return sql
+        raise ValueError(f"a lookup can't tell what this statement writes, so it isn't run: {sql.strip()[:80]}")
+    lead, verb, name, rest = m.group(1), " ".join(m.group(2).upper().split()), m.group(3), sql[m.end():]
     if verb == "CREATE TABLE IF NOT EXISTS" and name in temp:
         return None
     if verb.startswith("CREATE"):
         temp.add(name)
-        return f"{lead}CREATE OR REPLACE TEMP TABLE {name}{rest}"
+        return f"{lead}CREATE OR REPLACE TEMP TABLE {name}{re.sub(r'^\s*CLUSTER\s+BY\s+\w+(?:\s*,\s*\w+)*', '', rest, flags=re.I)}"
     if name not in temp:
         raise ValueError(f"a lookup would write the run's {name} ({verb}): it holds no temporary table of that name")
     return sql
 
 
 def fingerprint(root: Path = HERE, mapping: Path | None = None) -> str:
-    """What an update needs to be what the build was: a hash of every stage file, the values (config.toml) and the
-    input's mapping, by name and content. A build stores it (the table method); an update refuses another."""
+    """What an update needs to be what the build was: a hash of every stage file, the values (config.toml), the
+    input's mapping and the name model, by name and content. A build stores it (the table method); an update refuses another."""
     h = hashlib.sha256()
     the_mapping = mapping or (globals()["mapping"]() if root == HERE else root / "mapping.sql")
     config_file = Path(os.environ.get("NAYOSE_CONFIG") or root / "config.toml") if root == HERE else root / "config.toml"
-    for f in sorted([*(root / "sql").glob("*.sql"), *(p for p in (config_file, the_mapping) if p.exists())], key=lambda p: p.name):
+    name_model = NAME_MODEL if root == HERE else root.parent / "config" / NAME_MODEL.name  # it says each record's kind
+    for f in sorted([*(root / "sql").glob("*.sql"), *(p for p in (config_file, the_mapping, name_model) if p.exists())], key=lambda p: p.name):
         h.update(f.name.encode() + b"\0" + f.read_bytes() + b"\0")
     return h.hexdigest()

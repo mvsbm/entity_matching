@@ -7,7 +7,7 @@
 -- Writes: this_batch (its number), set_aside (the batch's rows set aside, with the reason), placeholders (each
 -- field's values read as missing: the run's, and those the batch's records bring past the line), records (a record a
 -- row: its fields, its kind, the copies, its batch). @lookup: the batch is records asked about, prepared as the run
--- prepares its own, and nothing it holds is a placeholder of the run's (lookup.sql; the job rolls it all back).
+-- prepares its own, and nothing it holds is a placeholder of the run's (nayose.lookup, in temporary tables).
 -- Values: config.toml [records], and the patterns nayose builds from its lists (legal_pattern, prefecture_pattern).
 
 

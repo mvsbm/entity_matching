@@ -16,7 +16,7 @@ every job's tables are compared by digest, as `tests/test_parity.py` compares th
 
 ## 2 · Lookups on BigQuery
 
-`nayose.lookup` runs on BigQuery as here, its statements writing temporary tables alone. `deploy/run.py` gets a
+`nayose.lookup` is written to run on BigQuery as here, its statements writing temporary tables alone; the parity step proves it. `deploy/run.py` gets a
 `lookup` job that writes the answer, which holds a record's values, to the run's table `looked_up`, and prints only
 that it did, so no value reaches Jenkins' log. The parity step proves it equal to the lookups here, and measures how
 much of the key index a lookup's keys read.
