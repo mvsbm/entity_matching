@@ -582,7 +582,7 @@ def train_name_model(reference: Path, generator: Path) -> dict:
     engine = DuckDB()
     engine.put("names", pd.DataFrame({"i": range(len(names)), "name": names["name"].astype("string")}))
     nayose.stage(engine, "functions")
-    v = nayose.values("records")
+    v = nayose.values_of("records")
     texts = engine.frame(r"""SELECT NULLIF(TRANSLATE(REGEXP_REPLACE(TRANSLATE(nfkc(REGEXP_REPLACE(name, r'[\s\x{3000}]+', '')), @hiragana, @katakana),
                                      @legal_pattern, ''), @kana_fold_from, @kana_fold_to), '') AS t FROM names ORDER BY i""",
                          {k: v[k] for k in ("hiragana", "katakana", "legal_pattern", "kana_fold_from", "kana_fold_to")})["t"]

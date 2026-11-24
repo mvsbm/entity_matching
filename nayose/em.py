@@ -50,7 +50,7 @@ def fit(counts: str, settings: str, stored: str | None = None) -> str:
     model = kept["model"] if kept is not None else learn(levels, got["sample"], c["prior"][0], c["patterns"] or [], s)
     exact = exact_u(levels, got["file"])
     sampled = sampled_u(levels, got["file"], [x for x in comparisons(levels) if ELSE not in exact.get(x, {})])
-    return given(model, assemble(model, got["file"], sampled), got["file"]["n"], u_basis(got["file"], sampled, exact, comparisons(levels)), [])
+    return fitted(model, assemble(model, got["file"], sampled), got["file"]["n"], u_basis(got["file"], sampled, exact, comparisons(levels)), [])
 
 
 def refresh(stored: dict, got: dict) -> str:
@@ -65,7 +65,7 @@ def refresh(stored: dict, got: dict) -> str:
     for name, x in check.items():
         basis[name]["last_check"] = {k: v if math.isfinite(v) else None for k, v in x.items()}
     scoring = assemble(model, got, {name: b["sampled"] for name, b in basis.items()})
-    return given(model, scoring, n, basis, [dict(comparison=x, **basis[x]["last_check"]) for x in again])
+    return fitted(model, scoring, n, basis, [dict(comparison=x, **basis[x]["last_check"]) for x in again])
 
 
 def stale(levels: list[dict], basis: dict, exact: dict, n: int) -> tuple[list[str], dict]:
@@ -89,7 +89,7 @@ def resampled(counts: str, settings: str, stored: str | None = None) -> str:
     return ",".join(x for x in comparisons(levels) if ELSE not in exact.get(x, {}))
 
 
-def given(model: dict, scoring: dict, n: int, basis: dict, again: list[dict]) -> str:  # what fit gives back: fit()'s
+def fitted(model: dict, scoring: dict, n: int, basis: dict, again: list[dict]) -> str:  # what fit gives back: fit()'s
     lam = min(model["probability"] * (model["fit_rows"] - 1) / max(n - 1, 1), 1 - 1e-9)  # λ rescaled to the file's size: a per-pair rate
     return json.dumps(dict(
         levels=[dict(lv, file_m=f["m"], file_u=f["u"], bits=bits(f["m"], f["u"])) for lv, f in zip(model["levels"], scoring["levels"])],

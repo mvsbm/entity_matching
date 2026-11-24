@@ -93,8 +93,8 @@ def records(engine, files: list | None, lookup: bool = False, scratch: set | Non
     if scratch is None:
         engine.put("name_weights", name_weights())
     stage(engine, "functions", scratch=scratch)
-    run_file(engine, mapping(), scratch=scratch, **values("mapping"))
-    stage(engine, "records", scratch=scratch, **values("records", lookup=lookup))
+    run_file(engine, mapping(), scratch=scratch, **values_of("mapping"))
+    stage(engine, "records", scratch=scratch, **values_of("records", lookup=lookup))
     if files is not None and engine.name == "duckdb":  # a temporary table, held whole: kept to what the report reads
         engine.run("CREATE OR REPLACE TEMP TABLE input AS SELECT * FROM input LIMIT 10000")  # (unmapped's sample)
 
@@ -104,7 +104,7 @@ def name_weights() -> pd.DataFrame:  # the name model (config/kind_names.npz): e
     return pd.DataFrame({"term": model["terms"].tolist(), "w": model["coef"]})
 
 
-def values(name: str, refit: bool = True, lookup: bool = False) -> dict:
+def values_of(name: str, refit: bool = True, lookup: bool = False) -> dict:
     """The values stage `name` reads as @name, from config.toml: what a run here passes as query parameters, and what
     a BigQuery procedure declares (engines.procedures). `refit`: a build (an update keeps the model); `lookup`: the
     batch is a record asked about. match's @threshold, lookup's and report's own are their jobs'."""
@@ -138,7 +138,7 @@ def fit(engine, refit: bool = True) -> None:
     sampled pairs and K comparisons; O(N + S·K) on the
     file. refit False (an update): the build's model kept, its u measured again on the run's records."""
     stage(engine, "functions")
-    stage(engine, "fit", **values("fit", refit=refit))
+    stage(engine, "fit", **values_of("fit", refit=refit))
 
 
 def score(engine, lookup: bool = False, scratch: set | None = None, until: str | None = None, outside: int = 0) -> None:
@@ -146,7 +146,7 @@ def score(engine, lookup: bool = False, scratch: set | None = None, until: str |
     `lookup`: every candidate scored, whatever its points (lookup), in `scratch`'s temporary tables, up to the table
     `until` makes; `outside`: the run's records its records table doesn't hold (a lookup's holds its blocks' alone)."""
     stage(engine, "functions", scratch=scratch)
-    stage(engine, "score", scratch=scratch, until=until, **(values("score", lookup=lookup) | {"outside": outside}))
+    stage(engine, "score", scratch=scratch, until=until, **(values_of("score", lookup=lookup) | {"outside": outside}))
 
 
 def lookup(engine, record: str | None = None, values: dict | None = None, at_least: float | None = None, most: int | None = None) -> dict:
@@ -343,7 +343,7 @@ def decide(engine, files: list) -> None:
     else:
         engine.run("CREATE OR REPLACE TEMP TABLE given (id_l STRING, id_r STRING, decision STRING, why STRING)")  # as a file's
     stage(engine, "functions")
-    stage(engine, "decide", **values("decide"))
+    stage(engine, "decide", **values_of("decide"))
 
 
 def check_threshold(threshold: float) -> None:  # refused below [score] keep_from: the run keeps no pair below it
@@ -367,7 +367,7 @@ FIELDS = ("full_name", "person_name", "given_name", "company_name", "any_name", 
 
 def report(engine, steps: dict[str, float], job: str) -> str:
     """report.txt, after a build or an update on `engine`: report.sql, then report_text."""
-    stage(engine, "report", **values("report"))
+    stage(engine, "report", **values_of("report"))
     return report_text(engine, steps, job)
 
 
@@ -376,7 +376,7 @@ def report_text(engine, steps: dict[str, float], job: str) -> str:
     it: what ran, the summary, each field's fill and look, the input's columns no field reads (here, from the input
     table's own columns), the batch's candidates by bits and each band's commonest patterns, the entities' sizes, each
     stage, each key's pairs, the model and the largest blocks. O(F + C) over the report's tables."""
-    c, v = config(), values("report")
+    c, v = config(), values_of("report")
     lo, edges, patterns = v["floor"], v["edges"], json.loads(v["patterns"])
     counts = engine.frame("SELECT * FROM report_counts").iloc[0]
     pct = lambda x: "—" if x is None or pd.isna(x) else f"{x:.1%}"
