@@ -1,8 +1,7 @@
 """Candidate generation (blocking): which pairs are worth scoring, as SQL on a columnar engine (DuckDB). The records
 are a table in `engine`, so the same code serves any size.
-Only pairs that touch a query record (one an earlier stage left unresolved) are produced, so leftovers can still join
-existing clusters. `query=None` makes every record a query; with `clusters`, pairs already inside one cluster are
-then dropped, so two clusters can join too.
+With a `query` (a table of ids: an increment's batch), only pairs that touch one of its records are produced;
+`query=None` makes every record a query.
 
 KeyBlocker            all keys equal                                      self-join             O(N + P)
 DeletionKeys          the value or a one-character deletion of it equal   UNNEST + self-join    O(N·L + P)
@@ -23,35 +22,28 @@ import numpy as np
 import pandas as pd
 
 from er.engine.engine import Engine
-from er.config import Blocker, Budget, DeletionKeys, hashed, InputError, KeyBlocker, keys_of, q
+from er.config import Blocker, Budget, DeletionKeys, hashed, InputError, KeyBlocker, q
 
 
 class Records:
-    """The records, a table in `engine`; `clusters` (a table: uid, cluster_id) adds a column holding each record's
-    previous cluster, `query` is a table of the query ids."""
+    """The records, a table in `engine`; `query` is a table of the query ids."""
 
-    def __init__(self, records: str, uid: str, engine: Engine, query: str | None = None, clusters: str | None = None,
-                 columns: Iterable[str] | None = None):
+    def __init__(self, records: str, uid: str, engine: Engine, query: str | None = None):
         self.engine, self.uid, self.views = engine, uid, []
-        base = q(records)
-        if clusters is not None:
-            cols = ", ".join(f"t.{q(x)}" for x in dict.fromkeys([uid, *columns])) if columns else "t.*"  # the copy holds only what is read
-            base = self._temp(f"SELECT {cols}, c.cluster_id AS __cluster FROM {base} t JOIN {q(clusters)} c USING ({q(uid)})")
-        self.table, self.cluster = base, clusters is not None
+        self.table = q(records)
         self.query = None if query is None else q(query)
         self.touching = False                 # the query is a batch joined against all (an increment), not most of the file
         self.dk: dict[tuple, str] = {}        # deletion-key rows per (key, within), built once (variants)
-        self.only: str | None = None          # SQL on a pair's l and r: a pair it is false for is never listed (candidates)
 
     def variants(self, b: DeletionKeys) -> str:
-        """b's rows, one per deletion key (__dk) of its value (__v), with the uid, the within columns and the cluster:
+        """b's rows, one per deletion key (__dk) of its value (__v), with the uid and the within columns:
         unnested once, then read by every count, join and sample of these records. O(N·L) once. When touching (an
         increment), only the blocks the batch's keys reach are kept, all an increment reads, so memory follows the batch."""
         at = (b.key.name, tuple(w.name for w in b.within))
         if at not in self.dk:
             k, within, u = q(b.key.name), [q(w.name) for w in b.within], q(self.uid)
             at_each, key, once = deletions_sql(k)
-            cols = [u] * bool(self.uid) + within + ["__cluster"] * self.cluster + [f"{k} AS __v", f"{key} AS __dk"]
+            cols = [u] * bool(self.uid) + within + [f"{k} AS __v", f"{key} AS __dk"]
             rows = lambda where="": f"SELECT {', '.join(cols)} FROM {self.table}, {at_each} WHERE {_filled([b.key.name, *(w.name for w in b.within)])} AND {once}{where}"
             sql = rows()
             if self.touching and self.query:
@@ -75,10 +67,9 @@ class Records:
     def asked(self, t: str) -> str:  # the query's rows of t
         return f"(SELECT * FROM {t} WHERE {q(self.uid)} IN (SELECT {q(self.uid)} FROM {self.query}))"
 
-    def filters(self, a: str, b: str, query: bool = True) -> str:  # the query and cluster conditions on a pair (a, b)
+    def filters(self, a: str, b: str, query: bool = True) -> str:  # the query's condition on a pair (a, b)
         u = q(self.uid)
-        out = [f"({a}.{u} IN (SELECT {u} FROM {self.query}) OR {b}.{u} IN (SELECT {u} FROM {self.query}))"] if self.query and query else []
-        return " AND ".join(out + ([f"{a}.__cluster <> {b}.__cluster"] if self.cluster else [])) or "TRUE"
+        return f"({a}.{u} IN (SELECT {u} FROM {self.query}) OR {b}.{u} IN (SELECT {u} FROM {self.query}))" if self.query and query else "TRUE"
 
 
 def deletions_sql(col: str) -> tuple[str, str, str]:
@@ -199,11 +190,9 @@ def estimate(b: Blocker, records: "Records | str", engine: Engine | None = None,
 
 
 def candidates(blockers: tuple[Blocker, ...], records: str, uid: str, query: str | None, budget: Budget, *, engine: Engine,
-               clusters: str | None = None,
                into: str | None = None, touching: bool = False, gate: Callable[[str], str] | None = None,
                floor: float = 0.0, capacity: int | None = None,
-               keep: Callable[[str], str] | None = None,
-               only: str | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
+               keep: Callable[[str], str] | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
     """The union of all generators, with the generators that found each pair in `sources`, and a per-generator report.
     With `into`, the union is written to that table in `engine` and its name returned instead of a frame, so nothing of
     size C reaches pandas. `touching` (an increment, with `query` the batch): the deletion keys hold only the blocks the
@@ -216,7 +205,6 @@ def candidates(blockers: tuple[Blocker, ...], records: str, uid: str, query: str
     of those of a generator's pairs worth keeping (er.match.reaching_sql), applied a slice at a time (_kept), so only
     one generator's pairs are ever held in full. Each listed pair leaves its hash, so what the gate reads of the pairs
     other keys listed, each generator's pairs and report.attrs["listed"] (the distinct pairs listed) are as without it.
-    `only`: SQL on a pair's l and r; a pair it is false for is never listed, so not counted (an increment without bridging).
     shortcut: a pair is known by a 64-bit hash, so two pairs in 10^8 share one about once in 3,000 runs (one count, one
     sampled pair off); a 128-bit key (two hashes) if that ever matters."""
     if not blockers:
@@ -224,8 +212,8 @@ def candidates(blockers: tuple[Blocker, ...], records: str, uid: str, query: str
     if len(blockers) > 63:  # one bit per generator in a BIGINT
         raise InputError(f"{len(blockers)} candidate generators: a run takes at most 63", fix="add fewer name features: each adds its own")
     assert query is not None or not touching, "touching needs the batch as the query"
-    r = Records(records, uid, engine, query, clusters, columns=[k.name for b in blockers for k in keys_of(b)])
-    r.touching, r.only = touching, only
+    r = Records(records, uid, engine, query)
+    r.touching = touching
     l, rr = f"{uid}_l", f"{uid}_r"
     try:
         m = budget.min_oversized()
@@ -272,7 +260,7 @@ def _kept(r: Records, sql: str, keep: Callable[[str], str] | None, listed: str |
     """The pairs of `sql` (l, r) as a table, only those keep() keeps if given, and how many it listed: listed, each
     pair's hash added to the table `listed`, then filtered KEEP_SLICE at a time, so the filter's join never holds more
     than a slice. With `pending`, a listing under a slice waits there for _bound, with the others: filtered then."""
-    table = r._temp(f"SELECT * FROM ({sql}) WHERE {r.only}" if r.only else sql)
+    table = r._temp(sql)
     n = r.engine.value(f"SELECT count(*) FROM {table}")
     if keep is None:
         return table, n

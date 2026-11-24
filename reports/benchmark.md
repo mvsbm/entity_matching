@@ -8,13 +8,13 @@ Each population's test split, with λ and m fitted on its train split without la
 
 | scenario | rules_recall | recall | interval | false_merges | fp_rate_at_most | household_merges | model_links | expected_false | false_links |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| as reported (seed 0) | 0.096 | 0.4817 | 0.462–0.502 | 0 | 0.26% | 45 | 882 | 1.02 | 0 |
-| seed 1 | 0.1095 | 0.4861 | 0.466–0.507 | 0 | 0.27% | 49 | 858 | 0.91 | 0 |
-| seed 2 | 0.1035 | 0.5053 | 0.485–0.526 | 0 | 0.25% | 55 | 926 | 1.08 | 0 |
-| typos doubled | 0.0921 | 0.4307 | 0.411–0.451 | 0 | 0.29% | 23 | 777 | 1.51 | 0 |
-| fields emptier (last column 45% filled) | 0.0786 | 0.4439 | 0.424–0.464 | 0 | 0.29% | 22 | 830 | 1.0 | 0 |
-| prior_recall halved (λ ×2) | 0.096 | 0.4975 | 0.477–0.518 | 0 | 0.26% | 47 | 920 | 0.93 | 0 |
-| prior_recall ×1.5 (λ ×⅔) | 0.096 | 0.4771 | 0.457–0.497 | 0 | 0.27% | 27 | 862 | 1.15 | 0 |
+| as reported (seed 0) | 0.096 | 0.4817 | 0.462–0.502 | 0 | 0.26% | 45 | 1111 | 1.03 | 0 |
+| seed 1 | 0.1095 | 0.4861 | 0.466–0.507 | 0 | 0.27% | 49 | 1115 | 0.94 | 0 |
+| seed 2 | 0.1035 | 0.5053 | 0.485–0.526 | 0 | 0.25% | 55 | 1171 | 1.1 | 0 |
+| typos doubled | 0.0921 | 0.4307 | 0.411–0.451 | 0 | 0.29% | 23 | 996 | 1.52 | 0 |
+| fields emptier (last column 45% filled) | 0.0786 | 0.4439 | 0.424–0.464 | 0 | 0.29% | 22 | 1016 | 1.02 | 0 |
+| prior_recall halved (λ ×2) | 0.096 | 0.4975 | 0.477–0.518 | 0 | 0.26% | 47 | 1150 | 0.94 | 0 |
+| prior_recall ×1.5 (λ ×⅔) | 0.096 | 0.4771 | 0.457–0.497 | 0 | 0.27% | 27 | 1091 | 1.17 | 0 |
 
 ## Person or company: end to end
 
@@ -32,14 +32,14 @@ Populations with one name column for every kind (`design.generate.kind_problems`
 | poor (10%, 80%) | the flag alone | 0.4046 | 121 | 93 | 86.9% | 2533 | 87.9% | 644 | 4.4 |
 | poor (10%, 80%) | the kind step | 0.4146 | 111 | 86 | 93.6% | 2690 | 87.2% | 314 | 2.8 |
 
-## Cost: files of growing size (time grows like N^0.58)
+## Cost: files of growing size (time grows like N^0.56)
 
 Each file is resolved by `python -m er build` in a process of its own, fitted on the file itself; DuckDB memory limit: 8GB. Peak memory is the process's, Python included. Step columns are seconds. `fit` (on 100,000 records) and the u sample of the file inside it (10,000,000 pairs) grow far slower than the file (the fit's sample is fixed; only u's exact counts read every record), so at these sizes the total grows far slower than N. Above 60,000 entities personas repeat, so those rows measure cost only.
 
 | records | seconds | peak_memory_gb | load | budget | fit | rules | candidates | score | cluster | report | write | recall | false_merges | fp_rate_at_most | model_links | expected_false | false_links |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 13019 | 2.3 | 0.59 | 0.3 | 0.09 | 1.45 | 0.06 | 0.2 | 0.02 | 0.01 | 0.09 | 0.05 | 0.4843 | 2 | 0.44% | 1122 | 1.61 | 1 |
-| 25947 | 2.8 | 0.69 | 0.49 | 0.13 | 1.5 | 0.09 | 0.31 | 0.03 | 0.01 | 0.1 | 0.09 | 0.492 | 0 | 0.11% | 2144 | 2.33 | 0 |
-| 52115 | 3.8 | 0.89 | 0.8 | 0.2 | 1.75 | 0.15 | 0.54 | 0.04 | 0.02 | 0.12 | 0.17 | 0.4784 | 2 | 0.11% | 4301 | 4.82 | 2 |
-| 77926 | 4.9 | 1.13 | 1.14 | 0.27 | 2.07 | 0.21 | 0.76 | 0.05 | 0.03 | 0.13 | 0.24 | 0.4747 | 6 | 0.14% | 6287 | 8.07 | 5 |
-| 1039995 | 26.7 | 7.58 | 5.23 | 1.97 | 4.06 | 2.04 | 11.63 | 0.2 | 0.13 | 0.27 | 1.18 | — | — | — | 44065 | 54.54 | — |
+| 13019 | 2.3 | 0.6 | 0.3 | 0.09 | 1.48 | 0.05 | 0.2 | 0.02 | 0.01 | 0.1 | 0.05 | 0.4843 | 2 | 0.44% | 1414 | 1.62 | 1 |
+| 25947 | 2.7 | 0.69 | 0.49 | 0.13 | 1.5 | 0.08 | 0.3 | 0.03 | 0.01 | 0.1 | 0.08 | 0.492 | 0 | 0.11% | 2782 | 2.34 | 0 |
+| 52115 | 3.8 | 0.88 | 0.8 | 0.2 | 1.76 | 0.13 | 0.6 | 0.04 | 0.03 | 0.12 | 0.16 | 0.4784 | 2 | 0.11% | 5570 | 4.9 | 2 |
+| 77926 | 4.9 | 1.09 | 1.14 | 0.27 | 2.07 | 0.18 | 0.82 | 0.05 | 0.03 | 0.13 | 0.23 | 0.4747 | 6 | 0.14% | 8155 | 8.25 | 5 |
+| 1039995 | 24.8 | 7.63 | 5.39 | 1.99 | 4.04 | 1.91 | 9.82 | 0.22 | 0.12 | 0.26 | 1.02 | — | — | — | 69727 | 56.85 | — |

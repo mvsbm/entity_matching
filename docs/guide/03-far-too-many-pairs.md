@@ -29,7 +29,7 @@ A key can combine fields, such as the phone and the prefecture. The configuratio
 
 **Two more, measured at design time and left out.** A **sorted neighbourhood** sorts all records by a key, such as the folded name, and compares each record with the next three (a window of 4): a typo near the end of a name keeps the record close in the sorted order. Its reach shrinks as the file grows ([below](#keeping-every-potential-match)). **TF-IDF neighbours** cut each name into overlapping pieces of 2–3 characters, give rare pieces more weight, and compare each record with its 5 most similar names (a cosine similarity of at least 0.5): this finds typos anywhere in a name, even in the first character. It compares every record with every other ([below](#scaling-to-a-million-records)).
 
-**Only pairs the rules have not settled.** The rules in [chapter 4](04-certain-cases-first-rules.md) settle the clear cases first. A generator lists only pairs that touch a record the rules left alone, and pairs between two of their clusters ([below](#keeping-every-potential-match)).
+**The rules' pairs too.** A pair a rule finds ([chapter 4](04-certain-cases-first-rules.md)) is listed and scored like any other: nothing is settled before people decide it.
 
 ### Why this solution
 
@@ -100,7 +100,7 @@ Each key's pairs on train split into pairs of one entity, which grow like N, and
 Everything is near-linear except two kinds of step:
 
 1. **A key with a fixed pool of values.** The last four phone digits take only 10,000 values, however large the file. Chance collisions grow like N²/(2 × 10,000), while true duplicates grow only like N. Both the phone key and rule F2 on the phone rest on it. Addresses are such a pool too: households share them, and a country has only so many.
-2. **All-against-all similarity.** TF-IDF compares each record the rules left alone with every record, so its work grows like N².
+2. **All-against-all similarity.** TF-IDF compares each record with every record, so its work grows like N².
 
 The chosen keys still grow faster than N in part, but from a far smaller constant: the largest, phone + name initial, projects to 2.1 pairs per record.
 
@@ -171,7 +171,7 @@ A name of L characters emits L + 1 keys, so the work is O(N·L + P). Spelling co
 
 **Why within the postal area?** Many short names differ from another person's by one kana. On their own, the person-name deletion keys would pair them across the whole country. Within the postal area they grow like N^1.03. A potential match whose names are one edit apart but whose postal areas differ needs strong evidence from another field, and that field has a key of its own. The coverage check below confirms this on train.
 
-**Two rule clusters of one entity.** The rules sometimes split one entity into two clusters. A pair between two such clusters touches no record the rules left alone, so it is scored only if every pair across two clusters is (`[model] bridge`). A false pair there would merge both clusters, so it must pass as *better*, with a significant gain. It gains 8 true pairs on cross-validated train and loses none (p = 0.0078), and moves none on val, so it is adopted.
+**The rules' pairs are no exception.** Every pair the keys list is scored, a pair a rule also finds too, and none merges before people decide it: so no rule pair keeps a pair from being listed.
 
 | Change | Kind | Cross-validated train | Val | Adopted |
 |---|---|---|---|---|
@@ -247,7 +247,7 @@ On train, every true pair that could reach the threshold shares a key, at its si
 
 - `er/config.py`: the generator types `KeyBlocker` and `DeletionKeys` (one-deletion keys); `er/candidates.py`: each as SQL (`pairs_sql`), `candidates` (merge by bits), `estimate` (the count before any join)
 - `er/match.py`: `pattern_coverage` (the same question without labels, which every run's `report.txt` reports)
-- `er/config.py`: `Budget` (`sample_pairs`); `FSSpec.bridge` (score every pair across two clusters)
+- `er/config.py`: `Budget` (`sample_pairs`)
 - `er/match.py`: `exact_u` (u counted: the leading exact levels, and a one-edit level after them through one-deletion keys), `sample_u` (u sampled, every comparison's levels in one pass), `assemble_u`, `refreshed_u` (an increment's u)
 - `config/pipeline.toml`: every generator, in logical fields; `config/settings.toml`: the fields behind the compound keys (`any_name`, the postal area) and the normalizers `initial` and `first3`
 - `er/steps/budget.py`: `steps.budget.budget`, the exact count on the file before any join; `steps.budget.capacity`, the memory limit plus the spill room; `er/steps/fit.py`: `steps.fit.fit`, the fit and then u on the file; `er/candidates.py`: `oversized`, `sample_sql`, `_gate`, the sample check of big blocks; `scripts/benchmark.py`: whole runs on generated files from 13,000 to a million records

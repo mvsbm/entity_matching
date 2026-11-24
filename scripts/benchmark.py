@@ -56,23 +56,26 @@ def population(spec) -> tuple[pd.DataFrame, pd.DataFrame]:
     return g.df, g.truth.set_index(UID)
 
 
-def accepted(run: Path, p) -> tuple[pd.Series, pd.DataFrame]:
+def accepted(run: Path, p) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
     """The method at its design threshold, as a match run at min_match_weight would offer it and people take it whole:
-    every rule pair, and the model's pairs there or above with a name compared (named) that may join two rule
-    clusters (keep), from the run's scored/; the records' entities by transitive closure (er.cluster.merge). Each
-    record's entity, and the model's pairs taken."""
+    every rule pair, and the model's pairs there or above with a name compared (named), from the run's scored/; the
+    records' entities by transitive closure (er.cluster.merge). Each record's entity, the rules' alone, and the model's
+    pairs taken."""
     l, r = f"{UID}_l", f"{UID}_r"
     scored = read_parquet(run / "scored")
-    model = scored[scored["sources"].notna() & scored["named"] & scored["keep"] & (scored["match_weight"] >= p.fs.min_match_weight)]
-    edges = pd.concat([scored.loc[scored["rule"].notna(), [l, r]], model[[l, r]]], ignore_index=True)
+    model = scored[scored["sources"].notna() & scored["named"] & (scored["match_weight"] >= p.fs.min_match_weight)]
+    rules = scored.loc[scored["rule"].notna(), [l, r]]
     ids = read_parquet(run / "gold.parquet")[UID]
     engine = connect()
     engine.register("er_base", pd.DataFrame({UID: ids, "cluster_id": ids}))
-    engine.register("er_edges", edges)
-    merge(engine, "er_base", "er_edges", "er_entities", UID)
-    entity = engine.frame("SELECT * FROM er_entities").set_index(UID)["cluster_id"].reindex(ids.to_numpy())
+
+    def closure(edges: pd.DataFrame) -> pd.Series:  # each record's entity, these pairs taken
+        engine.register("er_edges", edges)
+        merge(engine, "er_base", "er_edges", "er_entities", UID)
+        return engine.frame("SELECT * FROM er_entities").set_index(UID)["cluster_id"].reindex(ids.to_numpy())
+    entity, by_rules = closure(pd.concat([rules, model[[l, r]]], ignore_index=True)), closure(rules)
     engine.close()
-    return entity, model
+    return entity, by_rules, model
 
 
 def links(model: pd.DataFrame) -> dict:
@@ -83,8 +86,7 @@ def links(model: pd.DataFrame) -> dict:
 def quality(run: Path, truth: pd.DataFrame, p) -> dict:
     """A written run's entities at the design threshold (accepted) against the truth: after the rules, and at the end;
     and its model links that are false. Pairs of two people of one household are counted apart (household_merges)."""
-    gold, model = accepted(run, p)
-    rules = read_parquet(run / "state" / "rule_clusters.parquet").set_index(UID)["cluster_id"].reindex(gold.index)
+    gold, rules, model = accepted(run, p)
     entity, household = labelled(truth.reset_index(), S.data)
     e, h = entity.reindex(gold.index), household.reindex(gold.index) if household is not None else None
     m = cluster_metrics(gold, e, h)
@@ -189,7 +191,7 @@ def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
             continue
         steps = json.loads((d / "run" / "steps.json").read_text(encoding="utf-8"))["runs"][-1]["steps"]
         row = dict(records=size, seconds=round(sum(x["seconds"] for x in steps), 1), peak_memory_gb=max(x["peak_memory_gb"] for x in steps),
-                   **{x["step"]: x["seconds"] for x in steps}, recall="—", false_merges="—", fp_rate_at_most="—", **links(accepted(d / "run", FINAL)[1]),
+                   **{x["step"]: x["seconds"] for x in steps}, recall="—", false_merges="—", fp_rate_at_most="—", **links(accepted(d / "run", FINAL)[2]),
                    false_links="—")
         if n <= len(PERSONS):
             q = quality(d / "run", truth, FINAL)

@@ -323,7 +323,6 @@ class FSSpec:
     model: FSModel
     min_match_weight: float                   # the method's line (bits): the review floor and the benchmark read it; probability = 1 / (1 + 2^−w)
     budget: Budget
-    bridge: bool = False                      # may join two clusters the rules formed
     needs: tuple[str, ...] = ()               # comparisons of which one must be compared for a merge without people
 
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
@@ -485,7 +484,7 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
     if unknown:
         raise ValueError(f"[model] needs: {unknown} are not comparisons in [[model.comparisons]]")
     fs = FSSpec(standardize=std, model=model, blockers=tuple(generators[g] for g in m["generators"]), min_match_weight=m["min_match_weight"],
-                budget=budget, bridge=m.get("bridge", False), needs=tuple(m.get("needs", ())))
+                budget=budget, needs=tuple(m.get("needs", ())))
     t = cfg["threshold"]
     return Pipeline(fields=Fields(mandatory=tuple(f["mandatory"]), one_of=tuple(map(tuple, f["one_of"])),
                                   optional=tuple(f["optional"]), identifying=tuple(f.get("identifying", ()))),

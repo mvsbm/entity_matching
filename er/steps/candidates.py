@@ -1,6 +1,6 @@
 """Step 5, candidates: the pairs the keys list, as cands. O(N·L + Σ P_g); an increment's, those touching its batch:
-O(|Δ|·Σ b + scan). Reads records, rule_clusters and rule_kept; writes cands, and er_query (the records the rules left
-alone), er_gate and the bound's narrow copies while it runs. A block of 64+ records is joined only if a sample of its
+O(|Δ|·Σ b + scan). Reads records and rule_kept; writes cands, and er_gate and the bound's narrow copies while it
+runs. A block of 64+ records is joined only if a sample of its
 pairs, scored as the run scores, reaches the search floor (the gate)."""
 import time
 from dataclasses import dataclass, field
@@ -12,7 +12,6 @@ from er.config import hashed, q
 from er.match import bound_reads, bound_tests, reaching_sql, rough_reads, search_floor
 from er.steps.budget import capacity
 from er.steps.job import Job
-from er.steps.rules import alone, sized
 from er.steps.score import scored_in_slices
 
 
@@ -29,13 +28,9 @@ def candidates(job: Job, n: int, scoring: dict, batch: str | None = None, reachi
     t, engine, uid, p = time.perf_counter(), job.engine, job.uid, job.pipeline
     fs = p.fs
     gate = _Gate(job, scoring, n)
-    if not fs.bridge and not batch:  # the query: the records the rules left alone
-        engine.run(f"CREATE OR REPLACE TABLE er_query AS SELECT * FROM {sized('rule_clusters', '=', uid)}")
-    _, report = listing(fs.blockers, "records", uid, batch or (None if fs.bridge else "er_query"), fs.budget,
-                        clusters="rule_clusters" if fs.bridge else None, engine=engine, into="cands", touching=batch is not None,
+    _, report = listing(fs.blockers, "records", uid, batch, fs.budget, engine=engine, into="cands", touching=batch is not None,
                         gate=gate, floor=search_floor(p), capacity=capacity(engine),
-                        keep=(lambda pairs: reaching(job, scoring, n, pairs)) if reaching_only else None,
-                        only=alone("l", "r", uid) if batch and not fs.bridge else None)  # as a full run's query: a pair touches a record the rules left alone
+                        keep=(lambda pairs: reaching(job, scoring, n, pairs)) if reaching_only else None)
     engine.run("DROP TABLE IF EXISTS er_bound_records; DROP TABLE IF EXISTS er_bound_hashes")
     gated = _gated(job, report.attrs["gated"])
     stored = job.count("cands")
@@ -73,8 +68,6 @@ class _Gate:
 
     def __call__(self, pairs: str) -> str:
         job = self.job
-        if not job.pipeline.fs.bridge:  # a pair of two records the rules joined is no pair the run lists: it keeps no block
-            job.engine.run(f"CREATE OR REPLACE TEMP TABLE {pairs} AS SELECT * FROM {pairs} WHERE {alone(q(job.l), q(job.r), job.uid)}")  # made again: its rowids dense, as scored_in_slices slices them
         start, total = time.perf_counter(), job.count(pairs)
         scored_in_slices(job, self.scoring, pairs, "er_gate", n_records=self.n, floor=search_floor(job.pipeline))  # a block is kept by a pair at its floor
         self.seconds, self.pairs = self.seconds + time.perf_counter() - start, self.pairs + total

@@ -97,11 +97,10 @@ def test_an_interrupted_increment_completes_when_run_again(tmp_path, population,
     assert update(tmp_path / "new.parquet", tmp_path / "unlogged", s, p).added == len(g.df[new])  # so the batch goes in again, whole
 
 
-def test_without_bridging_an_increment_lists_no_pair_of_two_records_the_rules_joined(tmp_path, population):
+def test_a_pair_of_two_records_the_rules_join_to_others_is_listed_by_a_full_run_and_an_increment_alike(tmp_path, population):
     from er.jobs.update import update
     from er.jobs.build import build
     s, p, g = population
-    assert not p.fs.bridge
     uid, l, r = s.data.unique_id, f"{s.data.unique_id}_l", f"{s.data.unique_id}_r"
     both = g.df[g.df["CIF_ID"].notna() & g.df["FULL_NAME_KANA"].notna() & g.df["PHONE_NUM_4"].notna()]
     a, b = both.iloc[0], both[both["PHONE_NUM_4"] != both.iloc[0]["PHONE_NUM_4"]].iloc[0]
@@ -114,14 +113,13 @@ def test_without_bridging_an_increment_lists_no_pair_of_two_records_the_rules_jo
     pd.concat([g.df, pd.DataFrame([x, y])]).to_parquet(tmp_path / "all.parquet", index=False)
     listed = lambda run: run.engine.value(f"SELECT count(*) FROM cands WHERE {l} = '9000000001' AND {r} = '9000000002'")
     full = build(tmp_path / "all.parquet", tmp_path / "full", s, p, reaching_only=False)  # every pair the keys list, whatever it scores
-    rc = pd.read_parquet(tmp_path / "full" / "state" / "rule_clusters.parquet").set_index(uid)["cluster_id"]
-    assert rc["9000000001"] == rc[a[uid]] != rc["9000000002"] == rc[b[uid]] and not listed(full)  # a full run never lists it
+    assert listed(full)  # a rule's pairs hide none: nothing merges before people decide
     build(tmp_path / "old.parquet", tmp_path / "inc", s, p, reaching_only=False)
     shutil.copytree(tmp_path / "inc", tmp_path / "reaching")
     every = update(tmp_path / "new.parquet", tmp_path / "inc", s, p, reaching_only=False)
-    assert not listed(every)  # nor does an increment
+    assert listed(every)  # nor in an increment
     counted = lambda x: next(z["candidates"] for z in x.steps if z["step"] == "candidates")
-    assert counted(update(tmp_path / "new.parquet", tmp_path / "reaching", s, p)) == counted(every)  # nor counts it, storing only what can reach 0
+    assert counted(update(tmp_path / "new.parquet", tmp_path / "reaching", s, p)) == counted(every)  # counted alike, storing only what can reach 0
 
 
 def crowd_batch(g, uid: str, ruled: bool) -> pd.DataFrame:
@@ -165,10 +163,7 @@ def test_an_increment_s_gate_keeps_a_block_on_pairs_the_run_could_list(tmp_path,
     build(tmp_path / "old.parquet", tmp_path / "run", s, p)
     run = update(tmp_path / "new.parquet", tmp_path / "run", s, p)
     phone = run.gated[run.gated["generator"] == "phone_prefecture"]
-    if ruled:  # every sampled pair joins two records the rules joined: no pair the run could list, without bridging
-        assert phone["decision"].str.startswith("skipped").all()
-        return
-    assert phone.loc[phone["decision"] == "kept", "value"].tolist()  # the block the batch made, listed
+    assert phone.loc[phone["decision"] == "kept", "value"].tolist()  # the block the batch made, listed: a rule's pairs too
 
 
 def test_a_full_run_cut_short_in_its_moves_lands_with_its_round(tmp_path, population, monkeypatch):

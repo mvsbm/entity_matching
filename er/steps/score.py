@@ -8,7 +8,6 @@ import time
 from er.config import q
 from er.match import bound_tests, named_sql, score_fs
 from er.steps.job import Job
-from er.steps.rules import alone
 
 
 SCORE_PAIRS = 5_000_000  # pairs scored at a time: a slice bounds memory; each joins every record again
@@ -43,24 +42,21 @@ def score(job: Job, scoring: dict, listed: int) -> None:
 
 def scored_sql(job: Job) -> str:
     """Every scored pair with its generators (sources) and what acceptance reads besides the weight: named, a name
-    compared (fs.needs); keep, the pair joins two rule clusters (bridge) or touches a record the rules left alone. As
-    SQL, for steps.cluster, and for design time to accept at other weights (design.pipeline)."""
-    fs, l, r, u = job.pipeline.fs, q(job.l), q(job.r), q(job.uid)
-    keep = "a.cluster_id <> b.cluster_id" if fs.bridge else alone(f"s.{l}", f"s.{r}", job.uid)
-    return f"""SELECT s.*, c.sources, {named_sql(fs)} AS named, {keep} AS keep FROM scores s JOIN cands c USING ({l}, {r})
-        JOIN rule_clusters a ON a.{u} = s.{l} JOIN rule_clusters b ON b.{u} = s.{r}"""
+    compared (fs.needs). As SQL, for steps.cluster, and for design time to accept at other weights (design.pipeline)."""
+    fs, l, r = job.pipeline.fs, q(job.l), q(job.r)
+    return f"SELECT s.*, c.sources, {named_sql(fs)} AS named FROM scores s JOIN cands c USING ({l}, {r})"
 
 
 def links_sql(job: Job) -> str:
     """Every pair scored at keep_from points or more and every rule pair, as scored/ keeps them for match runs (er.jobs.match): its
-    points, how it was found (sources: the keys; rule: the rule), named, keep, and one gamma per comparison."""
+    points, how it was found (sources: the keys; rule: the rule), named, and one gamma per comparison."""
     fs, l, r = job.pipeline.fs, q(job.l), q(job.r)
     gammas = [c for c, _ in job.engine.columns("scores") if c.startswith("gamma_")]
     rule = f"(SELECT {l}, {r}, min(rule) AS rule FROM rule_kept GROUP BY ALL)"
-    model = f"""SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources, k.rule, s.named, s.keep, {', '.join(f's.{q(g)}' for g in gammas)}
+    model = f"""SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources, k.rule, s.named, {', '.join(f's.{q(g)}' for g in gammas)}
         FROM ({scored_sql(job)}) s LEFT JOIN {rule} k USING ({l}, {r}) WHERE s.match_weight >= {job.pipeline.threshold.keep_from} OR k.rule IS NOT NULL"""
     if not job.engine.exists("rule_scores"):
         return model
     return f"""{model} UNION ALL BY NAME SELECT x.{l}, x.{r}, x.match_weight, x.match_probability, NULL::VARCHAR AS sources, k.rule,
-        {named_sql(fs, 'x')} AS named, TRUE AS keep, {', '.join(f'x.{q(g)}' for g in gammas)} FROM rule_scores x JOIN {rule} k USING ({l}, {r})
+        {named_sql(fs, 'x')} AS named, {', '.join(f'x.{q(g)}' for g in gammas)} FROM rule_scores x JOIN {rule} k USING ({l}, {r})
         WHERE NOT EXISTS (SELECT 1 FROM scores s WHERE s.{l} = x.{l} AND s.{r} = x.{r})"""

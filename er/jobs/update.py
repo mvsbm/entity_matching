@@ -76,8 +76,6 @@ def join(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, ec
     ran.n = job.count("records")
     fitted = u_again(job, ran.n, model, state)
     ran.scoring, ran.basis = fitted.scoring, fitted.basis
-    engine.run(f"""CREATE OR REPLACE TABLE rule_clusters AS SELECT * FROM {engine.read(state / 'rule_clusters.parquet')}
-        UNION ALL SELECT {u}, {u} AS cluster_id FROM new_ids""")  # the stored clusters, and each new record alone
     rules(job, ran.n, fitted.scoring, batch="new_records")
     listed = candidates(job, ran.n, fitted.scoring, batch="new_ids", reaching_only=reaching_only)  # the full run's steps, on the pairs touching the batch
     ran.gated = listed.gated

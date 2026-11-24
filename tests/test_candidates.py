@@ -86,7 +86,7 @@ def test_u_from_the_scored_file(engine, records):
     assert all(mu[0] == m(fitted)[k][0] if k not in unseen else mu[0] == mu[1] for k, mu in m(other).items())  # m stays as fitted
 
 
-def test_candidate_generators_respect_the_query_and_the_clusters(engine):
+def test_candidate_generators_respect_the_query(engine):
     df = pd.DataFrame({"uid": [f"{i}" for i in range(8)], "phone": ["1", "1", "1", "2", "2", "3", "3", "3"],
                        "name": ["サトウ", "サトオ", "サトウ", "タナカ", "タナカ", "スズキ", "スズキイチ", "イトウ"]}, dtype="string")
     query = {"0", "5"}
@@ -95,12 +95,11 @@ def test_candidate_generators_respect_the_query_and_the_clusters(engine):
     for asked, pairs in ((["0", "1"], [("0", "1"), ("0", "2"), ("1", "2")]), (["2", None], [("0", "2"), ("1", "2")])):  # two asked in a block; a NULL among them
         assert sorted(map(tuple, listed(engine, KeyBlocker(name="k", keys=(Key("phone"),)), df, asked).to_numpy())) == pairs  # each pair once, none lost
     assert len(listed(engine, KeyBlocker(name="k", keys=(Key("phone"),)), df)) == 3 + 1 + 3  # None: every record a query
-    clusters = table(engine, pd.DataFrame({UID: df["uid"], "cluster_id": ["c0", "c0", "c2", "c3", "c4", "c5", "c6", "c7"]}, dtype="string"))
     budget = Budget()
     union, _ = candidates((KeyBlocker(name="k", keys=(Key("phone"),)), KeyBlocker(name="s", keys=(Key("name"),))),
-                          table(engine, df), UID, None, budget, engine=engine, clusters=clusters)
+                          table(engine, df), UID, None, budget, engine=engine)
     sources = dict(zip(zip(union["uid_l"], union["uid_r"]), union["sources"]))
-    assert ("0", "1") not in sources and sources[("0", "2")] == sources[("3", "4")] == "k+s"  # one cluster already; found by both
+    assert sources[("0", "1")] == "k" and sources[("0", "2")] == sources[("3", "4")] == "k+s"  # by the phone alone; found by both
 
 
 def test_candidates_with_no_pair_give_none_and_more_generators_than_bits_are_refused(engine):
