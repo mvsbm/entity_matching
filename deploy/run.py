@@ -6,6 +6,7 @@ what it did said: build and update print report.txt (nayose.report_text, from th
     python deploy/run.py PROJECT.DATASET decide gs://BUCKET/in/decided.parquet        people's decisions applied
     python deploy/run.py PROJECT.DATASET match 8                                      the match table at 8 points: matched
     python deploy/run.py PROJECT.DATASET undo                                         a job that never ended, undone
+    python deploy/run.py PROJECT.DATASET lookup --record ID | COLUMN=VALUE ...        a lookup, its answer in looked_up
 
 Runs as nayose-runtime (deploy/Jenkinsfile, Run, from main). All or nothing, though BigQuery takes no DDL in a
 transaction: a job first makes the table job_running (the job, and the dataset's tables), which a second job finds and
@@ -13,6 +14,8 @@ refuses (exit 75), and clones each table (before__<table>: no bytes billed, its 
 A job that fails is undone: each table made again from its clone, a table it made dropped. One whose process died is
 undone by undo, once no query of its session still runs (BigQuery carries on a procedure its caller left). The run's
 views (fit.sql's) aren't tables: a first build that fails leaves them, and the next build makes them again.
+A lookup (nayose.lookup) writes its answer, which holds records' values, to the run's table looked_up and prints only
+that it did: Jenkins keeps what a job prints. It refuses while a job is marked, whose tables are half made.
 """
 import json
 import sys
@@ -88,7 +91,7 @@ def undo(engine: BigQuery, dataset: str) -> bool:
 
 def main(argv: list[str] | None = None, client: object = None, bigquery: object = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) < 2 or args[1] not in (*JOBS, "undo") or (args[1] != "undo" and len(args) < 3):
+    if len(args) < 2 or args[1] not in (*JOBS, "undo", "lookup") or (args[1] != "undo" and len(args) < 3):
         print(__doc__, file=sys.stderr)
         return 2
     dataset, job, given = args[0], args[1], args[2:]
@@ -98,6 +101,8 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
         return 2
     engine, t = BigQuery(dataset, dataset, client=client, bigquery=bigquery), time.perf_counter()
     try:
+        if job == "lookup":
+            return lookup(engine, dataset, given)
         if job == "undo":
             try:
                 print(json.dumps(dict(severity="INFO", job=job, dataset=dataset, undone=undo(engine, dataset))), file=sys.stderr)
@@ -122,6 +127,28 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
         print(json.dumps(dict(severity="INFO", job=job, dataset=dataset, seconds=seconds)), file=sys.stderr)
     finally:
         engine.close()
+    return 0
+
+
+def lookup(engine: BigQuery, dataset: str, given: list[str]) -> int:
+    record = given[1] if given[0] == "--record" and len(given) == 2 else None
+    values = None if record else dict(w.split("=", 1) for w in given if "=" in w)
+    if values is not None and len(values) != len(given):
+        print(json.dumps(dict(severity="ERROR", error="give --record ID, or COLUMN=VALUE words", fix="for example: lookup --record 1234")), file=sys.stderr)
+        return 2
+    if MARK in tables(engine, dataset):
+        print(json.dumps(dict(severity="WARNING", error=f"a job is marked running in {dataset} ({MARK}): its tables are half made",
+                              fix="look up once it ends")), file=sys.stderr)
+        return 75
+    try:
+        answer = nayose.lookup(engine, record=record, values=values)
+    except nayose.InputError as e:
+        print(json.dumps(dict(severity="ERROR", error=str(e), fix=e.fix), ensure_ascii=False), file=sys.stderr)
+        return 2
+    engine.run("CREATE TABLE IF NOT EXISTS looked_up (asked STRING, at TIMESTAMP, answer STRING)")
+    engine.run("INSERT INTO looked_up (asked, at, answer) SELECT @asked, CURRENT_TIMESTAMP(), @answer",
+               {"asked": json.dumps(dict(record=record, values=values), ensure_ascii=False), "answer": json.dumps(answer, ensure_ascii=False)})
+    print(json.dumps(dict(severity="INFO", job="lookup", dataset=dataset, into=f"{dataset}.looked_up", entities=len(answer["entities"]))), file=sys.stderr)
     return 0
 
 

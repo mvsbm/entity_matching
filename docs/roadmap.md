@@ -12,11 +12,19 @@ No job has run on BigQuery yet. Every result is proven on DuckDB. Once the DevOp
 dataset (`deploy/terraform/`, whose tables expire in a day), the tests' population runs through both engines, and
 every job's tables are compared by digest, as `tests/test_parity.py` compares them here. The same runs calibrate
 `scripts/estimate_cost.py` against BigQuery's own bytes billed and slot time. After that comes the scale rehearsal,
-1M → 10M → 100M generated records with time and bytes billed at each size, before the first real build.
+1M → 10M → 100M generated records with time and bytes billed at each size, before the first real build. The same
+step proves the BigQuery `lookup` job equal to the lookups here, and measures how much of the key index a
+lookup's keys read.
 
-## 2 · Lookups on BigQuery
+## 2 · BigQuery's pricing and storage, measured
 
-`nayose.lookup` is written to run on BigQuery as here, its statements writing temporary tables alone; the parity step proves it. `deploy/run.py` gets a
-`lookup` job that writes the answer, which holds a record's values, to the run's table `looked_up`, and prints only
-that it did, so no value reaches Jenkins' log. The parity step proves it equal to the lookups here, and measures how
-much of the key index a lookup's keys read.
+Each of these is kept only where the sandbox shows the bill falling, every table the same:
+
+- **The pricing model.** Each job is run on demand (bytes billed) and on capacity (slot time, `total_slot_ms`), and
+  each job's cost is worked out under both. The jobs scan much and compute little a row, which is the case where
+  slot time costs less.
+- **Pruning for small batches.** An update's batch keys passed to the clustered key index as a parameter, as a
+  lookup's are, where the batch is small enough to.
+- **Search indexes** on `records.id`, `gold.id` and the key index's `k`, for the lookups.
+- **Storage.** Physical (compressed) storage billing, with two days of time travel: each update rewrites the key index
+  and the fit's tables, and time travel keeps every version it replaces.

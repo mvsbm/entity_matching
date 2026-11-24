@@ -72,6 +72,7 @@ Start the Jenkins job on main with `JOB` and `ARGS` (space-separated). Only the 
 | `decide` | a filled-in match table's `gs://` files | stores people's decisions and makes the entities again |
 | `match` | a threshold, in points (`8`) | writes the table `nayose.matched`: the pairs at that threshold or more |
 | `undo` | none | undoes a job whose process died: every table as that job found it |
+| `lookup` | `--record ID`, or `COLUMN=VALUE` words (no spaces: Jenkins splits `ARGS` on them) | looks a record up; the answer, which holds records' values, goes to the table `nayose.looked_up` (`asked`, `at`, `answer` as JSON), and the job prints only that it did. It refuses while a job runs (exit 75) |
 
 build and update print `report.txt`, which Jenkins archives. It holds no record's value, so it can be shared. On BigQuery it has no COLUMNS NOT MAPPED section, and STEPS has one line, for the whole job. A refusal, such as a decisions file with a bad row, fails the build with BigQuery's error, which says what to fix. People put the input files in `in/`; the runtime account only reads them.
 
@@ -105,7 +106,7 @@ python -m nayose lookup --out runs/main --record 1234          or COLUMN=VALUE â
 
 ## What isn't there yet
 
-- **Lookups on BigQuery.** `nayose.lookup` is written to run on BigQuery, unproven until the parity step, and `deploy/run.py` has no lookup job yet: lookups run locally.
+- **Lookups on BigQuery.** The `lookup` job is written to run there as here, unproven until the parity step.
 - **Nothing has run on BigQuery yet.** `tests/test_deploy.py` checks the deploy and the jobs against a client that records what it is sent. The parity check (the tests' population built in `nayose_ci` and held to the same digests as DuckDB) waits for the sandbox. Confirm these on the first staging deploy: the Python functions (`python-3.11`) can be made in the dataset's location; the OIDC token each WIF configuration reads is on the agent, since the Jenkinsfile binds only the configuration file; the smoke test says `the same`.
 
 ## What the DevOps team decides

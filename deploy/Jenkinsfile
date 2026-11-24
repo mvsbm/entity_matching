@@ -16,8 +16,8 @@ pipeline {
     disableConcurrentBuilds()  // one delivery at a time: two would race to make the procedures
   }
   parameters {
-    choice(name: 'JOB', choices: ['none', 'build', 'update', 'decide', 'match', 'undo'], description: 'only run this job in prod, with ARGS (no checks, no deploy)')
-    string(name: 'ARGS', defaultValue: '', description: 'its arguments, space-separated: gs://… input files, or match\'s threshold; undo takes none')
+    choice(name: 'JOB', choices: ['none', 'build', 'update', 'decide', 'match', 'undo', 'lookup'], description: 'only run this job in prod, with ARGS (no checks, no deploy)')
+    string(name: 'ARGS', defaultValue: '', description: 'its arguments, space-separated: gs://… input files, or match\'s threshold; lookup\'s --record ID or COLUMN=VALUE (no spaces); undo takes none')
   }
   stages {
     stage('Checks') {

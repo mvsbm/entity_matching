@@ -277,7 +277,7 @@ In prod, the run is the dataset `nayose` in each project, and nothing changes it
   Federation for Jenkins, and the budget. The DevOps team applies it ([operations](operations.md)).
 
 A lookup has no procedure: `nayose.lookup` sends its statements, each step in a session of its own, writing only
-temporary tables ([7](#7--lookups)). `deploy/run.py` has no lookup job yet ([roadmap](roadmap.md)).
+temporary tables ([7](#7--lookups)). `deploy/run.py`'s `lookup` writes the answer to the run's table `looked_up`.
 
 No job has run on BigQuery yet. The deploy's statements are checked offline: `tests/test_deploy.py` runs them
 against a client that records what it is sent. The results are proven on DuckDB: `tests/test_parity.py` holds every
