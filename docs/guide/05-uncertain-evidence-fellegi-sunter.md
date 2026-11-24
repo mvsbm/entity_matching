@@ -75,7 +75,7 @@ That clears the method's 6-bit threshold (below) by 0.19 bits. A different CIF I
 
 The sum assumes the fields are **independent**, given whether the pair matches. Some of ours are not. The address code, the address text and the postal code describe one fact: where the record lives. Counting them as three fields would count one agreement three times.
 
-So correlated fields form **one comparison** with ordered levels. The first level that holds wins. The levels and thresholds shown are the method's (`functions.sql`: `gamma_name` and the others):
+So correlated fields form **one comparison** with ordered levels. The first level that holds wins. The levels and thresholds shown are the method's (`functions.sql`: `name_level` and the others):
 
 | Comparison | Levels, strongest first |
 |---|---|
