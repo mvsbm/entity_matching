@@ -1,15 +1,15 @@
 -- The lookup job: the entities a record asked about would be compared with, as an update of it alone compares it
--- (records.sql and score.sql ran on it, the run's model as it stands), best first; the job rolls the run back after,
--- so a lookup writes nothing. Each entity at @at_least points or more, or joined by a rule, with its best record, its
+-- (records.sql and score.sql ran on it, the run's model as it stands), best first, in temporary tables of the run's
+-- names holding its blocks' records alone (nayose.lookup), so a lookup writes nothing. Each entity at @at_least points or more, or joined by a rule, with its best record, its
 -- points, each comparison's level, the rule that would join it and the keys that listed it; and what was looked up,
--- key by key. O(G·b + C·K·L²) for the record's C candidates, after score.sql's scan of the run's keys.
+-- key by key. O(G·b + C·K·L²) for the record's C candidates.
 --
 -- Reads: fresh (the record asked about), batch_scored and batch_rule_pairs (score.sql: every candidate scored,
 -- keep_from aside), gold (each stored record's entity), records, model (each level's label), generators, rules,
 -- key_blocks, gated, rule_keys.
 -- Values: @at_least (points), @likely_from (points: a pair from here up whose names were compared is likely, as
 -- people review), @oversized, @stored (the record asked about is a stored one, looked up as if it were new).
--- Writes (temporary, read by the job before it rolls back): candidates, entities, checked.
+-- Writes (temporary, read by the job): candidates, entities, checked.
 
 CREATE OR REPLACE TEMP TABLE candidates AS
 WITH paired AS (
