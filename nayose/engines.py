@@ -39,6 +39,9 @@ FUNCTIONS = {  # each character-level comparison the SQL calls as cl_<name>(a, b
     "hamming": (False, Hamming.distance),
 }
 
+BUILT_IN = {"levenshtein": "EDIT_DISTANCE"}  # a comparison BigQuery has itself, on characters (Unicode code points), as the twin
+# counts them: deployed as a SQL function over it, never JavaScript. (The SQL never names it: DuckDB's would count bytes.)
+
 AVOID = {  # a form whose DuckDB translation gives another result than BigQuery's: what to write instead
     r"\bCOUNTIF\s*\(": "COUNTIF: DuckDB's COUNT_IF gives NULL where every test is NULL, BigQuery 0; write COUNT(CASE WHEN … THEN 1 END)",
     r"\bGROUP\s+BY\s+ALL\b": "GROUP BY ALL: it comes back as a column named ALL; name the columns",
@@ -242,6 +245,11 @@ def functions(dataset: str) -> list[str]:
     library = STRINGS.read_text(encoding="utf-8")
     out = []
     for name in FUNCTIONS:
+        if name in BUILT_IN:  # BigQuery's own, on characters as the twin counts them: no JavaScript
+            out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.cl_{name}(a STRING, b STRING) AS (CAST({BUILT_IN[name]}(a, b) AS FLOAT64))")
+            out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.cl_{name}_cut(a STRING, b STRING, threshold FLOAT64) AS "
+                       f"(CAST({BUILT_IN[name]}(a, b, max_distance => CAST(threshold AS INT64) + 1) AS FLOAT64))")  # past it, threshold + 1, as the cut twin
+            continue
         body = f"{library}\nreturn a === null || b === null ? null : {name}(a, b);"
         for suffix, extra in (("", ""), ("_cut", ", threshold FLOAT64")):
             out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.cl_{name}{suffix}(a STRING, b STRING{extra}) RETURNS FLOAT64 "

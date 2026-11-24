@@ -106,13 +106,42 @@ CREATE OR REPLACE TEMP FUNCTION gamma_name(l ANY TYPE, r ANY TYPE) AS (
   END
 );
 
+-- The most Jaro–Winkler two strings can score, from their lengths and common start alone: Jaro at most (2 + r)/3 (r the
+-- shorter's length over the longer's: every character of the shorter matching, in order), raised by the common start
+-- (up to 4 characters) as Winkler raises it. A threshold this misses, the score misses too.
+CREATE OR REPLACE TEMP FUNCTION jaro_winkler_most(a STRING, b STRING) AS (
+  (2 + LEAST(LENGTH(a), LENGTH(b)) / GREATEST(LENGTH(a), LENGTH(b), 1)) / 3
+    * (1 - CAST(0.1 AS FLOAT64) * IF(LEFT(a, 1) = LEFT(b, 1), IF(LEFT(a, 2) = LEFT(b, 2), IF(LEFT(a, 3) = LEFT(b, 3), IF(LEFT(a, 4) = LEFT(b, 4), 4, 3), 2), 1), 0))
+    + CAST(0.1 AS FLOAT64) * IF(LEFT(a, 1) = LEFT(b, 1), IF(LEFT(a, 2) = LEFT(b, 2), IF(LEFT(a, 3) = LEFT(b, 3), IF(LEFT(a, 4) = LEFT(b, 4), 4, 3), 2), 1), 0)
+);
+
+-- The most two names' Jaro–Winkler can be: where both are katakana (one-byte copies), from the letters they share,
+-- since Jaro's matches pair equal letters, so are at most the letters both hold, each as often as the name it is
+-- rarer in holds it (the letters in both sets, plus the fewer of either name's repeats: its length less the letters
+-- it holds), and its transpositions count for nothing; then raised by the common start as Winkler raises it,
+-- 1 - (1 - jaro)(1 - 0.1 · start). Else jaro_winkler_most's, from the lengths. A threshold this misses, the score misses too.
+CREATE OR REPLACE TEMP FUNCTION name_jw_most(l ANY TYPE, r ANY TYPE) AS (
+  IF(l.person_name__kana_fold_one_byte IS NULL OR r.person_name__kana_fold_one_byte IS NULL,
+     jaro_winkler_most(l.person_name__kana_fold, r.person_name__kana_fold),
+     1 - (1 - (LEAST(BIT_COUNT(l.person_name__kana_fold_letters_lo & r.person_name__kana_fold_letters_lo) + BIT_COUNT(l.person_name__kana_fold_letters_hi & r.person_name__kana_fold_letters_hi)
+                     + LEAST(LENGTH(l.person_name__kana_fold_one_byte) - BIT_COUNT(l.person_name__kana_fold_letters_lo) - BIT_COUNT(l.person_name__kana_fold_letters_hi),
+                             LENGTH(r.person_name__kana_fold_one_byte) - BIT_COUNT(r.person_name__kana_fold_letters_lo) - BIT_COUNT(r.person_name__kana_fold_letters_hi)),
+                     LENGTH(l.person_name__kana_fold_one_byte), LENGTH(r.person_name__kana_fold_one_byte))
+               * (1 / LENGTH(l.person_name__kana_fold_one_byte) + 1 / LENGTH(r.person_name__kana_fold_one_byte)) + 1) / 3)
+         * (1 - CAST(0.1 AS FLOAT64) * IF(LEFT(l.person_name__kana_fold, 1) = LEFT(r.person_name__kana_fold, 1), IF(LEFT(l.person_name__kana_fold, 2) = LEFT(r.person_name__kana_fold, 2),
+                                          IF(LEFT(l.person_name__kana_fold, 3) = LEFT(r.person_name__kana_fold, 3), IF(LEFT(l.person_name__kana_fold, 4) = LEFT(r.person_name__kana_fold, 4), 4, 3), 2), 1), 0)))
+);
+
 -- the same levels from a name's Jaro–Winkler already computed once (name_score: the folded names' score from 0.75 up,
 -- else 0; NULL where an equality settles the level): one call a pair, where gamma_name may make two
 CREATE OR REPLACE TEMP FUNCTION name_score(l ANY TYPE, r ANY TYPE) AS (
-  IF(l.person_name IS NULL OR r.person_name IS NULL OR l.person_name = r.person_name
-     OR l.person_name__kana_fold = r.person_name__kana_fold OR l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel,
-     NULL, jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold, l.person_name__kana_fold_one_byte,
-                           r.person_name__kana_fold_one_byte, CAST(0.75 AS FLOAT64)))
+  CASE
+    WHEN l.person_name IS NULL OR r.person_name IS NULL OR l.person_name = r.person_name
+      OR l.person_name__kana_fold = r.person_name__kana_fold OR l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel THEN NULL
+    WHEN name_jw_most(l, r) < CAST(0.749999 AS FLOAT64) THEN CAST(0 AS FLOAT64)  -- below 0.75 for sure: no call
+    ELSE jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold, l.person_name__kana_fold_one_byte,
+                         r.person_name__kana_fold_one_byte, CAST(0.75 AS FLOAT64))
+  END
 );
 
 CREATE OR REPLACE TEMP FUNCTION name_level(l ANY TYPE, r ANY TYPE, s FLOAT64) AS (

@@ -41,17 +41,6 @@ function jaro_winkler(a, b) {  // the prefix boost on Jaro past 0.7, the first f
   return Math.fround(sim + prefix * 0.1 * (1.0 - sim));
 }
 
-function levenshtein(a, b) {
-  const x = chars(a), y = chars(b);
-  let prev = Array.from({length: y.length + 1}, (_, j) => j);
-  for (let i = 1; i <= x.length; i++) {
-    const cur = [i];
-    for (let j = 1; j <= y.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1));
-    prev = cur;
-  }
-  return prev[y.length];
-}
-
 function damerau_levenshtein(a, b) {  // unrestricted (rapidfuzz's DamerauLevenshtein): adjacent swaps, any edits between
   const x = chars(a), y = chars(b), last = new Map(), max = x.length + y.length;
   const d = Array.from({length: x.length + 2}, () => new Array(y.length + 2).fill(0));
@@ -77,4 +66,4 @@ function hamming(a, b) {  // rapidfuzz pads the shorter at its end: each missing
   return dist;
 }
 
-if (typeof module !== "undefined") module.exports = {jaro, jaro_winkler, levenshtein, damerau_levenshtein, hamming};
+if (typeof module !== "undefined") module.exports = {jaro, jaro_winkler, damerau_levenshtein, hamming};

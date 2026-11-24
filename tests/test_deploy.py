@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import sqlglot
 
-from nayose.engines import bigquery_literal, procedures
+from nayose.engines import bigquery_literal, functions, procedures
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 CODE = re.compile(r"--[^\n]*|'(?:[^'\\]|\\.)*'")  # comments and strings: what isn't code
@@ -40,6 +40,8 @@ def test_each_job_is_a_procedure_of_its_stages_with_every_value_it_reads_declare
         code = CODE.sub("", sql)
         assert not [n for n in made if re.search(rf"(?<![\w.`]){n}\s*\(", code)], sql[:80]
     assert "`p.fn`.fit_model(" in jobs["build"] and "`p.fn`.entities_of(" in jobs["decide"] and "`p.fn`.cl_jaro_winkler_cut(" in made["jaro_winkler_of"]
+    levenshtein = [s for s in functions("p.fn") if ".cl_levenshtein" in s]  # BigQuery's own EDIT_DISTANCE: no JavaScript
+    assert len(levenshtein) == 2 and all("EDIT_DISTANCE(a, b" in s and "LANGUAGE js" not in s for s in levenshtein)
     assert "DROP TABLE IF EXISTS records" in jobs["build"] and "DROP TABLE IF EXISTS decisions" not in jobs["build"]  # people's decisions stay
     assert "DROP TABLE" not in jobs["update"] and "DECLARE v_refit BOOL DEFAULT FALSE" in jobs["update"]
 

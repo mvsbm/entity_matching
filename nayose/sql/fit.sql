@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS fit (probability FLOAT64, fit_rows INT64, records INT
 CREATE OR REPLACE VIEW compared AS
 SELECT
   id, person_name, full_name, given_name__kana_fold, person_name__kana_fold, person_name__kana_fold_long_vowel,
-  person_name__kana_fold_one_byte, company_name, company_name__nfkc_strip_legal_form_kana_fold,
+  person_name__kana_fold_one_byte, person_name__kana_fold_letters_lo, person_name__kana_fold_letters_hi,
+  company_name, company_name__nfkc_strip_legal_form_kana_fold,
   company_name__nfkc_strip_legal_form_kana_fold_one_byte, address_code, address, address__address,
   address__address_one_byte_hash, postal_code, phone, customer_id, birth_date
 FROM records;
