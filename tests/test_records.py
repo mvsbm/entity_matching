@@ -80,8 +80,8 @@ def test_what_er_s_load_fixes_set_aside_and_reads_as_missing_nayose_does_alike(t
     new, engine = nayose_records(tmp_path / "in.parquet")
     assert same(er_records(tmp_path / "in.parquet"), new) == []
     assert new["phone"].isna().sum() >= 70 and engine.rows("SELECT field, value FROM placeholders") == [("phone", "0000")]
-    assert sorted(engine.rows("SELECT COALESCE(CONT_ID, ''), reason FROM set_aside")) == [  # an ID of spaces alone: read as missing
-        ("", "no ID"), ("00305", "the same ID with different content"), ("00305", "the same ID with different content")]
+    assert sorted(engine.rows("SELECT CONT_ID, reason FROM set_aside")) == [  # as the file gave them, to be fixed and added again
+        ("  ", "no ID"), ("00305", "the same ID with different content"), ("00305", "the same ID with different content")]
     by = new.set_index("id")
     assert by.loc["00300", "person_name"] == "スズキハナコ" and by.loc["00301", "person_name"] == "タナカイチロウ"
     assert (by.loc["00302", "kind"], by.loc["00302", "kind_flagged"]) == (2, True) and by.loc["00303", "kind"] == 2
@@ -95,44 +95,32 @@ def test_the_mapping_parses_as_bigquery_and_translates(path):
         duckdb_sql(sql)
 
 
-VALUES = ["ヤマダタロウ", "ヤマダ　タロウ", " サトウ", "サトウ ", "　", "  ", "NULL", " NULL ", "－", "譁ｰ縺励＞", "abc\x01", "タ\u200bナカ", "a\tb",
-          "ﾔﾏﾀﾞ", "\ufffd", "", None, "東京" * 100, "①", "😀", "Ｓｕｚｕｋｉ", "plain", " plain", "１２.０", " ", "ア　",
-          '["大分県"]', '　["大分県"]　', "[1] ", "[株]", '["a", "b"]', "[]"]  # every kind of value the intake treats apart
-DIRTY = {
-    "values": pa.table({"id": [f"R{i}" for i in range(6 * len(VALUES))], "name": VALUES * 6,
-                        "amount": ["12345.0", "1.23457E+11", "100", "１２.０", "3.5", None] * len(VALUES),  # a column of numbers
-                        "n": pa.array([i if i % 5 else None for i in range(6 * len(VALUES))], pa.int64()), "f": [1.5, 2.0, None] * (2 * len(VALUES)),
-                        "raw": pa.array(["ヤマダ".encode("cp932"), b"abc", None] * (2 * len(VALUES)), pa.binary()),
-                        "kind": pa.array(["法人", "個人", None] * (2 * len(VALUES))).dictionary_encode()}),
-    "lists": pa.table({"id": ["1", "2", "3", "4", "5"],
-                       "postal": pa.array([["0708612"], [], [None], ["8700848", "8700849"], None], pa.list_(pa.string())),  # a Parquet list column
-                       "phone": pa.array([[1201], [3344], None, [], [7.0]], pa.list_(pa.float64())),
-                       "text": ['["大分県"]', "['大分市']", "[株]", "[0708612]", ' ["x"] ']}),
-    "list forms": pa.table({"id": [str(i) for i in range(12)],
-                            "v": ['["\\u5927", "b"]', '[null, "  ", "z"]', "['a',]", '["a",]', "[true]", "[[1]]", '[1, "a"]', "['a', 1]",
-                                  "[12345.0]", "[1.5E+11]", '["", null]', "[{[]}]"]}),  # escapes, blanks, trailing commas; what is no plain list
-    "names": pa.table({"id": ["1"], "TEL": ["0311112222"], "tel": ["09033334444"], "": ["c"]}),  # a name repeated but for case, a blank one
-    "floats": pa.table({"id": ["1", "2", "3", "4", "5"], "code": [9e10, 1.23e11, 1e16, 0.5, 12345.0],
-                        "old": pa.array(["ヤマダ".encode("cp932")] * 5, pa.binary()), "name": ["𠮷野家", "山田花子", None, "𠮷田", "東京"]}),
-}
+VALUES = ["ヤマダタロウ", "ヤマダ　タロウ", " サトウ", "サトウ ", "　", "  ", "NULL", " NULL ", "－", "譁ｰ縺励＞", "abc\x01", "タ​ナカ", "a\tb",
+          "ﾔﾏﾀﾞ", "�", "", None, "東京" * 100, "①", "😀", "Ｓｕｚｕｋｉ", "plain", " plain", "１２.０", " ", "ア　",
+          '["大分県"]', '　["大分県"]　', "[1] ", "[株]", '["a", "b"]', "[]", "['大分市']", "[0708612]", ' ["x"] ',
+          '["\\u5927", "b"]', '[null, "  ", "z"]', "['a',]", '["a",]', "[true]", "[[1]]", '[1, "a"]', "['a', 1]", "[12345.0]", "[1.5E+11]",
+          '["", null]', "[{[]}]", "12345.0", "1.23457E+11", "100", "3.5"]  # every kind of value the intake treats apart
 
 
-@pytest.mark.parametrize("name", DIRTY)
-def test_the_intake_reads_each_value_and_counts_what_it_fixed_as_er_s_does(tmp_path, name):
-    from er import intake
-    pq.write_table(DIRTY[name], tmp_path / "x.parquet")
-    r = intake.take(tmp_path / "part", {tmp_path / "x.parquet": "x.parquet"}, intake.InputSpec())
-    old = pd.read_parquet(tmp_path / "part" / r["files"][0]["read"])
+def test_each_value_is_read_as_er_s_intake_reads_it():
+    from er.intake import tidy
+    nulls = nayose.config()["input"]["nulls"]
+    er_read = lambda v, numeric: None if not v or "�" in v else tidy(v, frozenset(nulls), numeric)[0]  # er.intake.read_one's value()
     engine = DuckDB()
-    nayose.read(engine, [tmp_path / "x.parquet"])
-    new = engine.frame("SELECT * FROM input")
-    text = lambda s: [x if isinstance(x, str) else None for x in s]
-    assert list(new.columns) == list(old.columns) and all(text(new[c]) == text(old[c]) for c in old.columns)
-    assert dict(engine.rows("SELECT fixed, n FROM intake")) == r["fixed"]
+    nayose.stage(engine, "functions")
+    for numeric in (False, True):  # a column of text, a column of numbers
+        got = [r[0] for r in engine.rows("SELECT read_value(v, @numeric, @nulls) FROM UNNEST(@values) AS v WITH OFFSET AS i ORDER BY i",
+                                         {"numeric": numeric, "nulls": nayose.nulls_pattern(nulls), "values": VALUES})]
+        assert [(v, g) for v, g in zip(VALUES, got) if g != er_read(v, numeric)] == []
 
 
-def test_text_stored_as_text_that_isn_t_utf8_is_refused(tmp_path):
+def test_the_reader_names_each_column_its_own_and_refuses_text_that_isn_t_utf8(tmp_path):
+    pq.write_table(pa.table({"id": ["1"], "TEL": ["0311112222"], "tel": ["09033334444"], "": ["c"]}), tmp_path / "names.parquet")
+    engine = DuckDB()
+    engine.read_parquet("input", [tmp_path / "names.parquet"], ["CIF_ID"])  # as er/ names them; a column the file lacks, missing
+    assert engine.rows("SELECT * FROM input") == [("1", "0311112222", "09033334444", "c", None)]
+    assert [n for n, _ in engine.columns("input")] == ["id", "TEL", "tel_2", "column_4", "CIF_ID"]
     bad = pa.Array.from_buffers(pa.string(), 1, [None, pa.py_buffer(np.array([0, 6], np.int32).tobytes()), pa.py_buffer("ヤマダ".encode("cp932"))])
     pq.write_table(pa.table({"id": ["a"], "name": bad}), tmp_path / "x.parquet")
     with pytest.raises(Exception, match="(?i)utf-?8"):  # BigQuery's load refuses it too: what it said is gone either way
-        nayose.read(DuckDB(), [tmp_path / "x.parquet"])
+        engine.read_parquet("input", [tmp_path / "x.parquet"])

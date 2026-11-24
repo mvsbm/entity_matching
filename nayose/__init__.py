@@ -4,14 +4,14 @@ The method is SQL, in BigQuery's dialect, one file per stage (nayose/sql/<stage>
 runs it as written; DuckDB, on a laptop or in CI, runs it after sqlglot translates it (nayose/engines.py). A run is
 a set of tables: a BigQuery dataset, or a DuckDB database file.
 
-    read(engine, files)             stage 1's intake: the input files as the table input, each value read (functions.sql)
-    records(engine, files)          stage 1: the input files read, mapped (mapping.sql) and made records (records.sql)
-    em.fit(engine)                  stage 2: the model learned on a sample (fit.sql, nayose/em.py), u on the file
+    records(engine, files)          stage 1: the input files read and mapped (mapping.sql), made records (records.sql)
+    fit(engine)                     stage 2: the model learned on a sample, u on the file (fit.sql; EM in nayose/em.py)
     stage(engine, name, **values)   a stage's statements in order, each given the values it names (@name)
     statements(text)                a stage file's statements: each ends with a line that ends in ;
     fingerprint()                   what an increment needs unchanged since the full run: the SQL and the values
 """
 import hashlib
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -51,58 +51,37 @@ def legal_pattern(c: dict) -> str:
     return "|".join(parts)
 
 
-def as_text(name: str, kind: str) -> str:
-    """A column of the files as text, in BigQuery SQL: a whole float as its digits (as text, 9e10 would read as a number
-    cut short), bytes as UTF-8 (bytes that aren't: U+FFFD, damaged), a list or a record as JSON, the rest cast."""
-    c, kind = f"`{name}`", kind.upper()
-    if kind.endswith("[]") or kind.startswith(("STRUCT", "RECORD", "MAP", "UNION")):
-        return f"TO_JSON_STRING({c})"
-    if kind in ("DOUBLE", "FLOAT", "FLOAT64", "REAL"):
-        return f"IF({c} = FLOOR({c}) AND ABS({c}) < CAST(9e18 AS FLOAT64), CAST(CAST({c} AS INT64) AS STRING), CAST({c} AS STRING))"
-    if kind in ("BLOB", "BYTES"):
-        return f"SAFE_CONVERT_BYTES_TO_STRING({c})"
-    return f"CAST({c} AS STRING)"
-
-
-def read(engine, files: list, also: tuple[str, ...] = ()) -> None:
-    """The intake on `engine`: the files as the table raw (engine.read_parquet: every column, each name its own), then
-    each value read by functions.sql's intake into the table input, and what was fixed counted in the table intake
-    (fixed, n). A column of numbers is told over all its values. The columns in `also` the files lack, missing.
-    O(bytes)."""
-    engine.read_parquet("raw", files)
-    columns = engine.columns("raw")
-    if bad := [n for n, _ in columns if "`" in n or "\\" in n]:
-        raise ValueError(f"a column name nayose can't quote: {bad}")
-    text = {n: as_text(n, kind) for n, kind in columns}
-    stage(engine, "functions")
-    told = engine.rows("SELECT " + ", ".join(f"2 * SUM(numberlike({e})) >= COUNT(numberlike({e})) AND COUNT(numberlike({e})) > 0" for e in text.values()) + " FROM raw")[0]
-    numeric = {n: bool(x) for n, x in zip(text, told)}
-    engine.run("CREATE OR REPLACE TEMP TABLE listed AS SELECT " + ", ".join(f"listed({e}) AS `{n}`" for n, e in text.items()) + " FROM raw")
-    engine.run("CREATE OR REPLACE TEMP TABLE tidied AS SELECT " + ", ".join(
-        f"tidied(`{n}`.v, `{n}`.fixed, {str(numeric[n]).upper()}, @nulls) AS `{n}`" for n in text) + " FROM listed", {"nulls": list(config()["input"]["nulls"])})
-    lacking = [c for c in also if c.casefold() not in {n.casefold() for n in text}]
-    engine.run("CREATE OR REPLACE TEMP TABLE input AS SELECT " + ", ".join([*(f"`{n}`.v AS `{n}`" for n in text), *(f"CAST(NULL AS STRING) AS {c}" for c in lacking)])
-               + " FROM tidied")
-    engine.run("CREATE OR REPLACE TABLE intake AS SELECT fixed, COUNT(*) AS n FROM (" + " UNION ALL ".join(f"SELECT `{n}`.fixed AS fixed FROM tidied" for n in text)
-               + ") WHERE fixed IS NOT NULL GROUP BY fixed")
+def nulls_pattern(nulls: list[str]) -> str:
+    """A value read_value reads as missing: one of nulls but for spaces and U+3000 around it, or spaces alone (Python's
+    whitespace, str.strip's). An RE2 pattern."""
+    return r"^[ \x{3000}]*(?:" + "|".join(map(re.escape, nulls)) + r")[ \x{3000}]*$|^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$"
 
 
 def records(engine, files: list) -> None:
-    """Stage 1 on `engine`: the input files read (read), every column mapping.sql reads that a file lacks added as
-    missing, the name model's weights as name_weights; then mapping.sql, then records.sql. O(N·L)."""
+    """Stage 1 on `engine`: the input files as the table input (every column mapping.sql reads that a file lacks,
+    missing), the name model's weights as name_weights; then mapping.sql, then records.sql. O(N·L)."""
     c = config()
     if bad := [x for x in c["input"]["columns"] if not NAME.match(x)]:
         raise ValueError(f"config.toml [input] columns: {bad} are no plain column names")
-    read(engine, files, also=tuple(c["input"]["columns"]))
+    engine.read_parquet("input", files, c["input"]["columns"])
     model = np.load(NAME_MODEL)
     engine.put("name_weights", pd.DataFrame({"term": model["terms"].tolist(), "w": model["coef"]}))
-    run_file(engine, HERE / "mapping.sql")
+    stage(engine, "functions")
+    run_file(engine, HERE / "mapping.sql", nulls=nulls_pattern(c["input"]["nulls"]))
     r = c["records"]
     stage(engine, "records", hiragana=HIRAGANA, katakana=KATAKANA, katakana_block=KATAKANA_BLOCK, one_byte=ONE_BYTE, kana_fold_from=r["kana_fold_from"], kana_fold_to=r["kana_fold_to"],
           legal_pattern=legal_pattern(r), prefecture_pattern=f"^(?:{'|'.join(map(re.escape, r['prefectures']))})",
           flag_company=list(r["flag_company"]), name_line=float(r["name_line"]), trust_flag=bool(r["trust_flag"]),
           shared_name_column=bool(r["shared_name_column"]), ngram=int(r["ngram"]), intercept=float(model["intercept"]),
           min_block=int(r["min_block"]), spread=int(r["spread"]), crowd=int(r["crowd"]))
+
+
+def fit(engine) -> None:
+    """Stage 2 on `engine`, after records: fit.sql, with config.toml [fit]. O(n + S·K) on the sample, O(N + S·K) on the file."""
+    c = config()["fit"]
+    stage(engine, "functions")
+    stage(engine, "fit", fit_rows=int(c["fit_rows"]), seed=str(c["seed"]), fit_u_max_pairs=float(c["fit_u_max_pairs"]),
+          u_max_pairs=float(c["u_max_pairs"]), settings=json.dumps(c))
 
 
 def statements(text: str) -> list[str]:

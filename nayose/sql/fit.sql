@@ -1,11 +1,13 @@
 -- Stage 2, fit: the counts the model is learned from, on a sample of a fixed size (so its cost doesn't grow with the
--- file), and u counted on the sample and on the file to be scored, each a scope. Counts only, every one an exact
--- integer; nayose.em makes them the model (λ, m by EM, u), as er/fit.py and er/match.py do. The comparisons are
--- functions.sql's. O(n + P_prior + P_em·K) on the sample of n records; O(N + max_pairs·K) for u on each scope.
+-- file), and u counted on the sample and on the file to be scored, each a scope; then the model, learned from them by
+-- fit_model (nayose/em.py, a Python function on both engines), as er/fit.py and er/match.py learn it. Every count an
+-- exact integer. The comparisons are functions.sql's. O(n + P_prior + P_em·K) on the sample of n records;
+-- O(N + max_pairs·K) for u on each scope.
 --
--- Reads: records. Values: @fit_rows, @seed; for each scope, @draw_<scope> (whether to sample: the share is under 1)
--- and @cut_<scope> (the hash's cut: share · 10⁹).
--- Writes: fit_sample, fit_prior, em_patterns; by scope: u_outside, u_counted, u_near, u_sampled, u_filled.
+-- Reads: records. Values: config.toml [fit]: @fit_rows, @seed, @fit_u_max_pairs and @u_max_pairs (about how many pairs
+-- u samples on the sample and on the file), @settings (all of it, as JSON, for fit_model).
+-- Writes: fit_sample, model (each level's m and u as fitted, file_m and file_u on the file), fit (λ, the sample's size,
+-- the notes the report reads).
 
 
 -- 1. The sample: whole postal areas by hash, so households stay together and a smaller sample is part of a bigger one
@@ -176,10 +178,14 @@ JOIN u_counted AS c ON c.scope = o.scope AND c.comparison = o.comparison AND c.l
 JOIN u_near AS n ON n.scope = o.scope AND n.comparison = o.comparison
 GROUP BY o.scope;
 
-CREATE OR REPLACE TEMP TABLE u_drawn AS
-SELECT * FROM u_records
-WHERE IF(scope = 'sample', NOT @draw_sample OR MOD(er_hash(id || '_' || @seed), 1000000000) < @cut_sample,
-                           NOT @draw_file OR MOD(er_hash(id || '_' || @seed), 1000000000) < @cut_file);
+CREATE OR REPLACE TEMP TABLE u_drawn AS  -- the share: of a scope's n records, about max_pairs pairs, as Splink draws
+WITH share AS (
+  SELECT 'sample' AS scope, CAST(0.5 AS FLOAT64) * (SQRT(8 * @fit_u_max_pairs + 1) + 1) / GREATEST((SELECT COUNT(*) FROM fit_sample), 1) AS share
+  UNION ALL
+  SELECT 'file', CAST(0.5 AS FLOAT64) * (SQRT(8 * @u_max_pairs + 1) + 1) / GREATEST((SELECT COUNT(*) FROM records), 1)
+)
+SELECT u_records.* FROM u_records JOIN share USING (scope)
+WHERE share >= 1 OR MOD(er_hash(id || '_' || @seed), 1000000000) < GREATEST(1, ROUND(share * 1000000000));
 
 CREATE OR REPLACE TEMP TABLE u_pairs AS
 SELECT
@@ -203,3 +209,28 @@ SELECT
   GREATEST(COUNT(address_code), COUNT(address), COUNT(postal_code)) AS address,
   COUNT(phone) AS phone, COUNT(customer_id) AS cif, COUNT(birth_date) AS birth
 FROM u_records GROUP BY scope;
+
+
+-- 5. The model: fit_model learns it from every count above, given as one JSON text, and gives it back as one: each
+--    level's m and u as fitted on the sample, and its m and u on the file (file_m, file_u, what scores read).
+CREATE OR REPLACE TEMP TABLE learned AS
+SELECT fit_model(TO_JSON_STRING(STRUCT(
+  (SELECT ARRAY_AGG(t) FROM levels AS t) AS levels, (SELECT ARRAY_AGG(t) FROM fit_prior AS t) AS prior,
+  (SELECT ARRAY_AGG(t) FROM em_patterns AS t) AS patterns, (SELECT ARRAY_AGG(t) FROM u_outside AS t) AS outside,
+  (SELECT ARRAY_AGG(t) FROM u_counted AS t) AS counted, (SELECT ARRAY_AGG(t) FROM u_near AS t) AS near,
+  (SELECT ARRAY_AGG(t) FROM u_sampled AS t) AS sampled, (SELECT ARRAY_AGG(t) FROM u_filled AS t) AS filled,
+  (SELECT ARRAY_AGG(t) FROM u_plan AS t) AS plan
+)), @settings) AS out;
+
+CREATE OR REPLACE TABLE model AS
+SELECT
+  CAST(JSON_VALUE(lv, '$.position') AS INT64) AS position, JSON_VALUE(lv, '$.comparison') AS comparison,
+  CAST(JSON_VALUE(lv, '$.gamma') AS INT64) AS gamma, JSON_VALUE(lv, '$.label') AS label, JSON_VALUE(lv, '$.kind') AS kind,
+  CAST(JSON_VALUE(lv, '$.m') AS FLOAT64) AS m, CAST(JSON_VALUE(lv, '$.u') AS FLOAT64) AS u,
+  CAST(JSON_VALUE(lv, '$.file_m') AS FLOAT64) AS file_m, CAST(JSON_VALUE(lv, '$.file_u') AS FLOAT64) AS file_u
+FROM learned, UNNEST(JSON_QUERY_ARRAY(out, '$.levels')) AS lv;
+
+CREATE OR REPLACE TABLE fit AS
+SELECT CAST(JSON_VALUE(out, '$.probability') AS FLOAT64) AS probability, CAST(JSON_VALUE(out, '$.fit_rows') AS INT64) AS fit_rows,
+       JSON_QUERY(out, '$.notes') AS notes
+FROM learned;
