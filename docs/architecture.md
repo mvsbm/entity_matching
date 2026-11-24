@@ -67,11 +67,11 @@ The SQL is written to move: joins, group-bys, window functions and `CREATE TABLE
 | Piece | Where | DuckDB form |
 |---|---|---|
 | character-level similarity (`cl_jaro_winkler`, `cl_levenshtein`, …) | `er.strings`, `er.config.Comparator.test` | DuckDB's own Jaro, Jaro–Winkler and Hamming (rapidfuzz's C++, on bytes) where each character is one byte: ASCII, or katakana copied one byte each at load (`one_byte`); DuckDB's Levenshtein and Damerau–Levenshtein on ASCII, and on other text a pair failed first on copies with each character hashed to one byte (`one_byte_hash`), never farther apart than the values; else Python UDFs over Arrow (rapidfuzz) |
-| one-character deletions of a value | `er.candidates`, `er.match` | `list_transform` + `unnest` |
+| one-character deletions of a value | `er.candidates`, `er.match` | a row per position (`unnest(generate_series(…))`) and `substr`, the first of each run of equal characters (`candidates.deletions_sql`) |
 | a pair's generators as bits | `er.candidates` | `bit_or`, then a `CASE` per bit |
 | the first rule that pairs two records | `er.match`, `er/steps/rules.py` | `DISTINCT ON`, `arg_min` |
 | sampling whole postal areas for the fit, and every draw by hash | `er.match`, `config.hashed` | `ORDER BY er_hash(…)`: MD5's first 60 bits as an integer, a macro each engine defines alike |
-| reading and writing files | `er.source`, `er/steps/write.py` | `read_parquet(…, union_by_name = true)`, `COPY … (FORMAT parquet)`, `UNION ALL BY NAME` |
+| reading and writing files, a table's columns, slices, an index attached | `er.source`, `er/steps/write.py`, `er/jobs/index.py` | asked of the engine (`er/engine/engine.py`: `read`, `write`, `columns`, `exists`, `slices`, `attach`), never written into a step's SQL; `UNION ALL BY NAME` |
 | standardization (NFKC, hiragana as katakana, separators dropped, kana folding, the address chain) | `er.standardize` | pandas, per chunk: DuckDB has no NFKC |
 
 The fit's EM runs in Python on the agreement patterns' counts, a few hundred rows, so it needs nothing of the engine but one query per session.
@@ -80,7 +80,7 @@ The fit's EM runs in Python on the agreement patterns' counts, a few hundred row
 
 - **`translate`** turns a step's SQL into BigQuery's (sqlglot). A table a statement makes is the session's temporary table; `cl_*` and `er_hash` are the job dataset's functions.
 - **`functions`** makes those functions in the dataset, once per deploy. The comparison functions are rapidfuzz's algorithms in JavaScript (`er/engine/udfs/strings.js`), Jaro and Jaro–Winkler as float32s, as DuckDB's engine scores them (rapidfuzz's cpdist). `tests/test_bigquery.py` runs them in V8 against DuckDB's engine's own `cl_*` functions, score for score to the last bit. The float32 also hides how a build of rapidfuzz rounds the double: arm64's fuses Jaro–Winkler's boost into one multiply-add, x86's rounds twice.
-- **A statement with a part only DuckDB has is refused by name** (`NotPortable`), never sent half translated: DESCRIBE, `duckdb_tables()`, `current_setting`, `read_parquet`, `COPY … TO`, `rowid`, ATTACH, the list functions and their lambda, `UNPIVOT … COLUMNS(*)`, `arg_min` of n, and whatever BigQuery's grammar refuses. A whole run of the tests' population sends 550 statements: 498 translate, the scoring of every pair among them; 52 are refused. Those are what a BigQuery job still needs: the run's files as tables, the tables' columns from the engine, the scoring's slices, the deletion keys, the index.
+- **A statement with a part only DuckDB has is refused by name** (`NotPortable`), never sent half translated: DESCRIBE, `duckdb_tables()`, `current_setting`, `read_parquet`, `COPY … TO`, `rowid`, ATTACH, the list functions and their lambda, `UNPIVOT … COLUMNS(*)` and `INTO NAME`, `arg_min` of n, `AS MATERIALIZED`, and whatever BigQuery's grammar refuses. The steps write none of them: what depends on where the tables are is the engine's to answer (`columns`, `exists`, `read`, `write`, `slices`, `attach`, `threads`). A full run with its reports, an increment, people's decisions, the index kept up to date and lookups send about 1,500 statements, and every one translates (`tests/test_bigquery.py`). What a BigQuery job still needs is the engine's store: those answers on a dataset's tables.
 
 ### On Cloud Run
 

@@ -16,9 +16,8 @@ and in which order. Strike each step through as it lands.
 **The switch:** one `Engine` with a handful of methods (run SQL into a table, fetch a small result, upload a small
 table, name a table, drop one), one DuckDB and one BigQuery implementation, chosen by `ENGINE=duckdb|bigquery`.
 
-- **SQL is written once**, in DuckDB's dialect, and sqlglot translates it for BigQuery. Tried on our hardest queries:
-  `DISTINCT ON`, casts and `GROUP BY ALL` translate. String slicing (`x[:i-1]`) and DuckDB's `UNPIVOT … COLUMNS(*)`
-  don't: a few patterns to write once in a portable form.
+- ~~**SQL is written once**, in DuckDB's dialect, and sqlglot translates it for BigQuery.~~ Every statement a job sends
+  translates; what depends on where the tables are (files, columns, slices, the index) is the engine's to answer.
 - ~~**One hash for both engines.**~~ Every draw and order by hash goes through `er_hash` (`config.hashed`: MD5's first
   60 bits as an integer), a macro DuckDB's engine defines and BigQuery's will define alike.
 - **Parity in CI.** The same small file (100k records) through both engines, compared by digest: clusters and pairs
@@ -99,9 +98,9 @@ the jobs, the table each step writes, and where to change what.
    the DuckDB engine, `er/steps/` (one module per step), `er/jobs/` (build, update, decide, index)~~; then
    `model.py`.
 4. **The BigQuery engine**, the string UDFs and the parity check in CI: ~~the engine's verbs, the translation and
-   the functions in JavaScript (`er/engine/bigquery.py`), checked offline~~; then the parts it refuses by name (the
-   run's files as tables, DESCRIBE, the scoring's slices, the deletion keys, the index), and the parity check
-   once CI has a sandbox dataset.
+   the functions in JavaScript (`er/engine/bigquery.py`), checked offline; every statement a job sends portable~~;
+   then its store (the run's files as a dataset's tables, the index), and the parity check once CI has a sandbox
+   dataset.
 5. **The three jobs** on Cloud Run, wired into Jenkins: ~~`deploy/` (the image, `job.sh`, the jobs, the Jenkinsfile),
    run in Docker on this machine~~; then on GCP, once the project, the bucket, the Artifact Registry repository and
    the service account are named.

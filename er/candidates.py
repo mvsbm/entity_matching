@@ -58,8 +58,9 @@ class Records:
         at = (b.key.name, tuple(w.name for w in b.within))
         if at not in self.dk:
             k, within, u = q(b.key.name), [q(w.name) for w in b.within], q(self.uid)
-            cols = [u] * bool(self.uid) + within + ["__cluster"] * self.cluster + [f"{k} AS __v", f"unnest({deletions_sql(k)}) AS __dk"]
-            rows = lambda where="": f"SELECT {', '.join(cols)} FROM {self.table} WHERE {_filled([b.key.name, *(w.name for w in b.within)])}{where}"
+            at_each, key, once = deletions_sql(k)
+            cols = [u] * bool(self.uid) + within + ["__cluster"] * self.cluster + [f"{k} AS __v", f"{key} AS __dk"]
+            rows = lambda where="": f"SELECT {', '.join(cols)} FROM {self.table}, {at_each} WHERE {_filled([b.key.name, *(w.name for w in b.within)])} AND {once}{where}"
             sql = rows()
             if self.touching and self.query:
                 keys = ", ".join(["__dk", *within])
@@ -94,8 +95,12 @@ class Records:
         return " AND ".join(out + ([f"{a}.__cluster <> {b}.__cluster"] if self.cluster else [])) or "TRUE"
 
 
-def deletions_sql(col: str) -> str:  # the value and each one-character deletion of it, distinct
-    return f"list_distinct(list_prepend({col}, list_transform(range(1, length({col}) + 1), lambda i: {col}[:i - 1] || {col}[i + 1:])))"
+def deletions_sql(col: str) -> tuple[str, str, str]:
+    """The value of `col` and each one-character deletion of it, each once, as (a FROM item beside the records: a row
+    per position __i, the key's SQL, a condition): position i deletes the i-th character, the last one past the end
+    keeps the value whole, and of a run of equal characters only the first is deleted, since each gives the same key."""
+    return (f"unnest(generate_series(1, length({col}) + 1)) AS __p(__i)", f"substr({col}, 1, __i - 1) || substr({col}, __i + 1)",
+            f"(__i = 1 OR __i > length({col}) OR substr({col}, __i - 1, 1) <> substr({col}, __i, 1))")
 
 
 def _filled(cols: Iterable[str]) -> str:
@@ -327,11 +332,17 @@ def _kept(r: Records, sql: str, keep: Callable[[str], str] | None, listed: str |
     if pending is not None and n < KEEP_SLICE:
         pending[table] = n
         return table, n
-    out = r._temp(keep(f"SELECT l, r FROM {table} WHERE rowid < {KEEP_SLICE}"))
-    for start in range(KEEP_SLICE, n, KEEP_SLICE):
-        r.engine.run(f"INSERT INTO {out} {keep(f'SELECT l, r FROM {table} WHERE rowid >= {start} AND rowid < {start + KEEP_SLICE}')}")
+    out = _filtered(r, table, n, keep)
     r.engine.run(f"DROP TABLE {table}")  # the listing: freed as soon as it is read
     return out, n
+
+
+def _filtered(r: Records, table: str, n: int, keep: Callable[[str], str]) -> str:  # keep() of a table of n pairs, a slice at a time, as a table
+    first, *rest = r.engine.slices(table, KEEP_SLICE, n)
+    out = r._temp(keep(f"SELECT l, r FROM {table} WHERE {first}"))
+    for where in rest:
+        r.engine.run(f"INSERT INTO {out} {keep(f'SELECT l, r FROM {table} WHERE {where}')}")
+    return out
 
 
 def _bound(r: Records, pending: dict[str, int], keep: Callable[[str], str] | None) -> None:
@@ -342,9 +353,7 @@ def _bound(r: Records, pending: dict[str, int], keep: Callable[[str], str] | Non
         return
     both = r._temp(" UNION ".join(f"SELECT l, r FROM {t}" for t in pending))
     n = r.engine.value(f"SELECT count(*) FROM {both}")
-    out = r._temp(keep(f"SELECT l, r FROM {both} WHERE rowid < {KEEP_SLICE}"))
-    for start in range(KEEP_SLICE, n, KEEP_SLICE):
-        r.engine.run(f"INSERT INTO {out} {keep(f'SELECT l, r FROM {both} WHERE rowid >= {start} AND rowid < {start + KEEP_SLICE}')}")
+    out = _filtered(r, both, n, keep)
     for t in pending:
         r.engine.run(f"DELETE FROM {t} WHERE NOT EXISTS (SELECT 1 FROM {out} k WHERE k.l = {t}.l AND k.r = {t}.r)")
     r.engine.run(f"DROP TABLE {both}; DROP TABLE {out}")

@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from er.engine.engine import Engine
-from er.config import InputError, lit, q
+from er.config import InputError, q
 from er.io import lock, object_store, patiently, replace_text
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
@@ -98,7 +98,7 @@ def stage(engine: Engine, out: Path, tables: list[tuple[str, Path]], texts: list
     tmp = lambda d: out / FULL_TMP / d.relative_to(out) if whole(d) else d.with_name(d.name + ".tmp")
     for sql, dest in tables:
         tmp(dest).parent.mkdir(parents=True, exist_ok=True)
-        engine.run(f"COPY ({sql}) TO {lit(tmp(dest))} (FORMAT parquet)")
+        engine.write(sql, tmp(dest))
     for text, dest in texts:
         tmp(dest).parent.mkdir(parents=True, exist_ok=True)
         tmp(dest).write_text(text() if callable(text) else text, encoding="utf-8")
@@ -122,14 +122,14 @@ def log(out: Path, entry: dict, append: bool) -> str:
     return json.dumps(dict(runs=[*old.get("runs", []), entry]), indent=1, default=str)
 
 
-def latest_decisions(out: Path, uid: str, cols: tuple[str, ...] = ("decision",)) -> str | None:
+def latest_decisions(engine: Engine, out: Path, uid: str, cols: tuple[str, ...] = ("decision",)) -> str | None:
     """SQL: each pair's latest decision the folder holds (the last part's: one decided again counts once, as last
     said), with `cols` as that part gave them; None before any."""
     parts, l, r = Path(out) / DECISIONS, q(f"{uid}_l"), q(f"{uid}_r")
     if not any(parts.glob("part-*.parquet")):
         return None
     return (f"(SELECT {l}, {r}, {', '.join(f'arg_max({c}, filename) AS {c}' for c in cols)} "
-            f"FROM read_parquet({lit(parts / 'part-*.parquet')}, filename = true, union_by_name = true) GROUP BY {l}, {r})")
+            f"FROM {engine.read(parts / 'part-*.parquet', by_name=True, filename=True)} GROUP BY {l}, {r})")
 
 
 def next_part(folder: Path) -> int:  # one past the highest part-n.parquet: a part deleted by hand frees no number to write over

@@ -9,7 +9,7 @@ from er import folder
 from er.jobs import index
 from er.jobs.build import given as given_files, indexed
 from er.cluster import merge
-from er.config import Pipeline, lit, q
+from er.config import Pipeline, q
 from er.report import no_run
 from er.settings import Settings
 from er.source import decisions, file_facts, known, readable
@@ -42,11 +42,11 @@ def _decide(path: str | Path, given: str | Path, out: Path, settings: Settings, 
     folder.finish_writes(out)
     if not (out / "gold.parquet").exists():
         raise no_run(out, "apply decisions to")
-    engine.run(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
+    engine.run(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM {engine.read(out / 'gold.parquet')}")
     read = decisions(path, engine, job.l, job.r, into="er_decisions")  # the door: er.source checks them
     ran = Ran(job, config=run_config(pipeline, settings), inputs=file_facts(read, "decisions") if given == path else given_files(given, [], "decisions"))
     known(engine, f"SELECT {l} AS id FROM er_decisions UNION SELECT {r} FROM er_decisions", "gold_old", job.uid, path, f"the run in {out}")
-    if latest := folder.latest_decisions(out, job.uid):
+    if latest := folder.latest_decisions(engine, out, job.uid):
         engine.run(f"""DELETE FROM er_decisions d USING {latest} p WHERE p.{l} = d.{l} AND p.{r} = d.{r} AND p.decision = d.decision""")
     if not job.count("er_decisions"):
         log.done("decide", "O(D)", "O(0 new decisions)", t, decisions=0, matches=0, clusters_joined=0)
@@ -71,7 +71,7 @@ def _decide(path: str | Path, given: str | Path, out: Path, settings: Settings, 
     parts, sheet = out / folder.DECISIONS, out / "review.parquet"
     parts.mkdir(exist_ok=True)
     restamp = [(f"""SELECT s.* EXCLUDE (file_row_number) REPLACE (coalesce(d.decision, s.decision::VARCHAR) AS decision)
-        FROM read_parquet({lit(sheet)}, file_row_number = true) s LEFT JOIN er_decisions d ON d.{l} = s.{l} AND d.{r} = s.{r}
+        FROM {engine.read(sheet, row_numbers=True)} s LEFT JOIN er_decisions d ON d.{l} = s.{l} AND d.{r} = s.{r}
         ORDER BY file_row_number""", sheet)] if sheet.exists() and Path(path).resolve() != sheet.resolve() else []  # the sheet shows each pair's latest: an answer given elsewhere never comes back from it
     folder.stage(engine, out, [(f"SELECT * FROM gold ORDER BY {u}", out / "gold.parquet"),
                                ("SELECT * FROM er_decisions", parts / f"part-{folder.next_part(parts):05d}.parquet"), *restamp],

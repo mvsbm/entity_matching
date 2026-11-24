@@ -14,7 +14,7 @@ import pandas as pd
 from er import folder
 from er.jobs import index
 from er.jobs.build import given, indexed
-from er.config import InputError, Pipeline, lit, q
+from er.config import InputError, Pipeline, q
 from er.report import no_run
 from er.settings import Settings
 from er.source import readable
@@ -68,7 +68,7 @@ def would_join(path: str | Path, out: Path, settings: Settings, pipeline: Pipeli
             engine.run(f"CREATE OR REPLACE TABLE er_match AS SELECT NULL::VARCHAR AS {u}, NULL::VARCHAR AS entity, '' AS status, NULL::VARCHAR AS by, NULL::DOUBLE AS weight WHERE FALSE")
         return engine.frame(f"""SELECT * FROM er_match UNION ALL BY NAME
             SELECT s.{u}, g.cluster_id AS entity, CASE WHEN s.reason = 'already in the run' THEN s.reason ELSE 'set aside: ' || s.reason END AS status
-            FROM set_aside s LEFT JOIN read_parquet({lit(out / 'gold.parquet')}) g ON g.{u} = s.{u} AND s.reason = 'already in the run'
+            FROM set_aside s LEFT JOIN {engine.read(out / 'gold.parquet')} g ON g.{u} = s.{u} AND s.reason = 'already in the run'
             ORDER BY 1""")
 
 
@@ -86,8 +86,8 @@ def join(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, ec
     job = start(settings, pipeline, echo, told)
     engine, u = job.engine, q(job.uid)
     model = json.loads((state / "model.json").read_text(encoding="utf-8"))
-    parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
-    engine.run(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
+    parts = sorted((state / "records").glob("part-*.parquet"))  # not a glob: this run's own part comes later
+    engine.run(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM {engine.read(parts, by_name=True)}")
     loaded = load(job, path, model=model, into="new_records", stored="old_records")  # a record already in the run is set aside: a retry adds nothing twice
     job.pipeline = loaded.pipeline  # the method as the batch lets it run
     ran = Ran(job, added=loaded.n, model=model, part=folder.next_part(state / "records"), config=config, disabled=loaded.disabled,
@@ -104,7 +104,7 @@ def join(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, ec
     ran.n = job.count("records")
     fitted = u_again(job, ran.n, model, state)
     ran.scoring, ran.basis = fitted.scoring, fitted.basis
-    engine.run(f"""CREATE OR REPLACE TABLE rule_clusters AS SELECT * FROM read_parquet({lit(state / 'rule_clusters.parquet')})
+    engine.run(f"""CREATE OR REPLACE TABLE rule_clusters AS SELECT * FROM {engine.read(state / 'rule_clusters.parquet')}
         UNION ALL SELECT {u}, {u} AS cluster_id FROM new_ids""")  # the stored clusters, and each new record alone
     ran.rule_seconds = rules(job, ran.n, fitted.scoring, batch="new_records").seconds
     listed = candidates(job, ran.n, fitted.scoring, None, batch="new_ids", reaching_only=reaching_only)  # the full run's steps, on the pairs touching the batch
