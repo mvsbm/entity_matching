@@ -98,3 +98,13 @@ def test_bigquery_runs_the_sql_as_written_in_one_session_with_the_dataset_s_tabl
     assert not second.create_session and second.connection_properties[0].value == "s1"
     assert "`p.nayose`.cl_jaro_winkler(a, b)" in second_sql and "`p.nayose`.er_hash(a)" in second_sql and "`p.nayose`.nfkc(a)" in second_sql
     assert "my_cl_x(a)" in second_sql  # only the functions' own names
+
+
+def test_the_cost_estimator_bills_the_columns_a_statement_reads_whole_and_an_update_all_its_table():
+    from scripts.estimate_cost import measured
+    engine = DuckDB()
+    engine.run("CREATE TABLE t AS SELECT CAST(MOD(x, 10) AS STRING) || 'a' AS a, 'cdef' AS b, x AS n FROM UNNEST(GENERATE_ARRAY(1, 3000000)) AS x")
+    got = measured(engine)
+    engine.rows("SELECT COUNT(*) FROM t WHERE a = '5b' LIMIT 1")  # a WHERE and a LIMIT cut nothing: column a, whole
+    engine.run("UPDATE t SET n = 0 WHERE a = '5b'")  # every column of t
+    assert [g["billed"] for g in got] == [3e6 * (2 + 2), 3e6 * ((2 + 2) + (2 + 4) + 8)]
