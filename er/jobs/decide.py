@@ -11,7 +11,7 @@ from er.cluster import merge
 from er.config import Pipeline, q
 from er.report import no_run
 from er.settings import Settings
-from er.source import decisions, file_facts, known, readable
+from er.source import decisions, known, readable
 from er.steps.cluster import gold_sql
 from er.steps.job import Ran, start
 from er.steps.write import log_entry, run_config
@@ -41,8 +41,8 @@ def _decide(path: str | Path, given: str | Path, out: Path, settings: Settings, 
     if not (out / "gold.parquet").exists():
         raise no_run(out, "apply decisions to")
     engine.run(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM {engine.read(out / 'gold.parquet')}")
-    read = decisions(path, engine, job.l, job.r, into="er_decisions")  # the door: er.source checks them
-    ran = Ran(job, config=run_config(pipeline, settings), inputs=file_facts(read, "decisions") if given == path else given_files(given, [], "decisions"))
+    decisions(path, engine, job.l, job.r, into="er_decisions")  # the door: er.source checks them
+    ran = Ran(job, config=run_config(pipeline, settings), inputs=given_files(given, [], "decisions"))  # the file people gave, by its own SHA-256
     known(engine, f"SELECT {l} AS id FROM er_decisions UNION SELECT {r} FROM er_decisions", "gold_old", job.uid, path, f"the run in {out}")
     if latest := folder.latest_decisions(engine, out, job.uid):
         engine.run(f"""DELETE FROM er_decisions d USING {latest} p WHERE p.{l} = d.{l} AND p.{r} = d.{r} AND p.decision = d.decision""")

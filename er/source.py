@@ -10,7 +10,6 @@ import difflib
 import functools
 import re
 import tempfile
-import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,7 +40,7 @@ def globbed(p: Path) -> bool:  # a pattern of names (*.parquet, part-?.parquet);
 
 def find(path: str | Path) -> list[Path]:
     """The files a path names: one file, a glob, or a folder (its Parquet files, at any depth: intake.SUFFIXES); a
-    workspace's part, the files its intake read (er.intake). ~ is the home folder."""
+    folder the intake read into (er.source.readable), the files it read. ~ is the home folder."""
     p = Path(path).expanduser()
     if p.is_dir() and (r := intake.report(p)):
         return [p / x["read"] for x in r["files"]]
@@ -181,11 +180,6 @@ def suggest(src: Source, engine: Engine, fields: Iterable[str], patterns: Mappin
     return out
 
 
-
-
-def plain(value: str, fold: dict[int, str]) -> str:  # a value as names are looked up: same width, no spaces, katakana, kana folded
-    v = re.sub(r"[\s\u3000・]+", "", unicodedata.normalize("NFKC", value))
-    return "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in v).translate(fold)
 
 
 def file_facts(files: list[Path], role: str) -> list[dict]:

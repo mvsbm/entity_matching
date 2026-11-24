@@ -89,7 +89,7 @@ def test_every_statement_a_job_sends_translates_into_sql_bigquery_reads(tmp_path
     from er.jobs.match import match
     from er.jobs.update import update
     sent = []
-    for verb in ("run", "value", "row", "first", "rows", "frame", "numpy", "arrow", "batches"):
+    for verb in ("run", "value", "row", "rows", "frame", "numpy", "batches"):
         def said(self, sql, *a, real=getattr(DuckDB, verb), **k):
             if not any(f.filename.endswith("er/kind.py") for f in traceback.extract_stack()):
                 sent.append(sql)

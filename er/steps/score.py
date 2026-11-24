@@ -52,7 +52,7 @@ def scored_sql(job: Job) -> str:
 
 
 def links_sql(job: Job) -> str:
-    """Every pair scored at keep_from points or more and every rule pair, as scored/ keeps them for people (er.results): its
+    """Every pair scored at keep_from points or more and every rule pair, as scored/ keeps them for match runs (er.jobs.match): its
     points, how it was found (sources: the keys; rule: the rule), named, keep, and one gamma per comparison."""
     fs, l, r = job.pipeline.fs, q(job.l), q(job.r)
     gammas = [c for c, _ in job.engine.columns("scores") if c.startswith("gamma_")]

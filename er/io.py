@@ -81,17 +81,10 @@ def patiently(do: Callable, *args, wait: float = 10.0):
             time.sleep(0.05)
 
 
-def replace_text(path: Path, text: str, check: Callable[[Path], object] | None = None) -> None:
-    """`path` written whole beside itself, then renamed over it, so a write cut short leaves the old file. `check` reads
-    the new one first: if it raises, the new one goes and the old stays."""
+def replace_text(path: Path, text: str) -> None:
+    """`path` written whole beside itself, then renamed over it, so a write cut short leaves the old file."""
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")  # a writer's own: two at once never share one
     tmp.write_text(text, encoding="utf-8")
-    try:
-        if check:
-            check(tmp)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
     patiently(os.replace, tmp, path)
 
 

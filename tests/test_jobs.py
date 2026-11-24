@@ -287,7 +287,7 @@ def test_the_diagnosis_names_what_limits_the_run_the_most_pairs_first_each_with_
     s, p, g = population
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
     run = build(tmp_path / "in.parquet", tmp_path / "run", s, p)
-    tables, lo, m = qa(run, [f for f in s.columns if f not in ("id", "entity")]), review_floor(run.pipeline), run.scoring["er"]
+    tables, lo, m = qa(run), review_floor(run.pipeline), run.scoring["er"]
     said = lambda: diagnosis_lines(diagnosis(run, tables, lo))[1:-1]
     top = {c["output_column_name"]: max(g for g, _ in ranked(c)) for c in run.scoring["comparisons"]}
     assert said() and len(said()) <= SHOWN
@@ -323,7 +323,7 @@ def test_the_run_report_holds_no_record_value(tmp_path, population):
     df.loc[df.index[100:170], ["CIF_ID", "FULL_NAME_KANA"]] = ["9999999999999", "ヤマダタロウ"]
     df.to_parquet(tmp_path / "in.parquet", index=False)
     run = build(tmp_path / "in.parquet", tmp_path / "run", s, p)
-    tables = qa(run, [f for f in s.columns if f not in ("id", "entity")])
+    tables = qa(run)
     text = report_text(run, tables, s.root / "config" / "pipeline.toml")
     assert any("9999999999999" in x for x in run.examples) and any("0000" in x for x in run.examples)
     assert not re.search(r"[\u3040-\u30ff\u3400-\u9fff\uff66-\uff9f]", text)  # no kana or kanji: no name, address or town
@@ -449,7 +449,6 @@ def test_the_commands_the_tests_start_run_this_checkout_s_code(tmp_path):  # fro
 
 
 def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_path, population):
-    from er.report import households
     from er.jobs.build import build
     s, p, g = population
     uid = s.data.unique_id
@@ -461,13 +460,11 @@ def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_p
     copy = one.copy()
     copy[uid] = "copy"
     pd.concat([g.df, pd.DataFrame([member, copy])], ignore_index=True).to_parquet(tmp_path / "in.parquet", index=False)
-    run = build(tmp_path / "in.parquet", tmp_path / "run", s, p, pipeline_file=s.root / "config" / "pipeline.toml")  # with its reports, as python -m er runs it
-    pairs = f"""SELECT * FROM (VALUES ('{one[uid]}', 'member'), ('{one[uid]}', 'copy')) t("{uid}_l", "{uid}_r")"""
-    assert households(run.engine, "records", pairs, uid, run.pipeline) == {(one[uid], "member")}  # the copy: the same given name
+    build(tmp_path / "in.parquet", tmp_path / "run", s, p, pipeline_file=s.root / "config" / "pipeline.toml")  # with its reports, as python -m er runs it
     from er.jobs.match import match
     table = pd.read_parquet(match(tmp_path / "run", s, p, p.threshold.keep_from)["into"]).set_index([f"{uid}_l", f"{uid}_r"])
     assert table["household"].dtype == bool and table.loc[tuple(sorted((one[uid], "member"))), "household"]  # the match table says so
-    assert not table.loc[tuple(sorted((one[uid], "copy"))), "household"]
+    assert not table.loc[tuple(sorted((one[uid], "copy"))), "household"]  # the copy: the same given name
 
 
 def test_em_on_fields_learns_one_session_blocked_on_each_and_the_fit_owes_an_increment_no_rerun(population, tmp_path):

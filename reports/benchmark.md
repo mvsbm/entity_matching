@@ -22,24 +22,24 @@ Populations with one name column for every kind (`design.generate.kind_problems`
 
 | flag | routed_by | recall | false_merges | person_company_clusters | sure_companies | wrong_companies | sure_persons | wrong_persons | seconds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| good (1% wrong at random, 20% on representatives) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 2.9 |
-| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4911 | 38 | 27 | 97.9% | 306 | 98.5% | 102 | 1.8 |
-| good (1% wrong at random, 20% on representatives) | the kind step | 0.4899 | 33 | 26 | 98.7% | 554 | 97.4% | 63 | 1.8 |
-| medium (3%, 50%) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 1.5 |
-| medium (3%, 50%) | the flag alone | 0.4712 | 79 | 61 | 94.8% | 886 | 95.8% | 256 | 2.9 |
-| medium (3%, 50%) | the kind step | 0.4723 | 73 | 59 | 96.9% | 1091 | 94.8% | 153 | 1.8 |
-| poor (10%, 80%) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 1.5 |
-| poor (10%, 80%) | the flag alone | 0.4046 | 121 | 93 | 86.9% | 2533 | 87.9% | 644 | 3.5 |
-| poor (10%, 80%) | the kind step | 0.4146 | 111 | 86 | 93.6% | 2690 | 87.2% | 314 | 1.9 |
+| good (1% wrong at random, 20% on representatives) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 2.8 |
+| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4911 | 38 | 27 | 97.9% | 306 | 98.5% | 102 | 2.7 |
+| good (1% wrong at random, 20% on representatives) | the kind step | 0.4899 | 33 | 26 | 98.7% | 554 | 97.4% | 63 | 2.7 |
+| medium (3%, 50%) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 2.7 |
+| medium (3%, 50%) | the flag alone | 0.4712 | 79 | 61 | 94.8% | 886 | 95.8% | 256 | 3.8 |
+| medium (3%, 50%) | the kind step | 0.4723 | 73 | 59 | 96.9% | 1091 | 94.8% | 153 | 2.7 |
+| poor (10%, 80%) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 2.7 |
+| poor (10%, 80%) | the flag alone | 0.4046 | 121 | 93 | 86.9% | 2533 | 87.9% | 644 | 4.4 |
+| poor (10%, 80%) | the kind step | 0.4146 | 111 | 86 | 93.6% | 2690 | 87.2% | 314 | 2.8 |
 
-## Cost: files of growing size (time grows like N^0.57)
+## Cost: files of growing size (time grows like N^0.58)
 
 Each file is resolved by `python -m er build` in a process of its own, fitted on the file itself; DuckDB memory limit: 8GB. Peak memory is the process's, Python included. Step columns are seconds. `fit` (on 100,000 records) and the u sample of the file inside it (10,000,000 pairs) grow far slower than the file (the fit's sample is fixed; only u's exact counts read every record), so at these sizes the total grows far slower than N. Above 60,000 entities personas repeat, so those rows measure cost only.
 
 | records | seconds | peak_memory_gb | load | budget | fit | rules | candidates | score | cluster | report | write | recall | false_merges | fp_rate_at_most | model_links | expected_false | false_links |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 13019 | 2.3 | 0.6 | 0.3 | 0.09 | 1.49 | 0.06 | 0.2 | 0.02 | 0.01 | 0.1 | 0.05 | 0.4843 | 2 | 0.44% | 1122 | 1.61 | 1 |
-| 25947 | 2.8 | 0.68 | 0.49 | 0.13 | 1.58 | 0.09 | 0.31 | 0.03 | 0.01 | 0.1 | 0.09 | 0.492 | 0 | 0.11% | 2144 | 2.33 | 0 |
-| 52115 | 3.9 | 0.9 | 0.8 | 0.2 | 1.86 | 0.15 | 0.54 | 0.04 | 0.02 | 0.12 | 0.17 | 0.4784 | 2 | 0.11% | 4301 | 4.82 | 2 |
-| 77926 | 5.1 | 1.1 | 1.14 | 0.27 | 2.23 | 0.21 | 0.76 | 0.05 | 0.03 | 0.13 | 0.25 | 0.4747 | 6 | 0.14% | 6287 | 8.07 | 5 |
-| 1039995 | 26.2 | 7.26 | 5.3 | 1.96 | 4.33 | 2.11 | 10.74 | 0.25 | 0.14 | 0.27 | 1.14 | — | — | — | 44065 | 54.54 | — |
+| 13019 | 2.3 | 0.59 | 0.3 | 0.09 | 1.45 | 0.06 | 0.2 | 0.02 | 0.01 | 0.09 | 0.05 | 0.4843 | 2 | 0.44% | 1122 | 1.61 | 1 |
+| 25947 | 2.8 | 0.69 | 0.49 | 0.13 | 1.5 | 0.09 | 0.31 | 0.03 | 0.01 | 0.1 | 0.09 | 0.492 | 0 | 0.11% | 2144 | 2.33 | 0 |
+| 52115 | 3.8 | 0.89 | 0.8 | 0.2 | 1.75 | 0.15 | 0.54 | 0.04 | 0.02 | 0.12 | 0.17 | 0.4784 | 2 | 0.11% | 4301 | 4.82 | 2 |
+| 77926 | 4.9 | 1.13 | 1.14 | 0.27 | 2.07 | 0.21 | 0.76 | 0.05 | 0.03 | 0.13 | 0.24 | 0.4747 | 6 | 0.14% | 6287 | 8.07 | 5 |
+| 1039995 | 26.7 | 7.58 | 5.23 | 1.97 | 4.06 | 2.04 | 11.63 | 0.2 | 0.13 | 0.27 | 1.18 | — | — | — | 44065 | 54.54 | — |
