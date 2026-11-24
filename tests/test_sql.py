@@ -138,5 +138,5 @@ def test_a_row_a_function_reads_is_of_a_narrow_table():  # BigQuery may bill a r
                 continue
             tree = sqlglot.parse_one(s, read="bigquery")
             wide = {t.alias for t in tree.find_all(exp.Table) if t.alias and t.name == "records"}  # records: every column of a record
-            passed = {a.name for c in tree.find_all(exp.Anonymous) for a in c.expressions if isinstance(a, exp.Column) and not a.table}
+            passed = {a.name for c in tree.find_all(exp.Func) for a in c.iter_expressions() if isinstance(a, exp.Column) and not a.table}
             assert not wide & passed, (f.name, s.strip()[:80], wide & passed)

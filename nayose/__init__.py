@@ -64,7 +64,7 @@ def mapping() -> Path:  # mapping.sql, or the file NAYOSE_MAPPING names (another
 def legal_pattern(c: dict) -> str:
     """A legal form anywhere (also with its small kana written large), or a bank abbreviation where it may stand: first,
     カ)〇〇, or last, 〇〇(カ. Longest first, so 医療法人社団 isn't cut to 医療法人. On NFKC text."""
-    forms = sorted({f for x in c["legal_forms"] for f in (x, x.translate(SMALL_KANA))}, key=len, reverse=True)
+    forms = sorted({f for x in c["legal_forms"] for f in (x, x.translate(SMALL_KANA))}, key=lambda f: (-len(f), f))  # one order, every run
     parts = [re.escape(f) for f in forms]
     if c["legal_front"]:
         parts.append(f"^(?:{'|'.join(map(re.escape, sorted(c['legal_front'], key=len, reverse=True)))})\\)")
