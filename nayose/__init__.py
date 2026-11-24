@@ -118,7 +118,7 @@ def values(name: str, refit: bool = True, lookup: bool = False) -> dict:
                     u_max_pairs=float(f["u_max_pairs"]), settings=json.dumps(f), refit=refit)
     if name == "score":
         return dict(keys=list(s["keys"]), rules=list(s["rules"]), keep_from=-math.inf if lookup else float(s["keep_from"]),
-                    search_floor=float(s["search_floor"]), oversized=int(s["oversized"]))
+                    search_floor=float(s["search_floor"]), oversized=int(s["oversized"]), lookup=lookup)
     if name == "decide":
         return dict(blank=BLANK)
     if name == "report":
@@ -315,8 +315,6 @@ def report_text(engine, steps: dict[str, float], job: str) -> str:
 
     scored = dict(engine.rows("SELECT band, pairs FROM report_scores"))
     label = lambda i: "below 0" if i == -1 else f"below {edges[0]:g}" if i == 0 else f"{edges[-1]:g} and up" if i == len(edges) else f"{edges[i - 1]:g} to {edges[i]:g}"
-    if scored.get(-1):  # pairs the bound put below the floor, never weighed: one row below 0, with those weighed below it
-        scored[-1] += sum(scored.pop(i) for i in [i for i in scored if 0 <= i < len(edges) and edges[i] <= 0])
     out += ["SCORES  (the candidates scored, by bits)", *table(pd.DataFrame([dict(bits=label(i), candidates=f"{scored[i]:,}") for i in sorted(scored) if scored[i]])), ""]
 
     named = {(x, g): lab for x, g, lab in engine.rows("SELECT comparison, gamma, label FROM model")}
@@ -338,7 +336,7 @@ def report_text(engine, steps: dict[str, float], job: str) -> str:
     facts = dict(records=f"records {int(n['added']):,} · set_aside {int(n['set_aside']):,} · companies {int(n['companies']):,} · persons {int(n['persons']):,} · not sure {int(n['unsure']):,}",
                  fit=f"fit_rows {fitted['fit_rows']:,}" + (" · the build's model" if job != "build" else "") + f" · sampled_again {len(fitted.get('sampled_again', [])):,}",
                  score=f"candidates {int(n['candidates']):,} · stored {int(n['scored']):,} · rule pairs {int(n['ruled']):,} · oversized_kept {int(n['oversized_kept']):,} · "
-                       f"oversized_skipped {int(n['oversized_skipped']):,} · unscored {int(n['unscored']):,}",
+                       f"oversized_skipped {int(n['oversized_skipped']):,}",
                  decide=f"decided {int(n['decided']):,} · entities {int(n['entities']):,}")
     out += ["STEPS", *table(pd.DataFrame([dict(step=s, seconds=f"{x:.2f}", facts=facts.get(s, "")) for s, x in steps.items()])), ""]
 

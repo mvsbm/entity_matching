@@ -6,7 +6,7 @@
 --
 -- Reads: fresh (the record asked about), batch_scored and batch_rule_pairs (score.sql: every candidate scored,
 -- keep_from aside), gold (each stored record's entity), records, model (each level's label), generators, rules,
--- key_blocks, key_sizes, gated, rule_keys.
+-- key_blocks, gated, rule_keys.
 -- Values: @at_least (points), @likely_from (points: a pair from here up whose names were compared is likely, as
 -- people review), @oversized, @stored (the record asked about is a stored one, looked up as if it were new).
 -- Writes (temporary, read by the job before it rolls back): candidates, entities, checked.
@@ -53,7 +53,7 @@ WHERE r.k = 1 AND (r.points >= @at_least OR j.rule IS NOT NULL);
 -- value is on @oversized records or more (untrusted: how many)
 CREATE OR REPLACE TEMP TABLE checked AS
 WITH mine AS (
-  SELECT b.g, b.k, s.n FROM key_blocks AS b JOIN key_sizes AS s USING (g, k) WHERE b.id IN (SELECT id FROM fresh)
+  SELECT g, k, n FROM key_blocks WHERE id IN (SELECT id FROM fresh)
 ),
 normal AS (
   SELECT m.g, COUNT(DISTINCT b.id) - IF(@stored, 0, 1) AS found

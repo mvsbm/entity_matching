@@ -1,8 +1,8 @@
 -- The report's numbers: what the run holds and how its latest batch went, with no record's value in them, for
 -- nayose.report to set out as report.txt. O(N·F) for the fields' fill, O(C) over the batch's pairs.
 --
--- Reads: records, this_batch, set_aside, placeholders, gold, decisions, model, fit, cands, batch_pairs, batch_weighed
--- and batch_scored (score.sql), key_sizes, gated, generators.
+-- Reads: records, this_batch, set_aside, placeholders, gold, decisions, model, fit, cands, batch_pairs and
+-- batch_scored (score.sql), key_blocks, gated, generators.
 -- Values: @patterns (JSON: each field's look, config.toml [report] patterns, and the legal forms for company_name),
 -- @edges (bits: where a score band starts), @floor (bits: the review floor), @oversized.
 -- Writes (read by nayose.report_text, here or after a BigQuery procedure): report_counts, report_fields, report_scores, report_patterns,
@@ -33,7 +33,6 @@ SELECT
   (SELECT COUNT(*) FROM gold WHERE kind_flagged) AS flagged,
   (SELECT COUNT(*) FROM gated WHERE decision = 'kept') AS oversized_kept,
   (SELECT COUNT(*) FROM gated WHERE decision <> 'kept') AS oversized_skipped,
-  (SELECT COUNT(*) FROM batch_pairs) - (SELECT COUNT(*) FROM batch_weighed) AS unscored,
   COUNT(full_name) AS full_name, COUNT(person_name) AS person_name, COUNT(given_name) AS given_name,
   COUNT(company_name) AS company_name, COUNT(any_name) AS any_name, COUNT(address) AS address, COUNT(address_code) AS address_code,
   COUNT(postal_code) AS postal_code, COUNT(prefecture) AS prefecture, COUNT(town_code) AS town_code, COUNT(city) AS city,
@@ -61,14 +60,14 @@ SELECT
 FROM v LEFT JOIN top USING (field)
 GROUP BY field;
 
--- the batch's candidates by bits (band: how many of @edges a pair reaches); those the bound put below the floor,
--- never weighed, below 0 (-1)
+-- the batch's candidates by bits from 0 up (band: how many of @edges a pair reaches); the rest, below 0 (-1): those
+-- weighed under it, and those the bound put there unweighed
 CREATE OR REPLACE TABLE report_scores AS
 SELECT band, COUNT(*) AS pairs
-FROM (SELECT ARRAY_LENGTH(ARRAY(SELECT e FROM UNNEST(@edges) AS e WHERE e <= match_weight)) AS band FROM batch_weighed)
+FROM (SELECT ARRAY_LENGTH(ARRAY(SELECT e FROM UNNEST(@edges) AS e WHERE e <= match_weight)) AS band FROM batch_scored WHERE match_weight >= 0)
 GROUP BY band
 UNION ALL
-SELECT -1, (SELECT COUNT(*) FROM batch_pairs) - (SELECT COUNT(*) FROM batch_weighed);
+SELECT -1, (SELECT COUNT(*) FROM batch_pairs) - (SELECT COUNT(*) FROM batch_scored WHERE match_weight >= 0);
 
 -- the batch's pairs at 0 bits and up, below the review floor and from it: each band's patterns of levels, with how
 -- many pairs hold each and their mean bits, the 12 most common first
@@ -76,7 +75,7 @@ CREATE OR REPLACE TABLE report_patterns AS
 WITH p AS (
   SELECT match_weight >= @floor AS up, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth,
          COUNT(*) AS n, AVG(match_weight) AS w
-  FROM batch_weighed WHERE match_weight >= 0
+  FROM batch_scored WHERE match_weight >= 0
   GROUP BY 1, 2, 3, 4, 5, 6, 7
 )
 SELECT * FROM (
@@ -88,7 +87,7 @@ SELECT * FROM (
 -- each key: the pairs it lists (each once, a deletion key's too), per record; its largest block, how many are oversized
 CREATE OR REPLACE TABLE report_keys AS
 WITH listing AS (SELECT name, COUNT(*) AS pairs FROM cands, UNNEST(SPLIT(sources, '+')) AS name GROUP BY name),
-blocks AS (SELECT g, MAX(n) AS largest, COUNT(CASE WHEN n >= @oversized THEN 1 END) AS oversized FROM key_sizes GROUP BY g)
+blocks AS (SELECT g, MAX(n) AS largest, COUNT(DISTINCT CASE WHEN n >= @oversized THEN k END) AS oversized FROM key_blocks GROUP BY g)
 SELECT g.g, g.name, COALESCE(l.pairs, 0) AS pairs, COALESCE(b.largest, 0) AS largest, COALESCE(b.oversized, 0) AS oversized
 FROM generators AS g LEFT JOIN listing AS l USING (name) LEFT JOIN blocks AS b USING (g)
 WHERE g.used;

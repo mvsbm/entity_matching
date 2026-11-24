@@ -8,7 +8,8 @@
 -- Reads: records and this_batch (records.sql), compared (fit.sql), model and fit (each level's bits, the prior's
 -- bits at the file's size). Values: @keys and @rules (by name: the generators and rules this run uses, config.toml
 -- [score]), @keep_from (bits: where scored pairs are kept from), @search_floor (bits: a sampled pair at it or above
--- keeps its block), @oversized (a block of this many records or more is checked on a sample of as many of its records).
+-- keeps its block), @oversized (a block of this many records or more is checked on a sample of as many of its records),
+-- @lookup (the batch is a record asked about: its keys kept, each, for lookup.sql's account).
 -- A pair's two records are x and y (l and r name its IDs: DuckDB reads a WHERE's l as the SELECT's, BigQuery as the table).
 -- Writes: rule_pairs (the first rule in order naming each pair), cands (the pairs the batch's keys list, the keys that
 -- listed each in sources), gated (each oversized block the batch reaches, its sample and whether it was kept), scored
@@ -81,8 +82,9 @@ INSERT INTO rule_pairs SELECT * FROM batch_rule_pairs;
 
 -- 2. The keys: each generator's block of each record, its keys joined (a deletion key's: the value with each one
 --    character deleted, a run of equal characters once, and the value whole, within its other keys). In the order of
---    their bits in sources.
-CREATE OR REPLACE TEMP TABLE key_blocks AS
+--    their bits in sources. Each row with its block's size among all the records (n), counted once; kept only where
+--    the block reaches the batch and can make a pair (two records or more; a lookup's record keeps its own).
+CREATE OR REPLACE TEMP TABLE every_key AS
 SELECT g, k, id, id IN (SELECT id FROM fresh) AS new FROM (
   SELECT 0 AS g, customer_id AS k, id FROM records                                                      -- cif
   UNION ALL SELECT 1, phone || CHR(31) || prefecture, id FROM records                                   -- phone_prefecture
@@ -116,15 +118,17 @@ SELECT g, k, id, id IN (SELECT id FROM fresh) AS new FROM (
   UNION ALL SELECT 21, postal_code__first3 || CHR(31) || person_name__kana_fold_long_vowel_last3, id FROM records  -- postal_area_given_tail
 ) WHERE k IS NOT NULL AND g IN (SELECT g FROM generators WHERE used);
 
-CREATE OR REPLACE TEMP TABLE key_sizes AS  -- each block the batch reaches, with its size among all the records
-SELECT g, k, COUNT(*) AS n FROM key_blocks GROUP BY g, k HAVING LOGICAL_OR(new);
+CREATE OR REPLACE TEMP TABLE key_blocks AS
+SELECT e.g, e.k, e.id, e.new, s.n
+FROM every_key AS e
+JOIN (SELECT g, k, COUNT(*) AS n FROM every_key GROUP BY g, k HAVING (COUNT(*) > 1 OR @lookup) AND LOGICAL_OR(new)) AS s USING (g, k)
+WHERE s.n > 1 OR e.new;
 
 -- every pair of a block under @oversized records that touches the batch, each generator's bit set
 CREATE OR REPLACE TEMP TABLE listed AS
 SELECT LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r, BIT_OR(1 << a.g) AS bits
 FROM key_blocks AS a JOIN key_blocks AS b ON a.g = b.g AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
-JOIN key_sizes AS s ON s.g = a.g AND s.k = a.k
-WHERE a.new AND s.n < @oversized
+WHERE a.new AND a.n < @oversized
 GROUP BY 1, 2;
 
 
@@ -186,7 +190,7 @@ WITH ranked AS (
   SELECT b.g, b.k, b.id, b.new,
          ROW_NUMBER() OVER (PARTITION BY b.g, b.k ORDER BY er_hash(b.id)) AS rank,
          IF(b.new, ROW_NUMBER() OVER (PARTITION BY b.g, b.k, b.new ORDER BY er_hash(b.id)), NULL) AS new_rank
-  FROM key_blocks AS b JOIN key_sizes AS s ON s.g = b.g AND s.k = b.k WHERE s.n >= @oversized
+  FROM key_blocks AS b WHERE b.n >= @oversized
 )
 SELECT DISTINCT a.g, a.k, LEAST(a.id, c.id) AS l, GREATEST(a.id, c.id) AS r
 FROM ranked AS a JOIN ranked AS c ON a.g = c.g AND a.k = c.k AND a.id <> c.id
@@ -206,8 +210,7 @@ stats AS (
 SELECT z.g, z.k AS value, z.n AS records, DIV(z.n * (z.n - 1), 2) AS pairs, COALESCE(s.sampled, 0) AS sampled, s.best, COALESCE(s.hits, 0) AS hits,
        CASE WHEN COALESCE(s.hits, 0) > 0 THEN 'kept' WHEN COALESCE(s.sampled, 0) = 0 THEN 'skipped: other keys list its sampled pairs'
             ELSE 'skipped: no sampled pair reaches the floor' END AS decision
-FROM key_sizes AS z LEFT JOIN stats AS s ON s.g = z.g AND s.k = z.k
-WHERE z.n >= @oversized;
+FROM (SELECT DISTINCT g, k, n FROM key_blocks WHERE n >= @oversized) AS z LEFT JOIN stats AS s ON s.g = z.g AND s.k = z.k;
 
 
 -- 5. The candidates: the pairs listed, and every pair of a block kept that touches the batch, each with the keys that
@@ -235,7 +238,7 @@ SELECT pairs.l, pairs.r, named.sources FROM pairs JOIN named USING (bits);
 CREATE OR REPLACE TEMP TABLE batch_pairs AS  -- the batch's candidates and rule pairs, each once
 SELECT l, r, c.sources, p.rule FROM cands AS c FULL JOIN batch_rule_pairs AS p USING (l, r);
 
-CREATE OR REPLACE TEMP TABLE batch_weighed AS  -- every pair the bound keeps, weighed (report.sql counts them by bits)
+CREATE OR REPLACE TEMP TABLE batch_scored AS
 WITH pairs AS (SELECT * FROM batch_pairs),
 levelled AS (
   SELECT p.l, p.r, p.sources, p.rule, gamma_name(x, y) AS gamma_name, gamma_company(x, y) AS gamma_company,
@@ -253,10 +256,8 @@ SELECT
        ELSE POWER(CAST(2 AS FLOAT64), match_weight) / (CAST(1 AS FLOAT64) + POWER(CAST(2 AS FLOAT64), match_weight)) END AS match_probability,
   sources, rule, (gamma_name >= 0 OR gamma_company >= 0) AS named,
   gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth
-FROM weighed;
-
-CREATE OR REPLACE TEMP TABLE batch_scored AS
-SELECT * FROM batch_weighed WHERE match_weight >= @keep_from OR rule IS NOT NULL;
+FROM weighed
+WHERE match_weight >= @keep_from OR rule IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS scored AS SELECT * FROM batch_scored WHERE FALSE;
 
