@@ -11,10 +11,12 @@ from types import SimpleNamespace
 import pytest
 import sqlglot
 
+import nayose
+
 from nayose.engines import bigquery_literal, functions, procedures
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
-CODE = re.compile(r"--[^\n]*|'(?:[^'\\]|\\.)*'")  # comments and strings: what isn't code
+CODE = nayose.NOT_CODE  # comments and strings: what isn't code
 
 
 def script(name: str):  # deploy/<name>.py as a module

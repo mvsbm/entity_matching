@@ -87,8 +87,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--truth", type=Path, help="a generated population's truth: CONT_ID, ENTITY_ID")
     p.add_argument("--points", type=float, default=float(nayose.config()["lookup"]["likely_from"]), help="the matches' line, in points")
     a = p.parse_args(argv)
-    if a.points < float(nayose.config()["score"]["keep_from"]):
-        p.error("--points below [score] keep_from: the run keeps no pair below it")
+    try:
+        nayose.check_threshold(a.points)
+    except nayose.InputError as e:
+        p.error(f"--points: {e}")
     print(report(measure(a.run, a.truth, a.points), a.truth is not None))
     return 0
 

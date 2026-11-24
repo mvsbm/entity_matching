@@ -14,7 +14,8 @@ a set of tables: a BigQuery dataset, or a DuckDB database file.
     lookup(engine, record|values)   the entities a record would join, as an update of it alone, nothing written (lookup.sql)
     stage(engine, name, **values)   a stage's statements in order, each given the values it names (@name)
     statements(text)                a stage file's statements: each ends with a line that ends in ;
-    fingerprint()                   what an increment needs unchanged since the full run: the SQL and the values
+    fingerprint()                   what an increment needs unchanged since the full run: the SQL, the values, the mapping
+                                    and the name model
 """
 import hashlib
 import json
@@ -53,8 +54,8 @@ class InputError(ValueError):  # a refusal the person running the job can act on
         self.fix = fix
 
 
-def config(path: Path | None = None) -> dict:  # config.toml, or the file NAYOSE_CONFIG names (a variant at design time)
-    return tomllib.loads((path or Path(os.environ.get("NAYOSE_CONFIG") or HERE / "config.toml")).read_text(encoding="utf-8"))
+def config() -> dict:  # config.toml, or the file NAYOSE_CONFIG names (a variant at design time)
+    return tomllib.loads(Path(os.environ.get("NAYOSE_CONFIG") or HERE / "config.toml").read_text(encoding="utf-8"))
 
 
 def mapping() -> Path:  # mapping.sql, or the file NAYOSE_MAPPING names (another file's columns)
@@ -133,7 +134,8 @@ def values(name: str, refit: bool = True, lookup: bool = False) -> dict:
 
 
 def fit(engine, refit: bool = True) -> None:
-    """Stage 2 on `engine`, after records: fit.sql, with config.toml [fit]. O(n + S·K) on the sample, O(N + S·K) on the
+    """Stage 2 on `engine`, after records: fit.sql, with config.toml [fit]. O(n + S·K) on the sample of n records, S
+    sampled pairs and K comparisons; O(N + S·K) on the
     file. refit False (an update): the build's model kept, its u measured again on the run's records."""
     stage(engine, "functions")
     stage(engine, "fit", **values("fit", refit=refit))
@@ -168,59 +170,91 @@ def lookup(engine, record: str | None = None, values: dict | None = None, at_lea
     if record is not None and not engine.value("SELECT COUNT(*) FROM records WHERE id = @me", {"me": me}):
         raise InputError(f"{record}: no record of the run has that ID", fix="give a record ID the run holds, or the record's values")
     held = engine.value("SELECT COUNT(*) FROM records")
-    with engine.scratch():  # 1. its keys, made from it alone
+    keys = its_keys(engine, c, record, values, me)
+    ids, blocks = index_records(engine, keys, record, me, int(c["score"]["oversized"]))
+    view, cands, found, checked = scored_against(engine, c, record, values, me, ids, blocks, held, at_least)
+    return answer(record, view, cands, found, checked, at_least, most)
+
+
+def its_keys(engine, c: dict, record: str | None, values: dict | None, me: str) -> dict[str, set]:
+    """A lookup's step 1: the keys of the record asked about, made from it alone (every_key's and rule_keys')."""
+    with engine.scratch():
         asked(engine, c, record, values, [me] if record is not None else [], until="every_key")
-        keys = {"every_key": set(engine.rows("SELECT g, k FROM every_key WHERE id = @me", {"me": me})),
+        return {"every_key": set(engine.rows("SELECT g, k FROM every_key WHERE id = @me", {"me": me})),
                 "rule_keys": set(engine.rows("SELECT i, k FROM rule_keys WHERE id = @me", {"me": me}))}
-    big = int(c["score"]["oversized"])
+
+
+def index_records(engine, keys: dict[str, set], record: str | None, me: str, big: int) -> tuple[set, dict]:
+    """A lookup's step 2: the run's index read by those keys. Every record of each rule key, and of each block, but of
+    an oversized one (`big` records or more) its first records by hash alone: the gate's sample (score.sql), and one
+    more, so the record asked about may rank anywhere. The IDs, and each block's (g, k): [its size, the IDs read]."""
     ids = {me} if record is not None else set()
-    if keys["rule_keys"]:  # 2. the run's index, by key: every record of each rule key
-        ids |= {i for g, k, i in engine.rows("SELECT i, k, id FROM rule_keys WHERE k IN UNNEST(@ks)", {"ks": sorted({k for _, k in keys["rule_keys"]})})
-                if (g, k) in keys["rule_keys"]}
-    blocks = {}  # and of each block, an oversized one's first records by hash alone: the gate's sample (score.sql), one spare
+    if keys["rule_keys"]:
+        rows = engine.rows("SELECT i, k, id FROM rule_keys WHERE k IN UNNEST(@ks)", {"ks": sorted({k for _, k in keys["rule_keys"]})})
+        ids |= {i for g, k, i in rows if (g, k) in keys["rule_keys"]}
+    blocks = {}
     if keys["every_key"]:
-        for g, k, i, n in engine.rows("SELECT g, k, id, COUNT(*) OVER (PARTITION BY g, k) AS n FROM every_key WHERE k IN UNNEST(@ks) "
-                                      "QUALIFY COUNT(*) OVER (PARTITION BY g, k) < @big OR ROW_NUMBER() OVER (PARTITION BY g, k ORDER BY er_hash(id)) <= @big + 1",
-                                      {"ks": sorted({k for _, k in keys["every_key"]}), "big": big}):
+        rows = engine.rows("SELECT g, k, id, COUNT(*) OVER (PARTITION BY g, k) AS n FROM every_key WHERE k IN UNNEST(@ks) "
+                           "QUALIFY COUNT(*) OVER (PARTITION BY g, k) < @big OR ROW_NUMBER() OVER (PARTITION BY g, k ORDER BY er_hash(id)) <= @big + 1",
+                           {"ks": sorted({k for _, k in keys["every_key"]}), "big": big})
+        for g, k, i, n in rows:
             if (g, k) in keys["every_key"]:
                 blocks.setdefault((g, k), [n, set()])[1].add(i)
-    ids |= {i for _, held_here in blocks.values() for i in held_here}
+    return ids | {i for _, read in blocks.values() for i in read}, blocks
+
+
+def scored_against(engine, c: dict, record: str | None, values: dict | None, me: str, ids: set, blocks: dict, held: int,
+                   at_least: float) -> tuple:
+    """A lookup's step 3: the record scored against those records alone, a block read in part at its size whole. A big
+    block the gate keeps makes every pair of it a candidate, so it is read whole, from the run's index (outside the
+    scratch, whose every_key is the lookup's own), and scored again. The record as compared and lookup.sql's tables."""
+    big = int(c["score"]["oversized"])
     while True:
-        with engine.scratch():  # 3. it scored against those records alone; a block read in part, at its size whole
-            sized = [(g, k, n + (record is None)) for (g, k), (n, members) in blocks.items() if n > len(members)]  # a typed record: one more
+        with engine.scratch():
+            typed = 0 if record is not None else 1  # a typed record isn't in the index: its blocks hold one more
+            sized = [(g, k, n + typed) for (g, k), (n, read) in blocks.items() if n > len(read)]
             temp = asked(engine, c, record, values, sorted(ids), outside=held - len(ids), sized=sized)
             kept = {(g, k) for g, k in engine.rows("SELECT g, value FROM gated WHERE decision = 'kept'")} & {(g, k) for g, k, _ in sized}
             if not kept:
                 stage(engine, "lookup", scratch=temp, at_least=at_least, likely_from=float(c["lookup"]["likely_from"]),
                       oversized=big, stored=record is not None)
-                view = engine.frame(f"SELECT {', '.join(SHOWN)}{'' if record is not None else ', kind'} FROM records WHERE id = @me", {"me": me}).iloc[0]
-                cands = engine.frame("SELECT * FROM candidates ORDER BY points DESC, id")
-                found = engine.frame("SELECT * FROM entities ORDER BY rule IS NULL, ROUND(points, 2) DESC, points DESC, id")
-                checked = engine.frame("SELECT * FROM checked ORDER BY position")
-        if not kept:
-            break
-        # a big block the gate keeps: every pair of it a candidate, so it is read whole, from the run's index (past the
-        # scratch, whose every_key is the lookup's own), and scored again
+                return (engine.frame(f"SELECT {', '.join(SHOWN)}{'' if record is not None else ', kind'} FROM records WHERE id = @me", {"me": me}).iloc[0],
+                        engine.frame("SELECT * FROM candidates ORDER BY points DESC, id"),
+                        engine.frame("SELECT * FROM entities ORDER BY rule IS NULL, ROUND(points, 2) DESC, points DESC, id"),
+                        engine.frame("SELECT * FROM checked ORDER BY position"))
         for g, k, i in engine.rows("SELECT g, k, id FROM every_key WHERE k IN UNNEST(@ks)", {"ks": sorted({k for _, k in kept})}):
             if (g, k) in kept:
                 blocks[g, k][1].add(i)
                 ids.add(i)
+
+
+COMPARISONS = ("name", "company", "address", "phone", "cif", "birth")  # the model's, in its order
+
+
+def answer(record: str | None, view, cands: pd.DataFrame, found: pd.DataFrame, checked: pd.DataFrame, at_least: float, most: int) -> dict:
+    """What a lookup gives back (docs/data.md, "A lookup's answer"), from lookup.sql's tables."""
     text = lambda v: None if pd.isna(v) else str(v)
     shown = lambda x: {f: text(x[f]) for f in SHOWN}
-    compared = lambda x: {k: x[f"level_{k}"] for k in ("name", "company", "address", "phone", "cif", "birth")}
     entities = [dict(entity=x["entity"], record=x["id"], points=round(float(x["points"]), 2), likely=bool(x["likely"]), rule=text(x["rule"]),
-                     keys=sorted(x["sources"].split("+")) if text(x["sources"]) else [], compared=compared(x), records=int(x["records"]), shown=shown(x))
+                     keys=sorted(x["sources"].split("+")) if text(x["sources"]) else [], compared={k: x[f"level_{k}"] for k in COMPARISONS},
+                     records=int(x["records"]), shown=shown(x))
                 for _, x in found.iterrows()]
     near = cands.iloc[0] if len(cands) and not entities else None
-    return dict(record={"id": None if record is None else record, **{k: text(view[k]) for k in view.index}}, entities=entities[:most],
+    keys = []
+    for _, x in checked.iterrows():
+        key = dict(key=x["key"], found=int(x["found"]))
+        if x["lacks"]:
+            key["why"] = "the record has no value for it"
+        if not pd.isna(x["untrusted"]):
+            key["why"] = f"its value is on {int(x['untrusted']):,} records: the rule doesn't trust it"
+        if isinstance(x["big"], (list, np.ndarray)) and len(x["big"]):
+            key["big"] = [dict(records=int(b["records"]), sampled=int(b["sampled"]), best=None if b["best"] is None else round(float(b["best"]), 2),
+                               decision=b["decision"]) for b in x["big"]]
+        keys.append(key)
+    return dict(record={"id": record, **{k: text(view[k]) for k in view.index}}, entities=entities[:most],
                 found=len(entities), at_least=at_least, candidates=len(cands), likely=sum(e["likely"] for e in entities),
                 closest=None if near is None else dict(record=near["id"], entity=near["entity"], points=round(float(near["points"]), 2), shown=shown(near)),
-                checked=[dict(key=x["key"], found=int(x["found"]),
-                              **({"why": "the record has no value for it"} if x["lacks"] else {}),
-                              **({"why": f"its value is on {int(x['untrusted']):,} records: the rule doesn't trust it"} if not pd.isna(x["untrusted"]) else {}),
-                              **({"big": [dict(records=int(b["records"]), sampled=int(b["sampled"]), best=None if b["best"] is None else round(float(b["best"]), 2),
-                                               decision=b["decision"]) for b in x["big"]]} if isinstance(x["big"], (list, np.ndarray)) and len(x["big"]) else {}))
-                         for _, x in checked.iterrows()])
+                checked=keys)
 
 
 
@@ -228,7 +262,7 @@ def unchanged(engine, fix: str) -> None:
     """Refused (CHANGED, then `fix`) unless the run was built by this method: its SQL, values and mapping (fingerprint)."""
     try:
         made = engine.value("SELECT fingerprint FROM method")
-    except duckdb.CatalogException:  # a run built before runs kept their method's: by another, then
+    except duckdb.CatalogException:  # no method table: a run not made by this build, so by another method
         made = None
     if made != fingerprint():
         raise InputError(CHANGED, fix=fix)
@@ -274,7 +308,8 @@ def asked(engine, c: dict, record: str | None, values: dict | None, ids: list, u
 def build(engine, files: list, model: str | None = None) -> None:
     """A run's first batch on `engine`, an empty run: its records, the model fitted (`model`: one fitted elsewhere, as
     fit gave it back, kept: its u measured on these records), every pair scored, the entities people's decisions make
-    (none yet, or those the run kept). O(N·L + n + S·K + ΣP + C·K·L²)."""
+    (none yet, or those the run kept). O(N·L + n + S·K + ΣP + C·K·L²): P a block's pairs, C the candidates, L a
+    value's length."""
     records(engine, files)
     if model is not None:
         engine.run("CREATE OR REPLACE TABLE fit AS SELECT CAST(NULL AS FLOAT64) AS probability, CAST(NULL AS INT64) AS fit_rows, "
@@ -311,13 +346,17 @@ def decide(engine, files: list) -> None:
     stage(engine, "decide", **values("decide"))
 
 
-def match(engine, threshold: float) -> None:
-    """The match job on `engine`, after decide: match.sql at `threshold` points. A threshold below [score] keep_from is
-    refused: the run keeps no pair below it. O(C + P·F)."""
+def check_threshold(threshold: float) -> None:  # refused below [score] keep_from: the run keeps no pair below it
     floor = float(config()["score"]["keep_from"])
     if threshold < floor:
         raise InputError(f"threshold {threshold:g}: the run keeps the pairs from {floor:g} points up only",
                          fix=f"give a threshold of {floor:g} or more, or lower [score] keep_from in config.toml and build the run again")
+
+
+def match(engine, threshold: float) -> None:
+    """The match job on `engine`, after decide: match.sql at `threshold` points. A threshold below [score] keep_from is
+    refused: the run keeps no pair below it. O(C + P·F)."""
+    check_threshold(threshold)
     stage(engine, "functions")
     stage(engine, "match", threshold=float(threshold))
 
@@ -339,7 +378,7 @@ def report_text(engine, steps: dict[str, float], job: str) -> str:
     stage, each key's pairs, the model and the largest blocks. O(F + C) over the report's tables."""
     c, v = config(), values("report")
     lo, edges, patterns = v["floor"], v["edges"], json.loads(v["patterns"])
-    n = engine.frame("SELECT * FROM report_counts").iloc[0]
+    counts = engine.frame("SELECT * FROM report_counts").iloc[0]
     pct = lambda x: "—" if x is None or pd.isna(x) else f"{x:.1%}"
 
     def table(df: pd.DataFrame) -> list[str]:  # numbers right-aligned, text left, so the page stays narrow
@@ -350,7 +389,7 @@ def report_text(engine, steps: dict[str, float], job: str) -> str:
         number = [all(re.fullmatch(r"[-+]?[\d,.]+(%|e[-+]\d+)?|—", r[i]) for r in rows[1:]) for i in range(len(df.columns))]
         return ["  " + "  ".join(v.rjust(w) if k else v.ljust(w) for v, w, k in zip(r, width, number)).rstrip() for r in rows]
 
-    added = None if job == "build" else int(n["added"])
+    added = None if job == "build" else int(counts["added"])
     threads, memory = engine.rows("SELECT current_setting('threads'), current_setting('memory_limit')")[0] if engine.name == "duckdb" else ("—", "—")
     out = [f"RUN REPORT · {datetime.now():%Y-%m-%d %H:%M} · {'full run' if added is None else f'increment of {added:,} new records'} · no record's value in it",
            f"code {code_version()} · method {fingerprint()[:12]}",
@@ -358,15 +397,15 @@ def report_text(engine, steps: dict[str, float], job: str) -> str:
            f"{threads} threads · memory limit {memory} · took {sum(steps.values()):,.1f} s", ""]
 
     ph = engine.rows("SELECT p.field, COUNT(*) FROM placeholders AS p GROUP BY p.field ORDER BY p.field")
-    empty = {f: int(n["records"] - n[f]) for f, _ in ph if f in n}
-    fill = {f: n[f] / max(n["records"], 1) for f in FIELDS}
-    summary = [("records", f"{int(n['records']):,}" + (f", {added:,} of them new" if added is not None else "") + (f"; {int(n['set_aside']):,} set aside (set_aside)" if n["set_aside"] else "")),
-               ("candidates", f"{int(n['scored']):,} pairs scored{' in this batch' if added is not None else ''}, {int(n['ruled']):,} of them a rule's too: "
+    empty = {f: int(counts["records"] - counts[f]) for f, _ in ph if f in counts}
+    fill = {f: counts[f] / max(counts["records"], 1) for f in FIELDS}
+    summary = [("records", f"{int(counts['records']):,}" + (f", {added:,} of them new" if added is not None else "") + (f"; {int(counts['set_aside']):,} set aside (set_aside)" if counts["set_aside"] else "")),
+               ("candidates", f"{int(counts['scored']):,} pairs scored{' in this batch' if added is not None else ''}, {int(counts['ruled']):,} of them a rule's too: "
                               "scored, which a match run reads at its threshold (python -m nayose match)"),
-               ("entities", f"{int(n['entities']):,}; {int(n['by_people']):,} records joined by people's decisions; the largest holds {int(n['largest']):,} record{'s' * bool(n['largest'] != 1)}"),
-               ("kinds", f"{int(n['companies']):,} × 2 company · {int(n['persons']):,} × 1 person · {int(n['unsure']):,} × 0 not sure (records)"),
-               ("kinds", f"{int(n['company_customers']):,} × 2 company · {int(n['person_customers']):,} × 1 person · {int(n['unsure_customers']):,} × 0 not sure (customers)"),
-               *([("flagged", f"{int(n['flagged']):,} records the engine is sure of against the flag: matched as the engine says (gold: kind_flagged)")] if n["flagged"] else []),
+               ("entities", f"{int(counts['entities']):,}; {int(counts['by_people']):,} records joined by people's decisions; the largest holds {int(counts['largest']):,} record{'s' * bool(counts['largest'] != 1)}"),
+               ("kinds", f"{int(counts['companies']):,} × 2 company · {int(counts['persons']):,} × 1 person · {int(counts['unsure']):,} × 0 not sure (records)"),
+               ("kinds", f"{int(counts['company_customers']):,} × 2 company · {int(counts['person_customers']):,} × 1 person · {int(counts['unsure_customers']):,} × 0 not sure (customers)"),
+               *([("flagged", f"{int(counts['flagged']):,} records the engine is sure of against the flag: matched as the engine says (gold: kind_flagged)")] if counts["flagged"] else []),
                ("kinds from", "the file's flag, as it is (trust_flag)" if c["records"]["trust_flag"] else f"a written legal form, or a name {c['records']['name_line']:.0%} sure; else the flag"),
                *(("note", f"{f}: {k:,} value{'s' * bool(k != 1)} held by {c['records']['min_block']}+ records read as missing, a placeholder and not "
                           f"{'one entity' if f == 'customer_id' else 'evidence'}'s ({empty[f]:,} records without one)") for f, k in ph if f in empty),
@@ -390,12 +429,11 @@ def report_text(engine, steps: dict[str, float], job: str) -> str:
     out += ["SCORES  (the candidates scored, by bits)", *table(pd.DataFrame([dict(bits=label(i), candidates=f"{scored[i]:,}") for i in sorted(scored) if scored[i]])), ""]
 
     named = {(x, g): lab for x, g, lab in engine.rows("SELECT comparison, gamma, label FROM model")}
-    comps = ("name", "company", "address", "phone", "cif", "birth")
     got = engine.frame("SELECT * FROM report_patterns ORDER BY up DESC, k")
     band = lambda up: f"{lo:g} and up" if up else f"0 to {lo:g}"
     out += ["PATTERNS BY SCORE  (the keys' pairs at 0 bits and up, below and from the review floor: each band's 12 most common levels)",
             *table(pd.DataFrame([dict(band=band(x["up"]), pairs=f"{int(x['n']):,}", bits=f"{x['w']:.1f}",
-                                      **{k: "missing" if pd.isna(x[f"gamma_{k}"]) or x[f"gamma_{k}"] < 0 else named[k, int(x[f"gamma_{k}"])] for k in comps})
+                                      **{k: "missing" if pd.isna(x[f"gamma_{k}"]) or x[f"gamma_{k}"] < 0 else named[k, int(x[f"gamma_{k}"])] for k in COMPARISONS})
                                  for _, x in got.iterrows()])),
             *(f"  {band(up)}: {int(g['kinds'].iloc[0]) - 12:,} patterns more, {int(g['total'].iloc[0]) - int(g['n'].sum()):,} pairs"
               for up, g in got.groupby("up", sort=False) if g["kinds"].iloc[0] > 12), ""]
@@ -404,32 +442,32 @@ def report_text(engine, steps: dict[str, float], job: str) -> str:
     bins = [("1", 1, 1), ("2", 2, 2), ("3", 3, 3), ("4", 4, 4), ("5–9", 5, 9), ("10–49", 10, 49), ("50+", 50, math.inf)]
     out += ["CLUSTERS  (size: how many)", "  " + " · ".join(f"{name}: {total:,}" for name, a, b in bins if (total := sum(v for k, v in sizes.items() if a <= k <= b))), ""]
 
-    fitted = json.loads(engine.value("SELECT notes FROM fit"))
-    facts = dict(records=f"records {int(n['added']):,} · set_aside {int(n['set_aside']):,} · companies {int(n['companies']):,} · persons {int(n['persons']):,} · not sure {int(n['unsure']):,}",
-                 fit=f"fit_rows {fitted['fit_rows']:,}" + (" · the build's model" if job != "build" else "") + f" · sampled_again {len(fitted.get('sampled_again', [])):,}",
-                 score=f"candidates {int(n['candidates']):,} · stored {int(n['scored']):,} · rule pairs {int(n['ruled']):,} · oversized_kept {int(n['oversized_kept']):,} · "
-                       f"oversized_skipped {int(n['oversized_skipped']):,}",
-                 decide=f"decided {int(n['decided']):,} · entities {int(n['entities']):,}")
+    notes = json.loads(engine.value("SELECT notes FROM fit"))
+    facts = dict(records=f"records {int(counts['added']):,} · set_aside {int(counts['set_aside']):,} · companies {int(counts['companies']):,} · persons {int(counts['persons']):,} · not sure {int(counts['unsure']):,}",
+                 fit=f"fit_rows {notes['fit_rows']:,}" + (" · the build's model" if job != "build" else "") + f" · sampled_again {len(notes.get('sampled_again', [])):,}",
+                 score=f"candidates {int(counts['candidates']):,} · stored {int(counts['scored']):,} · rule pairs {int(counts['ruled']):,} · oversized_kept {int(counts['oversized_kept']):,} · "
+                       f"oversized_skipped {int(counts['oversized_skipped']):,}",
+                 decide=f"decided {int(counts['decided']):,} · entities {int(counts['entities']):,}")
     out += ["STEPS", *table(pd.DataFrame([dict(step=s, seconds=f"{x:.2f}", facts=facts.get(s, "")) for s, x in steps.items()])), ""]
 
     keys = engine.frame("SELECT * FROM report_keys ORDER BY pairs DESC, g")
     out += ["KEYS  (pairs each lists, most first)", *table(pd.DataFrame(dict(key=keys["name"], pairs=keys["pairs"].map(lambda x: f"{int(x):,}")))), ""]
 
-    f = engine.frame("SELECT * FROM fit").iloc[0]
+    fit_row = engine.frame("SELECT * FROM fit").iloc[0]
     levels = engine.frame("SELECT comparison, label, file_m, file_u, bits FROM model ORDER BY position, gamma DESC")
-    prior = json.loads(f["fitted"])["prior_bits"]
-    out += [f"MODEL  (prior {prior:.2f} bits at {int(f['records']):,} records; fitted on {int(f['fit_rows']):,} records"
-            + (f"; learned nothing about {', '.join(fitted['skipped'])}" if fitted.get("skipped") else "") + ")",
-            *(["  EM learned from: " + " · ".join(f"{k} {v:,} pairs" for k, v in fitted["em_pairs"].items())] if fitted.get("em_pairs") else []),
+    prior = json.loads(fit_row["fitted"])["prior_bits"]
+    out += [f"MODEL  (prior {prior:.2f} bits at {int(fit_row['records']):,} records; fitted on {int(fit_row['fit_rows']):,} records"
+            + (f"; learned nothing about {', '.join(notes['skipped'])}" if notes.get("skipped") else "") + ")",
+            *(["  EM learned from: " + " · ".join(f"{k} {v:,} pairs" for k, v in notes["em_pairs"].items())] if notes.get("em_pairs") else []),
             *table(pd.DataFrame(dict(comparison=levels["comparison"], level=levels["label"], m=levels["file_m"].map(lambda x: f"{x:.4f}" if x >= 1e-3 else f"{x:.2e}"),
                                      u=levels["file_u"].map(lambda x: f"{x:.2e}"), bits=levels["bits"].map(lambda x: f"{x:.2f}")))),
-            *(f"  {k} {lv}: {why} (EM said {was:+.2f} bits)" for k, lv, why, was in fitted.get("file_adjusted", [])), ""]
+            *(f"  {k} {lv}: {why} (EM said {was:+.2f} bits)" for k, lv, why, was in notes.get("file_adjusted", [])), ""]
 
-    shown = keys.assign(per_record=keys["pairs"] / max(int(n["records"]), 1))
-    shown = shown[(shown["oversized"] > 0) | shown["name"].isin(shown.nlargest(6, "per_record")["name"])].sort_values("per_record", ascending=False, kind="stable")
+    blocks = keys.assign(per_record=keys["pairs"] / max(int(counts["records"]), 1))
+    blocks = blocks[(blocks["oversized"] > 0) | blocks["name"].isin(blocks.nlargest(6, "per_record")["name"])].sort_values("per_record", ascending=False, kind="stable")
     out += [f"BLOCKS  ({int(keys['pairs'].sum()):,} pairs the keys list, before dedupe)", *table(pd.DataFrame(dict(
-        kind="generator", name=shown["name"], per_record=shown["per_record"].map(lambda x: f"{x:.2f}"),
-        largest=shown["largest"].map(lambda x: f"{int(x):,}"), oversized=shown["oversized"].map(lambda x: f"{int(x):,}"))))]
+        kind="generator", name=blocks["name"], per_record=blocks["per_record"].map(lambda x: f"{x:.2f}"),
+        largest=blocks["largest"].map(lambda x: f"{int(x):,}"), oversized=blocks["oversized"].map(lambda x: f"{int(x):,}"))))]
     return "\n".join(out) + "\n"
 
 
@@ -491,23 +529,23 @@ def run_file(engine, path: Path, scratch: set | None = None, until: str | None =
     runs only where the condition holds (on BigQuery, the procedure's IF: engines.procedures). `scratch`: as a lookup
     runs it, writing the temporary tables it names alone (scratched); `until`: up to the statement that makes that table."""
     for sql in statements(path.read_text(encoding="utf-8")):
-        named = set(re.findall(r"@(\w+)", re.sub(r"--[^\n]*|'(?:[^'\\]|\\.)*'", "", sql)))
+        named = set(PARAMETER.findall(NOT_CODE.sub("", sql)))
         guard = when(sql)
-        told = set(re.findall(r"@(\w+)", guard)) if guard else set()
+        told = set(PARAMETER.findall(guard)) if guard else set()
         if missing := (named | told) - set(values):
             raise ValueError(f"{path.name} names @{', @'.join(sorted(missing))}, which no value gives")
-        made = WRITE.match(sql)
-        if guard and not engine.value(f"SELECT {guard}", {k: values[k] for k in told}):
-            if until is not None and made and made.group(3) == until:
-                return
-            continue
-        if scratch is not None and (sql := scratched(sql, scratch)) is None:
-            continue
-        engine.run(sql, {k: values[k] for k in named})
-        if until is not None and made and made.group(3) == until:
+        last = until is not None and (made := WRITE.match(sql)) is not None and made.group(3) == until
+        runs = not guard or engine.value(f"SELECT {guard}", {k: values[k] for k in told})
+        if runs and scratch is not None:
+            sql = scratched(sql, scratch)
+        if runs and sql is not None:
+            engine.run(sql, {k: values[k] for k in named})
+        if last:
             return
 
 
+PARAMETER = re.compile(r"@(\w+)")  # a value a statement reads, by name (run_file gives it, the deploy declares it)
+NOT_CODE = re.compile(r"--[^\n]*|'(?:[^'\\]|\\.)*'")  # a comment or a string: what isn't code
 WHEN = re.compile(r"^\s*--\s*when:(.*)$", re.M | re.I)
 
 
@@ -516,17 +554,17 @@ def when(sql: str) -> str | None:
     Refused where there are two, or one on a function (the deploy makes those apart), or one past the statement's start."""
     body = re.match(r"\A(?:\s*--[^\n]*\n)*", sql)[0]
     lines = WHEN.findall(body)
-    if len(lines) > 1 or (lines and TEMP_FUNCTION_START.match(sql)) or len(WHEN.findall(sql)) > len(lines):
+    if len(lines) > 1 or (lines and TEMP_FUNCTION.match(sql)) or len(WHEN.findall(sql)) > len(lines):
         raise ValueError(f"a statement holds one condition, in its leading comments, and a function none: {sql.strip()[:80]}")
     return lines[0].split("--")[0].strip() or None if lines else None
 
 
-TEMP_FUNCTION_START = re.compile(r"\A(?:\s*--[^\n]*\n)*\s*CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+FUNCTION\b", re.I)
 LEAD = r"(?:\s*--[^\n]*\n|\s*/\*.*?\*/)*\s*"  # a statement's leading comments
 WRITE = re.compile(rf"^({LEAD})(CREATE\s+OR\s+REPLACE\s+TEMP(?:ORARY)?\s+TABLE|CREATE\s+OR\s+REPLACE\s+TABLE|"
                    r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS|CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW|CREATE\s+TABLE|"
                    r"INSERT(?:\s+INTO)?|DELETE(?:\s+FROM)?|UPDATE|MERGE(?:\s+INTO)?|TRUNCATE\s+TABLE)\s+`?(\w+)`?", re.I | re.S)
 READ = re.compile(rf"^{LEAD}(SELECT|WITH|CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+(?:FUNCTION|TABLE))\b", re.I | re.S)
+TEMP_FUNCTION = re.compile(rf"^({LEAD})CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+FUNCTION\s+(\w+)", re.I | re.S)  # (its comments, its name)
 
 
 def scratched(sql: str, temp: set) -> str | None:
@@ -551,11 +589,11 @@ def scratched(sql: str, temp: set) -> str | None:
     return sql
 
 
-def fingerprint(root: Path = HERE, mapping: Path | None = None) -> str:
+def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
     """What an update needs to be what the build was: a hash of every stage file, the values (config.toml), the
     input's mapping and the name model, by name and content. A build stores it (the table method); an update refuses another."""
     h = hashlib.sha256()
-    the_mapping = mapping or (globals()["mapping"]() if root == HERE else root / "mapping.sql")
+    the_mapping = mapping_file or (mapping() if root == HERE else root / "mapping.sql")
     config_file = Path(os.environ.get("NAYOSE_CONFIG") or root / "config.toml") if root == HERE else root / "config.toml"
     name_model = NAME_MODEL if root == HERE else root.parent / "config" / NAME_MODEL.name  # it says each record's kind
     for f in sorted([*(root / "sql").glob("*.sql"), *(p for p in (config_file, the_mapping, name_model) if p.exists())], key=lambda p: p.name):

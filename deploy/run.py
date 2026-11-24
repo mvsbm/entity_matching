@@ -95,38 +95,51 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
         print(__doc__, file=sys.stderr)
         return 2
     dataset, job, given = args[0], args[1], args[2:]
-    floor = float(nayose.config()["score"]["keep_from"])
-    if job == "match" and float(given[0]) < floor:  # as the job does here (nayose.match): the run keeps no pair below it
-        print(json.dumps(dict(severity="ERROR", error=f"threshold {given[0]}: the run keeps the pairs from {floor:g} points up only")), file=sys.stderr)
-        return 2
-    engine, t = BigQuery(dataset, dataset, client=client, bigquery=bigquery), time.perf_counter()
+    if job == "match":
+        try:
+            nayose.check_threshold(float(given[0]))  # before any client: as the job does here
+        except nayose.InputError as e:
+            print(json.dumps(dict(severity="ERROR", error=str(e), fix=e.fix)), file=sys.stderr)
+            return 2
+    engine = BigQuery(dataset, dataset, client=client, bigquery=bigquery)
     try:
         if job == "lookup":
             return lookup(engine, dataset, given)
         if job == "undo":
-            try:
-                print(json.dumps(dict(severity="INFO", job=job, dataset=dataset, undone=undo(engine, dataset))), file=sys.stderr)
-            except Running as e:
-                print(json.dumps(dict(severity="WARNING", error=f"the marked job's procedure still runs in BigQuery (session {e})",
-                                      fix=f"undo once it ends: python deploy/run.py {dataset} undo")), file=sys.stderr)
-                return 75
-            return 0
-        if not begin(engine, dataset, job):
-            print(json.dumps(dict(severity="WARNING", error=f"a job is marked running in {dataset} ({MARK})",
-                                  fix=f"wait for it to finish; if none runs, its process died: python deploy/run.py {dataset} undo")), file=sys.stderr)
-            return 75
-        try:
-            run(engine, dataset, job, given)
-        except BaseException:
-            undo(engine, dataset)
-            raise
-        end(engine, dataset)
-        seconds = round(time.perf_counter() - t, 1)
-        if job in ("build", "update"):
-            print(nayose.report_text(engine, {job: seconds}, job))
-        print(json.dumps(dict(severity="INFO", job=job, dataset=dataset, seconds=seconds)), file=sys.stderr)
+            return undone(engine, dataset)
+        return marked(engine, dataset, job, given)
     finally:
         engine.close()
+
+
+def undone(engine: BigQuery, dataset: str) -> int:  # a job whose process died, undone once its procedure has ended
+    try:
+        print(json.dumps(dict(severity="INFO", job="undo", dataset=dataset, undone=undo(engine, dataset))), file=sys.stderr)
+    except Running as e:
+        print(json.dumps(dict(severity="WARNING", error=f"the marked job's procedure still runs in BigQuery (session {e})",
+                              fix=f"undo once it ends: python deploy/run.py {dataset} undo")), file=sys.stderr)
+        return 75
+    return 0
+
+
+def marked(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
+    """A job all or nothing: the dataset marked and its tables cloned (begin), the job run, undone where it fails, the
+    mark and the clones dropped (end); then report.txt for a build or an update."""
+    t = time.perf_counter()
+    if not begin(engine, dataset, job):
+        print(json.dumps(dict(severity="WARNING", error=f"a job is marked running in {dataset} ({MARK})",
+                              fix=f"wait for it to finish; if none runs, its process died: python deploy/run.py {dataset} undo")), file=sys.stderr)
+        return 75
+    try:
+        run(engine, dataset, job, given)
+    except BaseException:
+        undo(engine, dataset)
+        raise
+    end(engine, dataset)
+    seconds = round(time.perf_counter() - t, 1)
+    if job in ("build", "update"):
+        print(nayose.report_text(engine, {job: seconds}, job))
+    print(json.dumps(dict(severity="INFO", job=job, dataset=dataset, seconds=seconds)), file=sys.stderr)
     return 0
 
 

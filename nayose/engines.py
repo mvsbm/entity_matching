@@ -4,7 +4,7 @@
                calls by name (cl_*, er_hash, nfkc) are the functions dataset's, which the deploy makes (functions())
     DuckDB     translates it first (sqlglot, BigQuery → DuckDB), refusing a form whose translation changes what it
                gives (AVOID, avoided()), and calls twins of the same functions: for cl_*, DuckDB's own where
-               both strings are a byte a character (native), else rapidfuzz; unicodedata for nfkc, numpy for one_byte_hash, a macro for er_hash
+               both strings are a byte a character (native), else rapidfuzz; Arrow's utf8_normalize for nfkc, numpy for one_byte_hash, a macro for er_hash
 
 Both answer the same verbs: run (a statement, nothing back), rows, value, frame (small results only: a step's
 tables stay in the engine); put (a small frame as a table, such as the model EM learns); read_parquet (input files
@@ -29,7 +29,8 @@ from rapidfuzz import process
 from rapidfuzz.distance import DamerauLevenshtein, Hamming, JaroWinkler, Levenshtein
 from sqlglot import exp
 
-from nayose import em, entities
+import nayose
+from nayose import TEMP_FUNCTION, WRITE, em, entities
 
 STRINGS = Path(__file__).parent / "strings.js"  # the comparison functions in JavaScript, as BigQuery runs them
 
@@ -141,13 +142,13 @@ NATIVE = {"jaro_winkler": "jaro_winkler_similarity(a, b)", "levenshtein": "leven
           "damerau_levenshtein": "damerau_levenshtein(a, b)", "hamming": "hamming(a, b)"}
 
 
-def native(name: str, twin: str) -> str:
+def native(name: str, cut: bool) -> str:
     """cl_<name> on DuckDB, as SQL over a and b. DuckDB's own comparisons count bytes, and a Python function is called a
     chunk at a time under one lock: where both strings are a byte a character (ASCII, or records.sql's one-byte copies)
     and filled, DuckDB's own answers, giving what the twin gives (`twin`, its call), which answers elsewhere: a
-    similarity as float32; a cut's failing score as rapidfuzz's, 0 for a similarity and the threshold + 1 for a distance.
-    Hamming: DuckDB's takes strings of one length only (rapidfuzz pads the shorter)."""
-    score, cut = NATIVE[name], twin.endswith("t)")
+    similarity as float32; a cut's (cl_<name>_cut, `cut`) failing score as rapidfuzz's, 0 for a similarity and the
+    threshold + 1 for a distance. Hamming: DuckDB's takes strings of one length only (rapidfuzz pads the shorter)."""
+    score, twin = NATIVE[name], f"twin_{name}_cut(a, b, t)" if cut else f"twin_{name}(a, b)"
     if FUNCTIONS[name][0]:
         value = f"CAST(CAST({score} AS FLOAT) AS DOUBLE)"
         out = f"CASE WHEN {score} >= least(greatest(t - 1e-6, 0), 1) THEN {value} ELSE 0 END" if cut else value
@@ -196,8 +197,8 @@ class DuckDB:
         for name in FUNCTIONS:  # cl_*: DuckDB's own function where it answers as the twin does (native), else the twin
             self.con.create_function(f"twin_{name}", compare(name), ["VARCHAR", "VARCHAR"], "DOUBLE", type="arrow")
             self.con.create_function(f"twin_{name}_cut", compare(name, cut=True), ["VARCHAR", "VARCHAR", "DOUBLE"], "DOUBLE", type="arrow")
-            self.con.execute(f"CREATE OR REPLACE TEMP MACRO cl_{name}(a, b) AS {native(name, f'twin_{name}(a, b)')}")
-            self.con.execute(f"CREATE OR REPLACE TEMP MACRO cl_{name}_cut(a, b, t) AS {native(name, f'twin_{name}_cut(a, b, t)')}")
+            self.con.execute(f"CREATE OR REPLACE TEMP MACRO cl_{name}(a, b) AS {native(name, cut=False)}")
+            self.con.execute(f"CREATE OR REPLACE TEMP MACRO cl_{name}_cut(a, b, t) AS {native(name, cut=True)}")
         self.con.create_function("nfkc", nfkc, ["VARCHAR"], "VARCHAR", type="arrow")
         self.con.create_function("one_byte_hash", one_byte_hash, ["VARCHAR"], "VARCHAR", type="arrow")
         self.con.create_function("fit_model", em.fit, ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR", null_handling="special")  # EM: Python, as on BigQuery
@@ -292,10 +293,8 @@ JOBS = {  # each job BigQuery runs as a procedure of the run's dataset: its stag
 ARGUMENTS = {"match": {"threshold": "FLOAT64"}}  # a procedure's own values: given when it is called, not declared
 RUN_TABLES = ("records", "placeholders", "this_batch", "set_aside", "fit_sample", "fit_prior", "em_patterns", "u_outside", "u_counted",
               "u_near", "u_sampled", "u_filled", "model", "fit", "rule_keys", "every_key", "rule_pairs", "cands", "gated", "scored", "gold")  # a build starts without them; decisions stay
-TEMP_FUNCTION = re.compile(r"^((?:\s*--[^\n]*\n)*\s*)CREATE OR REPLACE TEMP FUNCTION (\w+)", re.I)
 
 
-VIEW = re.compile(r"\A(?:\s*--[^\n]*\n)*\s*CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\b", re.I)
 
 
 def in_dataset(sql: str, dataset: str) -> str:
@@ -316,7 +315,6 @@ def procedures(dataset: str, functions: str, mapping: Path | None = None) -> lis
     (mapping: the deployment's mapping.sql), the values they read (@name: nayose.values, config.toml's) declared at
     its top as v_name, the dataset the one whose tables they name. Every call of a method's function names its
     dataset: `functions`' for the JavaScript and Python ones, `dataset`'s for the SQL ones."""
-    import nayose
     path = lambda stage: (mapping or nayose.HERE / "mapping.sql") if stage == "mapping" else nayose.SQL / f"{stage}.sql"
     made, bodies = {}, {}
     for job, stages in JOBS.items():
@@ -327,13 +325,13 @@ def procedures(dataset: str, functions: str, mapping: Path | None = None) -> lis
                 if m := TEMP_FUNCTION.match(sql):
                     made.setdefault(m[2], TEMP_FUNCTION.sub(lambda x: f"{x[1]}CREATE OR REPLACE FUNCTION `{dataset}`.{x[2]}", sql, count=1))
                 else:
-                    sql = re.sub(r"@(\w+)", r"v_\1", sql)
+                    sql = nayose.PARAMETER.sub(r"v_\1", sql)  # comments too: a -- when: condition is read from them
                     guard = nayose.when(sql)  # read before in_dataset, whose SQL keeps no comment
-                    sql = in_dataset(sql, dataset) if VIEW.match(sql) else sql
+                    sql = in_dataset(sql, dataset) if (head := WRITE.match(sql)) and "VIEW" in head[2].upper() else sql
                     body.append(f"IF {guard} THEN\n{sql};\nEND IF" if guard else sql)
         bodies[job] = (body, {k: v for k, v in declared.items() if k not in ARGUMENTS.get(job, {})})
-    own = re.compile(r"(?<![\w.`])(" + "|".join(sorted(made, key=len, reverse=True)) + r")\s*\(")
-    ours = lambda sql: own.sub(lambda m: f"`{dataset}`.{m[1]}(", BigQuery.CALLS.sub(lambda m: f"`{functions}`.{m[1]}(", sql))
+    own = calls_of(made)
+    ours = lambda sql: qualified(sql, own, dataset, functions)
     out = [ours(sql) for sql in made.values()]
     project, name = dataset.split(".")
     for job, (body, declared) in bodies.items():
@@ -341,11 +339,25 @@ def procedures(dataset: str, functions: str, mapping: Path | None = None) -> lis
         head = [f"DECLARE v_{k} {bigquery_type(v)} DEFAULT {bigquery_literal(v)}" for k, v in declared.items()]
         head += [f"SET @@dataset_project_id = '{project}'", f"SET @@dataset_id = '{name}'"]
         head += [f"DROP TABLE IF EXISTS {x}" for x in RUN_TABLES] if job == "build" else []
-        method = nayose.fingerprint(mapping=mapping)  # what an update needs unchanged since the build
+        method = nayose.fingerprint(mapping_file=mapping)  # what an update needs unchanged since the build
         head += [nayose.UNCHANGED.replace("@fingerprint", bigquery_literal(method))] if job == "update" else []
         body = [*body, nayose.METHOD.replace("@fingerprint", bigquery_literal(method))] if job == "build" else body
         out.append(f"CREATE OR REPLACE PROCEDURE `{dataset}`.{job}({args})\nBEGIN\n" + ";\n".join([*head, *map(ours, body)]) + ";\nEND")
     return out
+
+
+def method_functions() -> set[str]:  # the SQL functions nayose/sql/ makes (CREATE TEMP FUNCTION), by name
+    return {m[2] for f in nayose.SQL.glob("*.sql") for m in map(TEMP_FUNCTION.match, nayose.statements(f.read_text(encoding="utf-8"))) if m}
+
+
+def calls_of(names) -> re.Pattern:  # a call of any of these functions, by name alone (not yet qualified with a dataset)
+    return re.compile(r"(?<![\w.`])(" + "|".join(sorted(names, key=len, reverse=True)) + r")\s*\(")
+
+
+def qualified(sql: str, own: re.Pattern, dataset: str, functions: str) -> str:
+    """`sql`, each call of the method's SQL functions (`own`) named with `dataset`, where the deploy made them, and each
+    of the JavaScript and Python ones (BigQuery.CALLS) with `functions`'s."""
+    return own.sub(lambda m: f"`{dataset}`.{m[1]}(", BigQuery.CALLS.sub(lambda m: f"`{functions}`.{m[1]}(", sql))
 
 
 def bigquery_type(v: object) -> str:  # a value's BigQuery type, as values() gives it
@@ -382,12 +394,10 @@ class BigQuery:
         self.client = client or self.bigquery.Client(project=dataset.split(".")[0])
         self.dataset, self.functions, self.session = dataset, functions, None
 
-    OWN = re.compile(r"(?<![\w.`])(" + "|".join(sorted({n for f in STRINGS.parent.glob("sql/*.sql") for n in re.findall(r"CREATE OR REPLACE TEMP FUNCTION (\w+)", f.read_text(encoding="utf-8"))},
-                                                       key=len, reverse=True)) + r")\s*\(")  # the method's SQL functions: the deploy made each in the dataset
+    OWN = calls_of(method_functions())  # the method's SQL functions: the deploy made each in the dataset
 
     def _job(self, sql: str, values: dict | None = None) -> object:
-        text = self.CALLS.sub(lambda m: f"`{self.functions}`.{m.group(1)}(", sql)
-        text = self.OWN.sub(lambda m: f"`{self.dataset}`.{m.group(1)}(", text)
+        text = qualified(sql, self.OWN, self.dataset, self.functions)
         job = self.client.query(text, job_config=self._config(values))
         result = job.result()
         if self.session is None:
@@ -398,8 +408,8 @@ class BigQuery:
         bq = self.bigquery
         config = bq.QueryJobConfig(create_session=self.session is None, default_dataset=self.dataset,
                                    connection_properties=[bq.ConnectionProperty("session_id", self.session)] if self.session else [])
-        config.query_parameters = [bq.ArrayQueryParameter(name, kind(v[0]) if v else "STRING", v) if isinstance(v, list)
-                                   else bq.ScalarQueryParameter(name, kind(v), v) for name, v in (values or {}).items()]
+        config.query_parameters = [bq.ArrayQueryParameter(name, bigquery_type(v[0]) if v else "STRING", v) if isinstance(v, list)
+                                   else bq.ScalarQueryParameter(name, bigquery_type(v), v) for name, v in (values or {}).items()]
         return config
 
     def run(self, sql: str, values: dict | None = None) -> None:
@@ -461,7 +471,4 @@ def names(header: list[str]) -> list[str]:
         seen.add(name.casefold())
     return out
 
-
-def kind(v: object) -> str:  # a parameter's BigQuery type
-    return "BOOL" if isinstance(v, bool) else "INT64" if isinstance(v, int) else "FLOAT64" if isinstance(v, float) else "STRING"
 
