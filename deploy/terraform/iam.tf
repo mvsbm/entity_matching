@@ -33,6 +33,20 @@ resource "google_project_iam_member" "runtime" {
   member   = google_service_account.runtime.member
 }
 
+# undo (deploy/run.py) waits while a dead job's procedure still runs: it reads its own jobs (INFORMATION_SCHEMA.JOBS_BY_USER)
+resource "google_project_iam_custom_role" "runtime_jobs" {
+  project     = var.project
+  role_id     = "nayoseRuntimeJobs"
+  title       = "nayose jobs: list its own"
+  permissions = ["bigquery.jobs.list"]
+}
+
+resource "google_project_iam_member" "runtime_jobs" {
+  project = var.project
+  role    = google_project_iam_custom_role.runtime_jobs.id
+  member  = google_service_account.runtime.member
+}
+
 # the deploy: the run's functions, procedures and name model, and the column mapping it builds them with
 resource "google_bigquery_dataset_iam_member" "deployer" {
   dataset_id = google_bigquery_dataset.runs.dataset_id
