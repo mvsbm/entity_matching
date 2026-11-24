@@ -67,7 +67,8 @@ resource "google_secret_manager_secret_iam_member" "deployer" {
   member    = google_service_account.deployer.member
 }
 
-resource "google_secret_manager_secret_iam_member" "runtime" {  # a lookup maps typed values as prod's builds do
+# a lookup maps typed values, and checks the run's method, with prod's column mapping
+resource "google_secret_manager_secret_iam_member" "runtime" {
   secret_id = google_secret_manager_secret.mapping.id
   role      = "roles/secretmanager.secretAccessor"
   member    = google_service_account.runtime.member
