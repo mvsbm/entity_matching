@@ -7,6 +7,8 @@ a set of tables: a BigQuery dataset, or a DuckDB database file.
     records(engine, files)          stage 1: the input files read and mapped (mapping.sql), made records (records.sql)
     fit(engine)                     stage 2: the model learned on a sample, u on the file (fit.sql; EM in nayose/em.py)
     score(engine)                   stage 3: the rules' pairs, the keys' candidates and their scores (score.sql)
+    decide(engine, files)           people's decisions stored, the entities made from them (decide.sql; a build: none given)
+    match(engine, threshold)        the pairs at a threshold people set, less those they said differ, for them (match.sql)
     stage(engine, name, **values)   a stage's statements in order, each given the values it names (@name)
     statements(text)                a stage file's statements: each ends with a line that ends in ;
     fingerprint()                   what an increment needs unchanged since the full run: the SQL and the values
@@ -28,6 +30,7 @@ HIRAGANA = "".join(chr(c) for c in range(0x3041, 0x3097))  # hiragana, and the k
 KATAKANA = "".join(chr(c + 0x60) for c in range(0x3041, 0x3097))
 KATAKANA_BLOCK, ONE_BYTE = "".join(map(chr, range(0x30A0, 0x3100))), "".join(map(chr, range(1, 0x61)))  # the block, each a byte: 0x01–0x60
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a column name config.toml gives
+BLANK = "".join(ch for ch in map(chr, range(0x3001)) if ch.isspace())  # what a blank value people give is made of: Python's whitespace
 
 
 class InputError(ValueError):  # a refusal the person running the job can act on: what is wrong, and how to fix it
@@ -90,6 +93,31 @@ def score(engine) -> None:
     c = config()["score"]
     stage(engine, "functions")
     stage(engine, "score", keep_from=float(c["keep_from"]), search_floor=float(c["search_floor"]), oversized=int(c["oversized"]))
+
+
+def decide(engine, files: list) -> None:
+    """The decide job on `engine`, after score: people's decisions (Parquet files: a match table filled in, or any with
+    id_l, id_r and decision; why kept where given) as the table given, then decide.sql. With no files (a build's last
+    step), the entities from the decisions the run holds. O(D + N)."""
+    if files:
+        engine.read_parquet("given", files, ["why"])
+        if lack := sorted({"id_l", "id_r", "decision"} - {n.casefold() for n, _ in engine.columns("given")}):
+            raise InputError(f"the decisions lack the columns {lack}", fix="give back a match table with decision filled in, or a file with id_l, id_r and decision")
+    else:
+        engine.run("CREATE OR REPLACE TABLE given (id_l STRING, id_r STRING, decision STRING, why STRING)")
+    stage(engine, "functions")
+    stage(engine, "decide", blank=BLANK)
+
+
+def match(engine, threshold: float) -> None:
+    """The match job on `engine`, after decide: match.sql at `threshold` points. A threshold below [score] keep_from is
+    refused: the run keeps no pair below it. O(C + P·F)."""
+    floor = float(config()["score"]["keep_from"])
+    if threshold < floor:
+        raise InputError(f"threshold {threshold:g}: the run keeps the pairs from {floor:g} points up only",
+                         fix=f"give a threshold of {floor:g} or more, or lower [score] keep_from in config.toml and build the run again")
+    stage(engine, "functions")
+    stage(engine, "match", threshold=float(threshold))
 
 
 def statements(text: str) -> list[str]:
