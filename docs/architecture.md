@@ -43,7 +43,7 @@ Design time never runs in prod: `scripts/generate.py` (synthetic records with kn
 | `nayose/__init__.py` | one function per stage and job (`records`, `fit`, `score`, `decide`, `match`, `lookup`, `build`, `update`), `values` (what each stage reads from `config.toml`), `stage` (a file's statements in order) and `report_text` |
 | `nayose/engines.py` | `DuckDB` and `BigQuery`, which answer the same verbs (`run`, `rows`, `value`, `frame`, `put`, `read_parquet`); the translation (`duckdb_sql`, `AVOID`); the deploy's statements (`functions`, `procedures`) |
 | `nayose/sql/*.sql` | the method. Each header says what the stage does, its cost, and the tables it reads and writes |
-| `nayose/em.py`, `nayose/entities.py` | `fit_model` and `entities_of`: pure functions, JSON in and JSON out |
+| `nayose/em.py`, `nayose/entities.py` | `fit_model`, `resampled` and `entities_of`: pure functions, JSON in and JSON out |
 | `nayose/strings.js` | the character-level comparisons as BigQuery runs them |
 | `nayose/config.toml`, `nayose/mapping.sql` | the values, and the input's columns ([4](#4--values-and-columns)) |
 | `deploy/` | `deploy.py`, `run.py`, `smoke.py`, the Jenkinsfile and the Terraform ([10](#10--on-bigquery)) |
@@ -133,7 +133,8 @@ names the latest. An update (`nayose.update`) runs the build's stages on a new b
 - **fit** with `@refit` false: the build's model is kept (`fit.fitted`), so there is no sample and no EM. u is
   measured again on the run's records. A level counted exactly is counted again. A sampled comparison is sampled
   again only once its drift outweighs its sampling error (`em.stale`). That test runs on the exact counts first
-  (`resampled`, a Python function like `fit_model`), so an update with none stale draws no sample at all.
+  (`resampled`, a Python function like `fit_model`), so an update with none stale draws no sample at all, and
+  `u_sampled` keeps the last sample drawn, which nothing reads until one is drawn again.
 - **score**: only the pairs touching the batch are scored, and they are added to `scored` and `rule_pairs`.
 - **decide**: the entities are made again.
 
@@ -216,6 +217,7 @@ Where sqlglot's translation answers otherwise, `as_bigquery` rewrites the node t
 | `nfkc` | `NORMALIZE(x, NFKC)` | Arrow's `utf8_normalize` |
 | `one_byte_hash` | SQL UDF over code points | numpy |
 | `fit_model` | Python UDF, `em.py` | `em.fit` |
+| `resampled` | Python UDF, `em.py` | `em.resampled` |
 | `entities_of` | Python UDF, `entities.py` | `entities.of` |
 
 `tests/test_functions.py` runs the JavaScript in V8 against the DuckDB twins, score for score.

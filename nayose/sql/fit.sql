@@ -222,7 +222,7 @@ SELECT resampled(TO_JSON_STRING(STRUCT(
 -- when: @refit
 CREATE OR REPLACE TEMP TABLE u_again AS SELECT 'each' AS comparisons;  -- a build samples, as fit_model's learn needs
 
-CREATE TABLE IF NOT EXISTS u_sampled (scope STRING, comparison STRING, gamma INT64, pairs INT64);  -- a build's, sampling none
+CREATE TABLE IF NOT EXISTS u_sampled (scope STRING, comparison STRING, gamma INT64, pairs INT64);  -- where none was ever drawn
 
 -- when: (SELECT comparisons FROM u_again) <> ''
 CREATE OR REPLACE TEMP TABLE u_drawn AS  -- the share: of a scope's n records, about max_pairs pairs, as Splink draws

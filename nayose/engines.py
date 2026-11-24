@@ -327,9 +327,9 @@ def procedures(dataset: str, functions: str, mapping: Path | None = None) -> lis
                     made.setdefault(m[2], TEMP_FUNCTION.sub(lambda x: f"{x[1]}CREATE OR REPLACE FUNCTION `{dataset}`.{x[2]}", sql, count=1))
                 else:
                     sql = re.sub(r"@(\w+)", r"v_\1", sql)
-                    guard = nayose.WHEN.match(sql)  # read before in_dataset, whose SQL keeps no comment
+                    guard = nayose.when(sql)  # read before in_dataset, whose SQL keeps no comment
                     sql = in_dataset(sql, dataset) if VIEW.match(sql) else sql
-                    body.append(f"IF {guard[1]} THEN\n{sql};\nEND IF" if guard else sql)
+                    body.append(f"IF {guard} THEN\n{sql};\nEND IF" if guard else sql)
         bodies[job] = (body, {k: v for k, v in declared.items() if k not in ARGUMENTS.get(job, {})})
     own = re.compile(r"(?<![\w.`])(" + "|".join(sorted(made, key=len, reverse=True)) + r")\s*\(")
     ours = lambda sql: own.sub(lambda m: f"`{dataset}`.{m[1]}(", BigQuery.CALLS.sub(lambda m: f"`{functions}`.{m[1]}(", sql))

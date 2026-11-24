@@ -76,9 +76,20 @@ def got(tmp_path_factory, population) -> dict:
         out[f"lookup.{rid}"] = hashlib.sha256(json.dumps(nayose.lookup(engine, record=rid), ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
     for i, values in enumerate(({"FULL_NAME_KANA": first["FULL_NAME_KANA"].dropna().iloc[0], "PHONE_NUM_4": "1234"}, {"POST_CD": first["POST_CD"].dropna().iloc[0]})):
         out[f"lookup.values{i}"] = hashlib.sha256(json.dumps(nayose.lookup(engine, values=values), ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
+    g.df.head(3).assign(CONT_ID=[f"7{j:09d}" for j in range(3)]).to_parquet(tmp / "tiny0.parquet", index=False)  # samples what went stale
+    one = g.df.head(1).assign(**{c: None for c in g.df.columns if c not in ("CONT_ID", "FULL_NAME_KANA")})
+    one.assign(CONT_ID="6000000000", FULL_NAME_KANA="ヌヌヌ ヌヌ").to_parquet(tmp / "tiny1.parquet", index=False)  # moves u too little: none
+    for i in range(2):
+        nayose.update(engine, [tmp / f"tiny{i}.parquet"])
+    taken(engine, "update2", out)
+    out["update2.sampled_again"] = engine.value("SELECT JSON_QUERY(fitted, '$.notes.sampled_again') FROM fit")
     if os.environ.get("NAYOSE_PARITY_WRITE"):
         GOLDEN.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     return out
+
+
+def test_an_update_that_finds_no_comparison_stale_draws_no_sample(got):
+    assert got["update2.sampled_again"] == "[]"
 
 
 def test_every_job_s_tables_are_as_recorded(got):

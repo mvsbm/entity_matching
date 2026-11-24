@@ -74,9 +74,9 @@ def stale(levels: list[dict], basis: dict, exact: dict, n: int) -> tuple[list[st
 
 
 def resampled(counts: str, settings: str, stored: str | None = None) -> str:
-    """The comparisons fit samples u for, from fit.sql's exact counts alone (nothing sampled yet), comma-separated:
-    an update's, those refresh samples again (stale); a build's, or one given a model, each not counted whole. None:
-    an update's sample would go unused, so fit.sql draws none."""
+    """The comparisons an update's fit samples u for, from fit.sql's exact counts alone (nothing sampled yet),
+    comma-separated: those refresh samples again (stale); for a build given a model, each not counted whole. None: the
+    sample would go unused, so fit.sql draws none. (A build fitting its own model always samples.)"""
     c, s = json.loads(counts), json.loads(settings)
     got = measured(c, s)["file"]
     if stored is not None and (kept := json.loads(stored))["basis"] is not None:
