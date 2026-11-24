@@ -10,9 +10,19 @@
 -- the notes the report reads).
 
 
--- 1. The sample: whole postal areas by hash, so households stay together and a smaller sample is part of a bigger one
+-- 1. The columns the fit reads of a record (the comparisons', the near-certain rules', EM's keys): only these are read,
+--    and billed. The sample: whole postal areas by hash, so households stay together and a smaller sample is part of
+--    a bigger one.
+CREATE OR REPLACE VIEW compared AS
+SELECT
+  id, person_name, full_name, given_name__kana_fold, person_name__kana_fold, person_name__kana_fold_long_vowel,
+  person_name__kana_fold_one_byte, company_name, company_name__nfkc_strip_legal_form_kana_fold,
+  company_name__nfkc_strip_legal_form_kana_fold_one_byte, address_code, address, address__address,
+  address__address_one_byte_hash, postal_code, phone, customer_id, birth_date
+FROM records;
+
 CREATE OR REPLACE TABLE fit_sample AS
-SELECT records.* FROM records
+SELECT compared.* FROM compared
 JOIN (SELECT id FROM records ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_rows) USING (id);
 
 
@@ -62,7 +72,7 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7;
 CREATE OR REPLACE VIEW u_records AS
 SELECT 'sample' AS scope, * FROM fit_sample
 UNION ALL
-SELECT 'file', * FROM records;
+SELECT 'file', * FROM compared;
 
 -- 4a. Each comparison's pairs outside its missing level: every pair, less those where each of its columns is empty on
 --     a side. A record's mask: which of the comparison's columns it fills; two masks sharing none make missing pairs.
@@ -129,18 +139,16 @@ SELECT scope, 'phone' AS comparison, phone AS x, COUNT(*) AS n, LENGTH(phone) AS
 UNION ALL SELECT scope, 'cif', customer_id, COUNT(*), LENGTH(customer_id) FROM u_records WHERE customer_id IS NOT NULL GROUP BY scope, customer_id
 UNION ALL SELECT scope, 'birth', birth_date, COUNT(*), LENGTH(birth_date) FROM u_records WHERE birth_date IS NOT NULL GROUP BY scope, birth_date;
 
-CREATE OR REPLACE TEMP TABLE u_at AS
-SELECT v.scope, v.comparison, v.x, v.n, v.len, i FROM u_values AS v, UNNEST(GENERATE_ARRAY(1, v.len)) AS i;
-
 CREATE OR REPLACE TABLE u_near AS
 WITH substituted AS (
   SELECT scope, comparison, SUM(DIV(s * s - ss, 2)) AS pairs
-  FROM (SELECT scope, comparison, SUM(n) AS s, SUM(n * n) AS ss FROM u_at GROUP BY scope, comparison, len, i, SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1))
+  FROM (SELECT scope, comparison, SUM(n) AS s, SUM(n * n) AS ss FROM u_values, UNNEST(GENERATE_ARRAY(1, len)) AS i
+        GROUP BY scope, comparison, len, i, SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1))
   GROUP BY scope, comparison
 ),
 swapped AS (
   SELECT scope, comparison, SUM(DIV(s * s - ss, 2)) AS pairs
-  FROM (SELECT scope, comparison, SUM(n) AS s, SUM(n * n) AS ss FROM u_at
+  FROM (SELECT scope, comparison, SUM(n) AS s, SUM(n * n) AS ss FROM u_values, UNNEST(GENERATE_ARRAY(1, len)) AS i
         WHERE comparison IN ('cif', 'birth') AND i < len AND SUBSTR(x, i, 1) <> SUBSTR(x, i + 1, 1)
         GROUP BY scope, comparison, len, i,
                  SUBSTR(x, 1, i - 1) || LEAST(SUBSTR(x, i, 1), SUBSTR(x, i + 1, 1)) || GREATEST(SUBSTR(x, i, 1), SUBSTR(x, i + 1, 1)) || SUBSTR(x, i + 2))
@@ -187,19 +195,21 @@ WITH share AS (
 SELECT u_records.* FROM u_records JOIN share USING (scope)
 WHERE share >= 1 OR MOD(er_hash(id || '_' || @seed), 1000000000) < GREATEST(1, ROUND(share * 1000000000));
 
-CREATE OR REPLACE TEMP TABLE u_pairs AS
+CREATE OR REPLACE TEMP TABLE u_patterns AS  -- the pairs' patterns of levels, counted as they are made: none is stored
 SELECT
   l.scope, gamma_name(l, r) AS name, gamma_company(l, r) AS company, gamma_address(l, r) AS address,
-  IF(plan.phone, gamma_phone(l, r), NULL) AS phone, IF(plan.cif, gamma_cif(l, r), NULL) AS cif, IF(plan.birth, gamma_birth(l, r), NULL) AS birth
-FROM u_drawn AS l JOIN u_drawn AS r ON l.scope = r.scope AND l.id < r.id JOIN u_plan AS plan ON plan.scope = l.scope;
+  IF(plan.phone, gamma_phone(l, r), NULL) AS phone, IF(plan.cif, gamma_cif(l, r), NULL) AS cif, IF(plan.birth, gamma_birth(l, r), NULL) AS birth,
+  COUNT(*) AS pairs
+FROM u_drawn AS l JOIN u_drawn AS r ON l.scope = r.scope AND l.id < r.id JOIN u_plan AS plan ON plan.scope = l.scope
+GROUP BY 1, 2, 3, 4, 5, 6, 7;
 
 CREATE OR REPLACE TABLE u_sampled AS
-SELECT scope, 'name' AS comparison, name AS gamma, COUNT(*) AS pairs FROM u_pairs GROUP BY scope, name
-UNION ALL SELECT scope, 'company', company, COUNT(*) FROM u_pairs GROUP BY scope, company
-UNION ALL SELECT scope, 'address', address, COUNT(*) FROM u_pairs GROUP BY scope, address
-UNION ALL SELECT scope, 'phone', phone, COUNT(*) FROM u_pairs WHERE phone IS NOT NULL GROUP BY scope, phone
-UNION ALL SELECT scope, 'cif', cif, COUNT(*) FROM u_pairs WHERE cif IS NOT NULL GROUP BY scope, cif
-UNION ALL SELECT scope, 'birth', birth, COUNT(*) FROM u_pairs WHERE birth IS NOT NULL GROUP BY scope, birth;
+SELECT scope, 'name' AS comparison, name AS gamma, SUM(pairs) AS pairs FROM u_patterns GROUP BY scope, name
+UNION ALL SELECT scope, 'company', company, SUM(pairs) FROM u_patterns GROUP BY scope, company
+UNION ALL SELECT scope, 'address', address, SUM(pairs) FROM u_patterns GROUP BY scope, address
+UNION ALL SELECT scope, 'phone', phone, SUM(pairs) FROM u_patterns WHERE phone IS NOT NULL GROUP BY scope, phone
+UNION ALL SELECT scope, 'cif', cif, SUM(pairs) FROM u_patterns WHERE cif IS NOT NULL GROUP BY scope, cif
+UNION ALL SELECT scope, 'birth', birth, SUM(pairs) FROM u_patterns WHERE birth IS NOT NULL GROUP BY scope, birth;
 
 -- 4e. The records, and how many fill the column a comparison is filled most by: what bounds a level no sampled pair
 --     reached
