@@ -19,7 +19,7 @@ import duckdb
 
 from er.engine.engine import Engine
 from er import intake
-from er.config import InputError, lit, q
+from er.config import InputError, lit, q, unpivoted
 from er.settings import norm_name
 
 NESTED = ("STRUCT", "MAP", "UNION", "[]")  # DuckDB types a field's column can't hold
@@ -93,7 +93,7 @@ def open_source(path: str | Path, engine: Engine, expected: Iterable[str], reser
     schemas = {}
     for f in files:
         try:
-            schemas[f] = [(row[0], row[1]) for row in engine.rows(f"DESCRIBE SELECT * FROM read_parquet({lit(f)})")]
+            schemas[f] = engine.columns(engine.read(f))
         except duckdb.Error as e:
             raise InputError(f"{f}: can't be read as Parquet ({str(e).splitlines()[0]})", fix="copy it again, or write it again from its source") from None
     types: dict[str, str] = {}
@@ -140,8 +140,7 @@ def open_source(path: str | Path, engine: Engine, expected: Iterable[str], reser
         value = (f"CASE WHEN abs({q(c)}) < 9e18 AND {q(c)} = trunc({q(c)}) THEN CAST(CAST({q(c)} AS BIGINT) AS VARCHAR) ELSE CAST({q(c)} AS VARCHAR) END"
                  if kind in ("FLOAT", "DOUBLE", "REAL") else f"CAST({q(c)} AS VARCHAR)")
         cols.append(f"{value} AS {q(name)}")
-    paths = ", ".join(lit(f) for f in files)
-    return Source(sql=f"(SELECT {', '.join(cols)} FROM read_parquet([{paths}], union_by_name = true))",
+    return Source(sql=f"(SELECT {', '.join(cols)} FROM {engine.read(files, by_name=True)})",
                   columns=[rename.get(c, c) for c in types], notes=notes, files=files,
                   given={rename[c]: c for c in rename if rename[c] not in expected})
 
@@ -165,8 +164,7 @@ def fit(engine: Engine, table: str, columns: list[str], fields: Iterable[str], p
     share = lambda f: (f"count(DISTINCT v) FILTER (WHERE {filled('v')}) / {n}" if f == "id"
                        else f"coalesce(avg(regexp_matches(v, {lit(patterns[f])})::INT) FILTER (WHERE {filled('v')}), 0)")
     # the sample long (one row per column and value), each pattern once over it: memory grows with the patterns, not columns × patterns
-    got = {c: x for c, *x in engine.rows(f"""SELECT c, {', '.join(map(share, asked))} FROM (UNPIVOT (SELECT {', '.join(q(c) for c in columns)} FROM {table})
-        ON COLUMNS(*) INTO NAME c VALUE v) GROUP BY c""")}
+    got = {c: x for c, *x in engine.rows(f"SELECT c, {', '.join(map(share, asked))} FROM {unpivoted(table, columns, 'c', 'v')} GROUP BY c")}
     return {f: {c: got[c][i] if c in got else 0 for c in columns} for i, f in enumerate(asked)}
 
 

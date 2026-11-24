@@ -4,11 +4,10 @@ records a job reads and the tables it writes live in the job's dataset. The char
 (cl_<name>, JavaScript: er/engine/udfs/strings.js) and the portable hash (er_hash) are functions in that dataset,
 which the deploy creates (functions()).
 
-A statement that holds a part only DuckDB has is refused by name (NotPortable), never sent half translated. What a
-BigQuery job still needs (each refused today): the workspace's files (er.folder.stage writes Parquet with COPY; a
-BigQuery job writes tables), the steps' table descriptions (DESCRIBE, duckdb_tables(): the engine's columns and
-exists), DuckDB's settings (current_setting: threads, memory), the rowid slices of scoring, read_parquet, the deletion
-keys' list functions, the index's ATTACH. tests/test_bigquery.py lists which statements of a run translate.
+A statement that holds a part only DuckDB has is refused by name (NotPortable), never sent half translated: every
+statement a job sends translates (tests/test_bigquery.py), since what a step asks of where its tables are (their
+columns, a table's existence, files read and written, slices, an index attached, the threads) is the engine's to
+answer (er/engine/engine.py). What a BigQuery job still needs is that store: those answers on a dataset's tables.
 
 google-cloud-bigquery is imported where this engine runs (a Cloud Run job's image), not on every machine."""
 import importlib
@@ -27,6 +26,7 @@ DUCKDB_ONLY = {  # what refuses a statement, by the part that names it
     "read_parquet()": r"\bread_parquet\(", "COPY … TO": r"^\s*COPY\b", "rowid": r"\browid\b", "ATTACH": r"^\s*(ATTACH|DETACH)\b",
     "a list function": r"\blist_\w+\(", "a SQL lambda": r"\blambda\s+\w+\s*:", "UNPIVOT … COLUMNS(*)": r"\bCOLUMNS\(",
     "arg_min/arg_max of n": r"\barg_(min|max)\([^()]*\([^()]*\)[^()]*,\s*\d+\)", "CALL": r"^\s*CALL\b", "a macro": r"\bCREATE\s+(OR\s+REPLACE\s+)?MACRO\b",
+    "UNPIVOT … INTO NAME": r"\bINTO\s+NAME\b", "AS MATERIALIZED": r"\bAS\s+MATERIALIZED\b",  # sqlglot passes these through as they are
 }
 
 

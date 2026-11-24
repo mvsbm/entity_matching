@@ -113,9 +113,9 @@ def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "
     if log.told:
         log.told(0, total, "records")
     reads = {job.uid, *(c for d in fs.standardize.derived for cols in d.sources for c in cols), *used}  # what cleaning reads: a wide file's other columns never enter the run
-    cols = ", ".join([*(q(c) for c, *_ in engine.rows(f"DESCRIBE SELECT * FROM {rows}") if c in reads), *(f"NULL::VARCHAR AS {q(c)}" for c in extra)])
+    cols = ", ".join([*(q(c) for c, *_ in engine.columns(rows) if c in reads), *(f"NULL::VARCHAR AS {q(c)}" for c in extra)])
     reader = engine.batches(f"SELECT {cols} FROM {rows}", chunk_rows)  # its own cursor: inserts go on alongside
-    workers = min(-(-total // chunk_rows), int(engine.value("SELECT current_setting('threads')")), os.cpu_count() or 1,
+    workers = min(-(-total // chunk_rows), engine.threads(), os.cpu_count() or 1,
                   61 if sys.platform == "win32" else 1 << 20)  # Windows waits on at most 61 processes
     batches = (batch.to_pandas().astype("string") for batch in reader)
     clean = functools.partial(prepare, fs.standardize, normalized=normalized, used=used, kind=loaded.classifier)

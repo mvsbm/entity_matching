@@ -22,7 +22,7 @@ from er.engine.engine import Engine
 from er import fit
 from er.candidates import deletions_sql
 from er.strings import FUNCTIONS
-from er.config import Comparator, Comparison, COPIES, DeletionKeys, FSModel, FSSpec, GIVEN, hashed, InputError, Key, KeyBlocker, keys_sql, PERSON, Pipeline, q, RulesSpec
+from er.config import Comparator, Comparison, COPIES, DeletionKeys, FSModel, FSSpec, GIVEN, hashed, InputError, Key, KeyBlocker, keys_sql, PERSON, Pipeline, q, RulesSpec, unpivoted
 
 def rule_edges(spec: RulesSpec, records: "Records", engine: Engine, uid: str, batch: str | None = None,
                trust: Mapping[int, str] | None = None, into: str | None = None, told: Callable[..., None] | None = None) -> tuple[pd.DataFrame | str, dict[str, float]]:
@@ -113,7 +113,7 @@ def narrowed(df: "Records", engine: Engine, keep: set[str]):
         engine.register(name, df[[c for c in df.columns if c in keep]].assign(**{c: pd.Series(pd.NA, index=df.index, dtype="string")
                                                                               for c in keep - set(df.columns) if c.endswith(COPIES)}))
     else:
-        have = [c for c, *_ in engine.rows(f'DESCRIBE "{df}"')]
+        have = [c for c, _ in engine.columns(f'"{df}"')]
         cols = [q(c) for c in have if c in keep] + [f"NULL::VARCHAR AS {q(c)}" for c in sorted(keep - set(have)) if c.endswith(COPIES)]
         engine.view(name, f'SELECT {", ".join(cols)} FROM "{df}"')
     try:
@@ -143,7 +143,8 @@ def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, en
         engine.run(f"CREATE OR REPLACE TEMP TABLE er_u_pairs AS SELECT a.er_i AS i, b.er_i AS j FROM er_u_drawn a JOIN er_u_drawn b ON a.{u} < b.{u}")
         try:
             pairs = f"SELECT {_sides(settings, _columns(engine, t))} FROM er_u_pairs p JOIN er_u_drawn a ON a.er_i = p.i JOIN er_u_drawn b ON b.er_i = p.j"
-            got = engine.rows(f"SELECT c, g, count(*) FROM (UNPIVOT (SELECT {', '.join(_gammas(settings))} FROM ({pairs})) ON COLUMNS(*) INTO NAME c VALUE g) GROUP BY ALL")
+            gammas = [f"gamma_{c['output_column_name']}" for c in settings["comparisons"]]
+            got = engine.rows(f"SELECT c, g, count(*) FROM {unpivoted(f'(SELECT {chr(44).join(_gammas(settings))} FROM ({pairs}))', gammas, 'c', 'g')} GROUP BY ALL")
         finally:
             engine.run("DROP TABLE IF EXISTS er_u_pairs; DROP TABLE IF EXISTS er_u_drawn")
     counts = {(c.removeprefix("gamma_"), g): n for c, g, n in got}
@@ -203,16 +204,22 @@ def exact_u(model: FSModel, records: Records, engine: Engine) -> U:
             O(U·L²): U distinct values, each L keys of about L characters; the values grouped once, read by every part."""
             if comp.threshold < 1:
                 return 0.0
-            v, at = "er_near_v", "(SELECT x, n, len, unnest(range(1, len + 1)) AS i FROM er_near_v)"
+            v, at = "er_near_v", "(SELECT x, n, len, i FROM er_near_v, unnest(generate_series(1, len)) AS p(i))"
             pairs = lambda key, where="TRUE": (f"(SELECT coalesce(sum((s * s - ss) // 2), 0) FROM (SELECT sum(n) AS s, sum(n * n) AS ss "
                                                f"FROM {at} WHERE {where} GROUP BY len, i, {key}))")
-            parts = [pairs("x[:i - 1] || x[i + 1:]")]
+            char = lambda at: f"substr(x, {at}, 1)"  # the at-th character
+            parts = [pairs("substr(x, 1, i - 1) || substr(x, i + 1)")]
             if comp.function == "damerau_levenshtein":
-                parts.append(pairs("x[:i - 1] || least(x[i], x[i + 1]) || greatest(x[i], x[i + 1]) || x[i + 2:]", "i < len AND x[i] <> x[i + 1]"))
-            deleted = "x[:len - 1]" if comp.function == "hamming" else f"unnest({deletions_sql('x')})"  # rapidfuzz's Hamming pads the shorter at its end
-            parts.append(f"""(SELECT coalesce(sum(nn), 0) FROM (SELECT DISTINCT a.x, b.x, a.n * b.n AS nn FROM
-                (SELECT x, n, len, {deleted} AS d FROM {v}) a JOIN {v} b ON b.x = a.d AND b.len = a.len - 1))""")
-            return float(engine.value(f"""WITH er_near_v AS MATERIALIZED (SELECT "{col}" AS x, count(*) AS n, length("{col}") AS len FROM {t}
+                parts.append(pairs(f"substr(x, 1, i - 1) || least({char('i')}, {char('i + 1')}) || greatest({char('i')}, {char('i + 1')}) || substr(x, i + 2)",
+                                   f"i < len AND {char('i')} <> {char('i + 1')}"))
+            if comp.function == "hamming":  # rapidfuzz's Hamming pads the shorter at its end
+                shorter = f"(SELECT x, n, len, substr(x, 1, len - 1) AS d FROM {v})"
+            else:
+                at_each, key, once = deletions_sql("x")
+                shorter = f"(SELECT x, n, len, {key} AS d FROM {v}, {at_each} WHERE {once})"
+            parts.append(f"""(SELECT coalesce(sum(nn), 0) FROM (SELECT DISTINCT a.x AS ax, b.x AS bx, a.n * b.n AS nn FROM
+                {shorter} a JOIN {v} b ON b.x = a.d AND b.len = a.len - 1))""")
+            return float(engine.value(f"""WITH er_near_v AS (SELECT "{col}" AS x, count(*) AS n, length("{col}") AS len FROM {t}
                 WHERE "{col}" IS NOT NULL GROUP BY 1) SELECT {' + '.join(parts)}"""))
 
         out: U = {}
@@ -591,7 +598,7 @@ def _gammas(settings: dict) -> list[str]:  # each comparison's gamma from its le
 
 
 def _columns(engine: Engine, table: str) -> set[str]:
-    return {c for c, *_ in engine.rows(f"DESCRIBE SELECT * FROM {table}")}
+    return {c for c, _ in engine.columns(table)}
 
 
 def _sides(settings: dict, have: set[str], cols: Iterable[str] | None = None) -> str:
