@@ -15,20 +15,13 @@ package "the answer: steps.write.write" {
   entity "gold.parquet" as gold {
     * <id> : the record
     cluster_id : the smallest <id> of its cluster
-    resolved_stage : deterministic · probabilistic · review
-    resolved_by : the rule, fs or review
+    resolved_stage : review, where people's decisions joined it; else empty
+    resolved_by : review, or empty
     kind : 2 company · 1 person · 0 not sure
     kind_p : the probability of a company
     kind_by : engine · flag
     kind_flagged : sure against the file's flag
     customer_kind : its cluster's kind
-  }
-  entity "matches/part-n.parquet" as matches {
-    * <id>_l
-    * <id>_r
-    match_weight : bits
-    match_probability
-    sources : the generators that found the pair
   }
   entity "rule_kept/part-n.parquet" as rule_kept {
     * <id>_l
@@ -37,7 +30,6 @@ package "the answer: steps.write.write" {
     stage
     score
     match_weight : bits, the model's
-    merged : whether it joined: not when people said no_match
   }
   entity "scored/part-n.parquet" as scored {
     * <id>_l
@@ -108,20 +100,6 @@ package "the lookup index: jobs.index.build, jobs.index.update" {
 }
 
 package "for people: steps.report.report" {
-  entity "review.parquet" as review {
-    why : decide · audit
-    decision : match · no_match, to fill in
-    * <id>_l
-    * <id>_r
-    match_weight
-    match_probability
-    accepted : in matches
-    sources
-    <field>_l
-    <field>_r
-    <comparison> : its level
-    <comparison>_bits
-  }
   entity "report.txt" as report {
     the run on a page, with no record's value in it
   }
@@ -132,7 +110,7 @@ package "people's work and the writers' state" {
     * <id>_l
     * <id>_r
     decision : match · no_match
-    why : decide · audit, from the sheet
+    why : the file's why, where it has one
   }
   entity "pending.json" as pending {
     the moves a write still owes; only while one is cut short
@@ -140,10 +118,8 @@ package "people's work and the writers' state" {
 }
 
 gold }o--|| rule_clusters : <id>
-matches }o--|| gold : <id>_l, <id>_r
 rule_kept }o--|| gold : <id>_l, <id>_r
 scored }o--|| gold : <id>_l, <id>_r
 records ||--|| gold : <id>
-review }o--|| gold : <id>_l, <id>_r
 decisions }o--|| gold : <id>_l, <id>_r
 @enduml

@@ -1,7 +1,7 @@
-"""An increment: a batch of new records added to a written run, and which entity each record of a batch would join.
+"""An increment: a batch of new records added to a written run.
 
-The batch is joined against all records, rule by rule and generator by generator, scored, and merged into the
-existing clusters, each cluster one node. Its cost is O(|Δ|·(L + Σ b) + C_Δ·K·L²) plus narrow O(N) scans (the stored
+The batch is joined against all records, rule by rule and generator by generator, and scored; its pairs join the
+run's scored/, and each new record is an entity of its own until people's decisions join it. Its cost is O(|Δ|·(L + Σ b) + C_Δ·K·L²) plus narrow O(N) scans (the stored
 key columns, the exact u counts, gold rewritten), whatever N; b is a block's size, C_Δ the pairs touching the batch.
 It keeps the stored model, and samples u again only for a comparison whose drift has outgrown its sampling error
 (er.match.refreshed_u). A full run (jobs.build) re-fits and re-scores everything."""
@@ -9,7 +9,6 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-import pandas as pd
 
 from er import folder
 from er.jobs import index
@@ -43,33 +42,6 @@ def update(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, 
             write(ran, out, pipeline_file=pipeline_file)
             ran.index = indexed(out, settings, pipeline, index.update)
         return ran
-
-
-def would_join(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, echo: Callable[[dict], None] | None = None,
-               told: Callable[..., None] | None = None) -> pd.DataFrame:
-    """Which entity each record of `path` would join in the run in `out`, and by what, writing nothing: the
-    increment's steps without its write. One row per record read: its ID; `entity`, the cluster_id it would have;
-    `status` (joins an entity; a new entity; already in the run; or set aside and why); `by`, the rule or `fs` that
-    linked it most strongly, and `weight`, its best model link in bits. O(an increment) less its write."""
-    out = Path(out)
-    with folder.run_lock(out), readable(path, settings.input, told) as read:
-        ran = join(read, out, settings, pipeline, echo, told)
-        engine, u, l, r = ran.engine, q(ran.uid), q(ran.l), q(ran.r)
-        if ran.added:
-            engine.run(f"""CREATE OR REPLACE TABLE er_match AS WITH
-                ends AS (SELECT {l} AS id, rule, NULL::DOUBLE AS w FROM rule_kept WHERE merged UNION ALL SELECT {r}, rule, NULL FROM rule_kept WHERE merged
-                         UNION ALL SELECT {l}, 'fs', match_weight FROM matches UNION ALL SELECT {r}, 'fs', match_weight FROM matches),
-                best AS (SELECT id, arg_max(rule, coalesce(w, 1e9)) AS by, max(w) AS weight FROM ends GROUP BY 1),
-                old AS (SELECT DISTINCT g.cluster_id FROM gold g JOIN gold_old o USING ({u}))
-                SELECT n.{u}, g.cluster_id AS entity, CASE WHEN g.cluster_id IN (SELECT cluster_id FROM old) THEN 'joins an entity'
-                       ELSE 'a new entity' END AS status, b.by, b.weight
-                FROM new_ids n JOIN gold g USING ({u}) LEFT JOIN best b ON b.id = n.{u}""")
-        else:
-            engine.run(f"CREATE OR REPLACE TABLE er_match AS SELECT NULL::VARCHAR AS {u}, NULL::VARCHAR AS entity, '' AS status, NULL::VARCHAR AS by, NULL::DOUBLE AS weight WHERE FALSE")
-        return engine.frame(f"""SELECT * FROM er_match UNION ALL BY NAME
-            SELECT s.{u}, g.cluster_id AS entity, CASE WHEN s.reason = 'already in the run' THEN s.reason ELSE 'set aside: ' || s.reason END AS status
-            FROM set_aside s LEFT JOIN {engine.read(out / 'gold.parquet')} g ON g.{u} = s.{u} AND s.reason = 'already in the run'
-            ORDER BY 1""")
 
 
 def join(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, echo: Callable[[dict], None] | None = None,

@@ -1,4 +1,4 @@
-"""Workspaces: their files, the review sheet and people's decisions."""
+"""Runs' folders: their files, the match tables and people's decisions."""
 from pathlib import Path
 import math
 import os
@@ -22,11 +22,12 @@ def wide_band(population):
     return s, replace(p, threshold=replace(p.threshold, margin_steps=4), fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 6)), g
 
 
-def test_a_pair_with_no_name_compared_is_left_to_people(tmp_path, population):
+def test_a_pair_with_no_name_compared_is_offered_saying_so(tmp_path, population):
     """A company at a person's address with the person's phone: each record lacks the other's name field, so no name
-    is compared, and address and phone alone reach the threshold. With needs, people decide it instead."""
-    from er.report import qa
+    is compared, and address and phone alone reach the threshold. The match table offers it, named false: people see
+    that no name was compared."""
     from er.jobs.build import build
+    from er.jobs.match import match
     s, p, g = population
     uid = s.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
@@ -36,15 +37,11 @@ def test_a_pair_with_no_name_compared_is_left_to_people(tmp_path, population):
     firm[[uid, "NYS_CNV_P_NAME_KANA"]] = ["9" * len(home[uid]), "カブシキガイシャテスト"]
     pd.concat([g.df, firm.to_frame().T.astype(g.df.dtypes)], ignore_index=True).to_parquet(tmp_path / "all.parquet", index=False)
     pair = (home[uid], firm[uid])
-    p = replace(p, fs=replace(p.fs, min_match_weight=4.0))
-    for needs, out in (((), "a"), (("name", "company"), "b")):
-        run = build(tmp_path / "all.parquet", tmp_path / out, s, replace(p, fs=replace(p.fs, needs=needs)))
-        weight = run.engine.value(f'SELECT match_weight FROM scores WHERE "{l}" = ? AND "{r}" = ?', list(pair))
-        merged = run.engine.value(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair))
-        assert weight >= 4.0 and merged == (not needs)
-    sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
-    row = sheet[(sheet[l] == pair[0]) & (sheet[r] == pair[1])]
-    assert row["why"].tolist() == ["decide"] and not row["accepted"].any()
+    run = build(tmp_path / "all.parquet", tmp_path / "a", s, replace(p, fs=replace(p.fs, needs=("name", "company"))))
+    assert run.engine.value(f'SELECT match_weight FROM scores WHERE "{l}" = ? AND "{r}" = ?', list(pair)) >= 4.0
+    table = pd.read_parquet(match(tmp_path / "a", s, p, 4.0)["into"])
+    row = table[(table[l] == pair[0]) & (table[r] == pair[1])]
+    assert len(row) == 1 and not row["named"].any()
 
 
 def test_the_batch_budget_counts_the_pairs_touching_the_batch():
@@ -59,63 +56,33 @@ def test_the_batch_budget_counts_the_pairs_touching_the_batch():
         assert est["est_pairs"] == len(pairs) or isinstance(b, DeletionKeys)
 
 
-def test_the_review_sheet_asks_about_each_cluster_pair_in_the_safety_margin_once(tmp_path, wide_band):
-    from er.match import review_floor
-    from er.report import qa
-    from er.jobs.build import build
-    s, p, g = wide_band
-    uid = s.data.unique_id
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    run = build(tmp_path / "all.parquet", tmp_path / "a", s, p)
-    sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
-    t, lo = p.fs.min_match_weight, review_floor(p)
-    assert lo == t - 8  # margin_steps (4) grid steps of 2 bits below the threshold
-    decide, audit = sheet[sheet["why"] == "decide"], sheet[sheet["why"] == "audit"]
-    assert len(decide) and sheet["decision"].isna().all()
-    assert decide["match_weight"].between(lo, t, inclusive="left").all() and audit["accepted"].all()
-    gold = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)["cluster_id"]
-    a, b = decide[f"{uid}_l"].map(gold).to_numpy(), decide[f"{uid}_r"].map(gold).to_numpy()
-    assert (a != b).all() and not pd.DataFrame({"x": np.minimum(a, b), "y": np.maximum(a, b)}).duplicated().any()
-
-
-def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_again(tmp_path, wide_band):
-    from er.report import qa
+def test_decisions_on_a_match_table_join_records_and_a_full_run_applies_them_again(tmp_path, wide_band):
     from er.jobs.build import build
     from er.jobs.decide import decide
+    from er.jobs.match import match
     s, p, g = wide_band
     uid = s.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     run = build(tmp_path / "all.parquet", tmp_path / "a", s, p)
-    sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
-    yes = sheet[sheet["why"] == "decide"].index[0]
-    sheet.loc[yes, "decision"] = "match"
-    sheet.to_parquet(tmp_path / "reviewed.parquet")  # the sheet as people return it; undecided rows are skipped
-    rejected = run.engine.row(f'SELECT "{l}", "{r}" FROM matches ORDER BY match_weight DESC LIMIT 1')
-    pd.DataFrame({l: [rejected[0]], r: [rejected[1]], "decision": [" No_Match "]}).to_parquet(tmp_path / "rejected.parquet")
-    before = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)
+    table = pd.read_parquet(match(tmp_path / "a", s, p, p.fs.min_match_weight)["into"])
+    yes, no = table.index[0], table.index[1]
+    table.loc[yes, "decision"], table.loc[no, "decision"] = "match", " No_Match "  # as people return it; undecided rows are skipped
+    table.to_parquet(tmp_path / "reviewed.parquet")
     decide(tmp_path / "reviewed.parquet", tmp_path / "a", s, p)
-    decide(tmp_path / "rejected.parquet", tmp_path / "a", s, p)  # an accepted pair people reject: it splits nothing now
     after = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)
-    pair = sheet.loc[yes, [l, r]].tolist()
-    assert after.loc[pair[0], "cluster_id"] == after.loc[pair[1], "cluster_id"] != before.loc[pair[1], "cluster_id"] or \
-        before.loc[pair[0], "cluster_id"] != before.loc[pair[1], "cluster_id"]
-    joined = before["resolved_stage"].isna() & after["resolved_stage"].notna()
-    assert joined.any() and after.loc[joined, "resolved_by"].eq("review").all()
-    assert len(pd.read_parquet(tmp_path / "a" / "decisions")) == 2
+    pair, rejected = table.loc[yes, [l, r]].tolist(), table.loc[no, [l, r]].tolist()
+    assert after.loc[pair[0], "cluster_id"] == after.loc[pair[1], "cluster_id"] and after.loc[pair[0], "resolved_by"] == "review"
+    assert after["cluster_id"].nunique() == len(after) - 1 and len(pd.read_parquet(tmp_path / "a" / "decisions")) == 2
 
-    rerun = build(tmp_path / "all.parquet", tmp_path / "a", s, p, model=run.model, overwrite=True)  # people's work survives
+    build(tmp_path / "all.parquet", tmp_path / "a", s, p, model=run.model, overwrite=True)  # people's work survives
     again = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)
     assert again.loc[pair[0], "cluster_id"] == again.loc[pair[1], "cluster_id"]
-    matches = pd.read_parquet(tmp_path / "a" / "matches")
-    assert not ((matches[l] == rejected[0]) & (matches[r] == rejected[1])).any()
-    sheet = qa(rerun, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]  # what people see: what the run did
-    accepted = sheet.set_index([l, r]).index.isin(matches.set_index([l, r]).index)
-    assert (sheet["accepted"] == accepted).all() and sheet.loc[sheet["why"] == "audit", "accepted"].all()
-    assert not ((sheet[l] == rejected[0]) & (sheet[r] == rejected[1])).any()  # a pair people rejected is no audit row
+    offered = pd.read_parquet(match(tmp_path / "a", s, p, p.fs.min_match_weight)["into"])
+    assert not ((offered[l] == rejected[0]) & (offered[r] == rejected[1])).any() and len(offered) == len(table) - 1  # a pair people rejected: offered no more
 
-    sheet.loc[yes, "decision"] = "maybe"
-    sheet.to_parquet(tmp_path / "bad.parquet")
+    table.loc[yes, "decision"] = "maybe"
+    table.to_parquet(tmp_path / "bad.parquet")
     with pytest.raises(ValueError, match="match or no_match"):
         decide(tmp_path / "bad.parquet", tmp_path / "a", s, p)
     pd.DataFrame({l: ["nobody"], r: [pair[0]], "decision": ["match"]}).to_parquet(tmp_path / "unknown.parquet")
@@ -254,7 +221,8 @@ def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(tmp_p
 
 
 def test_people_s_latest_decision_stands_a_file_given_twice_changes_nothing_and_a_full_run_reads_them_back(say, tmp_path, population, monkeypatch):
-    from er.report import applied
+    from er.engine.duckdb import connect
+    from er.folder import latest_decisions
     s, p, g = population
     uid, ent = s.data.unique_id, s.data.entity_id
     l, r = f"{uid}_l", f"{uid}_r"
@@ -262,21 +230,18 @@ def test_people_s_latest_decision_stands_a_file_given_twice_changes_nothing_and_
     monkeypatch.chdir(tmp_path)
     ws, at = tmp_path / "workspaces" / "w", ("--out", "workspaces/w")
     truth = g.truth.set_index(uid)[ent]
-    latest = lambda a, b: applied(ws, uid).set_index([l, r])["decision"].get((a, b))
+    latest = lambda a, b: dict(((x, y), d) for x, y, d in connect().rows(f"SELECT * FROM {latest_decisions(connect(), ws, uid)}")).get((a, b))
     assert say("build", "theirs.parquet", *at)[0] == 0
-    sheet = pd.read_parquet(ws / "review.parquet")
-    same = sheet[sheet[l].map(truth) == sheet[r].map(truth)].iloc[0]
+    made = say("match", *at, "--threshold", "6")[1]
+    table = pd.read_parquet(made["into"])
+    same = table[table[l].map(truth) == table[r].map(truth)].iloc[0]
     pd.DataFrame({l: [same[l]], r: [same[r]], "decision": ["match"]}).to_parquet(tmp_path / "same.parquet")
     pd.DataFrame({l: [same[l]], r: [same[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "other.parquet")  # another person: different
     assert say("decide", "same.parquet", *at)[1]["matches"] == 1 and latest(same[l], same[r]) == "match"
     assert say("decide", "same.parquet", *at)[1]["decisions"] == 0  # given twice: nothing new
     assert say("decide", "other.parquet", *at)[0] == 0 and latest(same[l], same[r]) == "no_match"  # the latest stands
-
-    found = pd.read_parquet(ws / "matches").sort_values("match_weight", ascending=False)
-    link = found[found[l].map(truth) == found[r].map(truth)].iloc[0]  # a pair the run joined: people say different
-    pd.DataFrame({l: [link[l]], r: [link[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "false.parquet")
-    assert say("decide", "false.parquet", *at)[0] == 0
     assert say("build", "theirs.parquet", *at, "--overwrite")[0] == 0  # a full run reads people's decisions back
-    x = pd.read_parquet(ws / "matches")
-    assert not ((x[l] == link[l]) & (x[r] == link[r])).any()  # never joined again
-    assert latest(same[l], same[r]) == "no_match"
+    again = pd.read_parquet(say("match", *at, "--threshold", "6")[1]["into"])
+    assert not ((again[l] == same[l]) & (again[r] == same[r])).any() and len(again) == made["pairs"] - 1  # said different: offered no more
+    gold = pd.read_parquet(ws / "gold.parquet").set_index(uid)["cluster_id"]
+    assert gold[same[l]] != gold[same[r]] and latest(same[l], same[r]) == "no_match"

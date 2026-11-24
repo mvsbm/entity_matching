@@ -1,7 +1,8 @@
 """The full run: one records file resolved into a workspace, one line per step (er/steps/), then its lookup index. Its cost is the steps':
 O(N·L) to load, O(n + S·K + P_em·K) + O(N + S·K) to fit, O(N + Σ P) for the keys and rules, O(C·K·L²) to score,
-O(C + E·log E + N) to cluster, O(N + C) to write. N records, L characters per value, n the fit's sample, S sampled
-pairs for u, K comparisons, P a key's or rule's pairs, C candidates, E accepted pairs."""
+O(D + N) for people's decisions' entities, O(N + C) to write. N records, L characters per value, n the fit's sample, S
+sampled pairs for u, K comparisons, P a key's or rule's pairs, C candidates, D decisions. Nothing merges by itself: a
+match run (er.jobs.match) reads the scored pairs at the threshold people set."""
 import gc
 from collections.abc import Callable
 from pathlib import Path

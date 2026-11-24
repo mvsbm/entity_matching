@@ -503,7 +503,7 @@ def _resolver(d: dict) -> Resolver:
 def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]]) -> Pipeline:
     """The parsed config/pipeline.toml → typed config."""
     if "trust" in cfg:  # nothing merges by a sampled line: the rules' pairs, the model's at its threshold and people's decisions
-        raise InputError("[trust] sets nothing: a run merges the rules' pairs and the model's at its threshold; people decide the rest",
+        raise InputError("[trust] sets nothing: a run merges nothing by itself; people set a match run's threshold and decide its pairs",
                          fix="delete [trust]")
     if "keys" in cfg:  # a run lists pairs by the generators the method names, chosen at design time
         raise InputError("[keys] sets nothing: a run lists pairs by the [model] generators as given", fix="delete [keys]")

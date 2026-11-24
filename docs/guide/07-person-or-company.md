@@ -24,7 +24,7 @@ None of these rates is known for a given file. So the choice must hold across th
 1. **A legal form says company.** Written where banks write one (the readings, and the bank abbreviations at the front or the end), a legal form makes a company near certain.
 2. **The name says where a record leans.** A logistic regression on the name's character 1–3-grams, legal forms and spaces removed, trained once on public data: the registry's real company readings and the personas' names. It needs no label from the file. It learns what company stems look like: …ショウテン, …クリニック, …コウギョウ.
 3. **Correct first: sure, or the flag.** The engine calls 2 company where a legal form is written, and 2 company or 1 person where the name model is at least `[kind] name_line` (99%) sure, but never 1 person against a company flag: a company's records under its representative's name read as a person's; otherwise the file's flag decides, and with no flag the record is 0, not sure. `[kind] trust_flag = true` takes the flag as it is.
-4. **Disagreements are flagged, not held.** Where the engine is sure and the flag says the other kind, the record is flagged and matched as the engine says. Each name goes to the side of its kind, and a pair of a person and a company has no name compared, so the model's name check (`[model] needs`, [chapter 5](05-uncertain-evidence-fellegi-sunter.md)) leaves it to people.
+4. **Disagreements are flagged, not held.** Where the engine is sure and the flag says the other kind, the record is flagged and matched as the engine says. Each name goes to the side of its kind, and a pair of a person and a company has no name compared, and a match run's table says so (`named`, from `[model] needs`, [chapter 5](05-uncertain-evidence-fellegi-sunter.md#challenge-where-to-draw-the-line)).
 5. **The flag's owners see where it is likely wrong.** `gold.parquet` marks each flagged record (`kind_flagged`), and `report.txt` counts them.
 
 A customer's kind follows from its records: 2 if any record is a company, 1 if none leans company and one is a person, else 0.
@@ -33,7 +33,7 @@ A customer's kind follows from its records: 2 if any record is a company, 1 if n
 
 - **The flag alone isn't enough, and neither is the name.** The flag is wrong where the cases are hard; the name can't see a company under a person's name. The engine takes the name where it is sure, and the flag elsewhere.
 - **No labels needed.** The name model is trained on public data and the legal forms are the banks' own, so a run works on day one, on nothing but the file.
-- **Held back, not guessed.** A company sent to the person side can merge into its representative's own records. Holding a person–company pair back for people costs some recall until they decide it, and spares those merges.
+- **Held back, not guessed.** A company sent to the person side can merge into its representative's own records. A person–company pair has no name compared, and the method, as measured, takes only pairs with one: that costs some recall until people decide the rest, and spares those merges.
 
 ## How we know: every combination, across the unknowns
 

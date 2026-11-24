@@ -4,10 +4,10 @@ LAYOUT_LEFT_RIGHT()
 HIDE_STEREOTYPE()
 title HLD 2 · Containers: the jobs and tools people run, the engine, and where everything is kept
 
-Person(owner, "Data owner, reviewer", "runs the jobs; decides their pairs in a table or a sheet")
+Person(owner, "Data owner, reviewer", "runs the jobs; decides the pairs of a match run, in a table or a sheet")
 Person(developer, "Developer", "changes the method")
 
-Container(runtime, "The jobs", "python -m er (er/__main__.py)", "build, update, decide, lookup; one JSON object printed; exit 2: a mistake to fix, 75: another job writing the run")
+Container(runtime, "The jobs", "python -m er (er/__main__.py)", "build, update, match, decide, lookup; one JSON object printed; exit 2: a mistake to fix, 75: another job writing the run")
 Container(designtime, "Design-time tools", "scripts/generate.py, scripts/train_name_model.py, scripts/benchmark.py", "synthetic data with the truth; the name model trained; the method measured")
 
 System_Boundary(engine, "The engine, in one process") {
@@ -18,13 +18,13 @@ System_Boundary(engine, "The engine, in one process") {
 
 ContainerDb(config, "config/", "TOML, npz", "settings.toml: the file's columns, [locale], [compute], [kind] · pipeline.toml: the method and kind_names.npz: the name model, the hand-off from design time")
 ContainerDb(reference, "data/reference/", "JSON, in git", "public names, companies, addresses: the generator's input and the name model's training")
-ContainerDb(runfolder, "The run's folder (~--out)", "Parquet, JSON, DuckDB", "gold.parquet, review.parquet, report.txt, steps.json, state/, index/: LLD 5")
+ContainerDb(runfolder, "The run's folder (~--out)", "Parquet, JSON, DuckDB", "gold.parquet, scored/, matched/, report.txt, steps.json, state/, index/: LLD 5")
 ContainerDb(artifacts, "data/artifacts/", "Parquet, JSON", "the benchmark's runs")
 ContainerDb(synthetic, "Synthetic data and reports", "Parquet, Markdown", "data/medallion/, data/labels/: records and their truth · reports/: what was measured")
 
 Rel(owner, runtime, "runs")
 Rel(developer, designtime, "runs")
-Rel(runtime, er, "er.jobs: build, update, decide")
+Rel(runtime, er, "er.jobs: build, update, match, decide")
 Rel(designtime, designpkg, "design.generate, design.evaluate")
 Rel(designtime, er, "er.jobs, er.steps")
 Rel(designpkg, er, "er.kind")

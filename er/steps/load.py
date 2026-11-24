@@ -93,7 +93,7 @@ def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "
         here = {(c.name, label) for c in pipeline.fs.model.comparisons for label in (*(lv.label for lv in c.levels), ELSE)}
         if fitted != here:
             raise InputError(f"{path}: the model was fitted on other comparison levels (only in the model: {sorted(fitted - here)}; "
-                             f"only here: {sorted(here - fitted)})", fix="run without --model: the run then fits its model on this file")
+                             f"only here: {sorted(here - fitted)})", fix="give no model: the run then fits its own on this file")
     loaded = Loaded(n=0, pipeline=pipeline, disabled=disabled, present=present, unmapped=unmapped, classifier=None, inputs=inputs)
     rows = _set_aside(job, src.sql, stored)
     engine.run(f"DROP TABLE IF EXISTS {into}")

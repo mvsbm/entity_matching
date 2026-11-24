@@ -74,9 +74,9 @@ def test_the_kind_problems_change_names_dates_and_the_flag_only(kind_population)
     assert 0.02 < (flag_company != g.truth["KIND"].eq("company")).mean() < 0.1  # the flag is wrong, now and then
 
 
-def test_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_company_pair_goes_to_people(tmp_path, kind_population):
-    from er.report import qa
+def test_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_company_pair_is_offered_with_no_name_compared(tmp_path, kind_population):
     from er.jobs.build import build
+    from er.jobs.match import match
     s, p, g = kind_population
     uid = s.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
@@ -85,7 +85,8 @@ def test_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_comp
     firm[["CIF_ID", "BIRTH_DATE"]] = pd.NA
     firm[[uid, "NAME_KANA", "PERSON_ORG_CODE"]] = ["9" * len(home[uid]), "カブシキガイシャテスト", "2"]
     pd.concat([g.df, firm.to_frame().T.astype(g.df.dtypes)], ignore_index=True).to_parquet(tmp_path / "all.parquet", index=False)
-    run = build(tmp_path / "all.parquet", tmp_path / "run", s, replace(p, fs=replace(p.fs, min_match_weight=4.0)))
+    p = replace(p, fs=replace(p.fs, min_match_weight=4.0))
+    run = build(tmp_path / "all.parquet", tmp_path / "run", s, p)
     rec = run.engine.frame(f'SELECT "{uid}", person_name, company_name, kind, name_p, kind_flag, kind_flagged FROM records').set_index(uid)
     assert rec.loc[firm[uid], "kind"] == 2 and pd.isna(rec.loc[firm[uid], "person_name"]) and rec.loc[firm[uid], "company_name"] == "カブシキガイシャテスト"
     assert pd.notna(rec.loc[home[uid], "person_name"]) and pd.isna(rec.loc[home[uid], "company_name"])
@@ -100,9 +101,8 @@ def test_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_comp
     assert (named["kind"].to_numpy() == np.where(sure > 0, sure, flag)).all() and set(named["kind"]) == {1, 2}  # a legal form or a sure name; else the flag
     assert (named["kind_flagged"].to_numpy() == ((sure > 0) & (flag > 0) & (sure != flag))).all() and named["kind_flagged"].any()  # sure against the flag
     pair = (home[uid], firm[uid])
-    assert run.engine.value(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair)) == 0
-    sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
-    assert sheet[(sheet[l] == pair[0]) & (sheet[r] == pair[1])]["why"].tolist() == ["decide"]
+    table = pd.read_parquet(match(tmp_path / "run", s, p, 4.0)["into"])
+    assert table.loc[(table[l] == pair[0]) & (table[r] == pair[1]), "named"].tolist() == [False]  # offered, saying no name was compared
 
 
 def test_a_new_part_takes_the_number_after_the_highest(tmp_path):

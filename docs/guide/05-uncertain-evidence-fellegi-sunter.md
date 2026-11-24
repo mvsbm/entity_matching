@@ -6,7 +6,7 @@
 
 ## Challenge: how sure can we be about a pair?
 
-The rules in [chapter 4](04-certain-cases-first-rules.md) leave most true pairs undecided. Here is one of them, from val, an accepted true match with a typo:
+The rules in [chapter 4](04-certain-cases-first-rules.md) leave most true pairs undecided. Here is one of them, from val, a true match with a typo:
 
 | | Name | Address | Phone | CIF ID |
 |---|---|---|---|---|
@@ -62,12 +62,12 @@ The total is from unrounded parts. Back from bits to a probability:
 
 $$p = \frac{2^{w}}{1 + 2^{w}} = \frac{2^{6.19}}{1 + 2^{6.19}} = 98.6\%$$
 
-That clears the 6-bit line (below) by 0.19 bits, so the model accepts the pair. A different CIF ID costs almost nothing: true pairs have different CIF IDs 98.5% of the time (m = 0.985), nearly as often as strangers.
+That clears the method's 6-bit threshold (below) by 0.19 bits. A different CIF ID costs almost nothing: true pairs have different CIF IDs 98.5% of the time (m = 0.985), nearly as often as strangers.
 
 ### Why this solution
 
 - **It adds up partial evidence.** A strong agreement can outweigh a weak disagreement, which is exactly what the rules couldn't do.
-- **Every decision is explainable.** The table above *is* the explanation. Every pair on the review sheet carries its bits, comparison by comparison (`review.parquet`).
+- **Every decision is explainable.** The table above *is* the explanation. Every pair in a match run's table carries its bits, comparison by comparison (`<comparison>_bits`).
 - **It learns without labels,** as the next sections show.
 - **It is proven.** Fellegi and Sunter proved the rule optimal when the fields are independent: for a given error rate, no other rule decides more pairs. The model has run in official statistics for decades.
 
@@ -147,9 +147,9 @@ Tested like any other change on cross-validated train, the adjustment loses 33 t
 
 ## Challenge: where to draw the line?
 
-A score is not yet a decision. We accept a pair at **6 bits or more**, a probability of about 98.5%. On validation, the line trades recall against false merges like this:
+A score is not yet a decision, and a run merges nothing by itself: people set a match run's threshold and decide its pairs. The method is designed, and measured, at **6 bits or more**, a probability of about 98.5%. On validation, with every pair at or above it taken as a match, the threshold trades recall against false merges like this:
 
-| Accept at or above | Pairs accepted | False pairs among them | Recall after grouping |
+| Taken at or above | Pairs taken | False pairs among them | Recall after grouping |
 |---|---|---|---|
 | 0 bits | 1,263 | 8 | 59.7% |
 | 2 bits | 1,195 | 5 | 58.2% |
@@ -158,28 +158,28 @@ A score is not yet a decision. We accept a pair at **6 bits or more**, a probabi
 | 8 bits | 877 | 0 | 48.6% |
 | 10 bits | 416 | 0 | 28.8% |
 
-The line is not picked from this table, which would tune it on validation. It comes from the threshold rule applied to train at design time ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)): the lowest weight with no false pair in cross-validation, plus one safety step.
+The 6 is not picked from this table, which would tune it on validation. It comes from the threshold rule applied to train at design time ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)): the lowest weight with no false pair in cross-validation, plus one safety step.
 
-**The safety step goes to people.** The pairs between the lowest clean weight and the line, from 4 to 6 bits, are never wrong on cross-validated train, but are held back in case of noise. Every run lists them in `review.parquet` for people to decide ([decisions](../architecture.md#6--decisions)). On val, the 4-bit row above accepts 55 more pairs, none of them false, and takes recall from 49.9% to 52.0%. The automatic line stays where the rule put it.
+**The safety step is the review floor.** The pairs between the lowest clean weight and the design threshold, from 4 to 6 bits, are never wrong on cross-validated train, but sit one step below it in case of noise. On val, the 4-bit row above takes 55 more pairs, none of them false, and lifts recall from 49.9% to 52.0%. A lookup shows entities from the review floor by default; a match run starts wherever people set it ([decisions](../architecture.md#6--decisions)).
 
-**A name must be compared.** A household shares an address and a phone, and those two alone can reach the line. So a pair is merged automatically only if a person name or a company name is filled on both sides. Without one, the pair goes on the review sheet (`why` = decide), whatever its score.
+**A name must be compared.** A household shares an address and a phone, and those two alone can reach 6 bits. So the method, as measured, takes a model pair only if a person name or a company name is filled on both sides. A match run's table marks those pairs (`named`), and people judge the others on their evidence, whatever their score.
 
-**The closest non-match**, the rejected pair of different people with the highest score on val:
+**The closest non-match**, the pair of different people with the highest score on val:
 
 | | Name | Address | Phone | CIF ID |
 |---|---|---|---|---|
 | C | ャマノベタカユキ | 北海道岩見沢市日の出台10-26-24 | 2604 | 8852433827058 |
 | D | イナモチタカユキ | 大阪府泉北郡忠岡町 | 2604 | 7587446239261 |
 
-Same phone digits (+11.14). The surnames differ, but the given names agree (タカユキ), worth +7.62. Different addresses (−0.58), and a different CIF ID (−0.03): **+3.66 bits, rejected**, below even the review band. Our example pair's names counted as different, but it shared the address as well as the phone; that is what lifted it to 6.19.
+Same phone digits (+11.14). The surnames differ, but the given names agree (タカユキ), worth +7.62. Different addresses (−0.58), and a different CIF ID (−0.03): **+3.66 bits**, below even the review floor. Our example pair's names counted as different, but it shared the address as well as the phone; that is what lifted it to 6.19.
 
 ## Challenge: from pairs to groups
 
-Accepted pairs must become groups. If A–B and B–C are accepted, then A, B and C are one entity.
+Matched pairs must become groups. If people say A–B and B–C match, then A, B and C are one entity.
 
-**Solution: connected components.** Records are points, accepted pairs are lines, and every connected set of points is one entity. The pairs from the rules and from this stage are grouped together.
+**Solution: connected components.** Records are points, matched pairs are lines, and every connected set of points is one entity. Each record starts alone, and only people's match decisions draw lines, the rules' pairs and this stage's alike.
 
-**Why, and the risk.** It is the natural reading of "same as", and it lets a record join a group that the rules already started. The risk is a **chain**: one false pair can join two whole groups. The strict 6-bit line is what keeps chains safe.
+**Why, and the risk.** It is the natural reading of "same as", and it lets a record join a group that the rules already started. The risk is a **chain**: one false pair can join two whole groups. A strict threshold, and people deciding each pair, keep chains safe.
 
 A cautious alternative would refuse a merge when the two groups hold different given names, but a typo in a given name looks like a conflict, so it loses true pairs. A run groups by connected components only (`er.cluster.merge`), and design time measures the run itself, so the choice is measured the way it runs.
 
@@ -205,6 +205,7 @@ Pairs of two people of one household are counted apart, neither true nor false: 
 - `er/cluster.py`: `merge`, the run's clustering
 - `config/pipeline.toml` `[model]`: the comparisons and levels; `[threshold]`: the threshold rule's grid and margin
 - `er/steps/fit.py`: `steps.fit.fit` (the fit, then u on the whole file); `er/steps/score.py`: `steps.score.score`, the same model without labels on any file; `er/match.py`: `named_sql`, the name check
+- `er/jobs/match.py`: `jobs.match.match`, a match run's table for people
 
 ## Further reading
 

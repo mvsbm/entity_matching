@@ -27,7 +27,7 @@ data/artifacts/benchmark/                   the benchmark's runs: a run's folder
                                             (silver: its state/records/)
 ```
 
-A run's folder is the same wherever `python -m er build` writes it: `gold.parquet`, `matches/`, `rule_kept/`, `scored/`, `steps.json`, `state/`, `report.txt`, `review.parquet` and `index/`; `decisions/` and `set_aside/` appear when there are any ([architecture](architecture.md#the-runs-folder)).
+A run's folder is the same wherever `python -m er build` writes it: `gold.parquet`, `rule_kept/`, `scored/`, `steps.json`, `state/`, `report.txt` and `index/`; `matched/`, `decisions/` and `set_aside/` appear when there are any ([architecture](architecture.md#the-runs-folder)).
 
 ## Reference data: `data/reference/`
 
