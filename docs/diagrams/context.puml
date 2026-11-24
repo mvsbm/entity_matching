@@ -4,27 +4,27 @@ LAYOUT_TOP_DOWN()
 HIDE_STEREOTYPE()
 title HLD 1 · Context: who uses the system, and what crosses its edges
 
-Person(owner, "Data owner", "maps the file's columns once (config/settings.toml [columns]), then runs the resolution")
+Person(owner, "Data owner", "maps the file's columns once (config/settings.toml [columns]), then runs the jobs")
 Person(reviewer, "Reviewer", "decides the pairs in the margin and audits the pairs above, in a table or a sheet")
-Person(developer, "Developer", "proposes changes to the matching; the decision rule on synthetic data judges them")
+Person(developer, "Developer", "proposes changes to the method, measured on synthetic data with the truth")
 
 System_Ext(files, "Customer files", "Parquet, columns of any name: a file, a glob or a folder; new batches later")
 System_Ext(reference, "Public reference data", "data/reference/*.json: names, companies (the corporate registry), addresses (SOURCES.md)")
 System_Ext(downstream, "Downstream systems", "take one ID per person or company")
 
 System_Boundary(er, "Entity resolution (this repository)") {
-  System(runtime, "Run time", "nayose: one file, without labels, into a workspace; batches added, decisions applied, one record looked up")
-  System(design, "Design time", "scripts/generate.py, scripts/choose.py, scripts/choose_kind.py, scripts/benchmark.py: synthetic records with the truth; the matching chosen and measured")
+  System(runtime, "Run time", "python -m er: one file, without labels, into a run's folder; batches added, decisions applied, records looked up")
+  System(design, "Design time", "scripts/generate.py, scripts/benchmark.py, scripts/train_name_model.py: synthetic records with the truth; the method measured; the name model trained")
 }
 
-Rel(owner, runtime, "runs", "resolve, add records")
+Rel(owner, runtime, "runs", "build, update")
 Rel(runtime, files, "reads", "er.source")
 Rel(design, reference, "reads", "the generator's input")
-Rel(developer, design, "proposes", "config/pipeline.toml, design/experiments.py")
+Rel(developer, design, "proposes", "config/pipeline.toml")
 Rel(design, developer, "reports", "reports/*.md")
-Rel(design, runtime, "hands over", "config/final.toml, config/kind_names.npz")
-Rel(runtime, reviewer, "asks", "review.parquet, qa.md, report.txt")
-Rel(reviewer, runtime, "answers", "apply decisions --file")
+Rel(design, runtime, "hands over", "config/pipeline.toml, config/kind_names.npz")
+Rel(runtime, reviewer, "asks", "review.parquet, report.txt")
+Rel(reviewer, runtime, "answers", "decide")
 Rel(runtime, downstream, "gives", "gold.parquet: cluster_id, customer_kind")
 SHOW_LEGEND()
 @enduml

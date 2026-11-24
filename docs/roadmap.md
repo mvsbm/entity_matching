@@ -40,12 +40,12 @@ DuckDB file) doesn't carry over. AlloyDB may later serve single-record lookups f
 million edges, a JavaScript UDF's speed on the pairs scored in full (about 7% of
 records). Cost is measured at 1M → 10M → 100M generated records in a sandbox and extrapolated, not guessed.
 
-## Design-time tuning
+## Design time
 
-It stays in the repo and never runs in production. `scripts/choose.py` runs locally on DuckDB over the labelled
-synthetic data and writes `config/final.toml` (and the name model). That change is committed through a PR; Jenkins
-tests it (DuckDB, then the BigQuery parity check), builds the image and deploys the jobs, which read the config baked
-into the image. Deploy on every push; start the 1B build only by an explicit trigger.
+It stays in the repo and never runs in production. A change to `config/pipeline.toml` (or the name model) is measured
+locally on DuckDB over the labelled synthetic data (`scripts/benchmark.py`) and committed through a PR; Jenkins tests
+it (DuckDB, then the BigQuery parity check), builds the image and deploys the jobs, which read the config baked into
+the image. Deploy on every push; start the 1B build only by an explicit trigger.
 
 ## Making the code plain
 
@@ -54,9 +54,8 @@ The engine is hard to explain today, for reasons that are in the code, not in th
 - tables passed between the steps by name (`"records"`, `"rule_edges"`, `"scores"`): each step's docstring names
   those it reads and writes, its signature doesn't;
 - dense lines and docstrings that argue edge cases instead of saying what a function does;
-- what the method does lives in `final.toml` and some 30 config classes, read by SQL built far from both;
-- short names (`q`, `lit`, `_sides`, `_ranked`, `rough_sql`, `first_bound`);
-- the UI, CLI, increments, lookups and trials woven through the same modules.
+- what the method does lives in `pipeline.toml` and some 30 config classes, read by SQL built far from both;
+- short names (`q`, `lit`, `_sides`, `_ranked`, `rough_sql`, `first_bound`).
 
 The target, in three named patterns:
 
@@ -71,6 +70,7 @@ The target, in three named patterns:
 
 ```
 er/
+  __main__.py  the jobs' entry: build, update, decide, lookup
   jobs/     build.py  update.py  decide.py  index.py       a full run, an increment, decisions: one line per step;
                                                          the index: built, kept up to date, looked up
   steps/    job.py  load.py  budget.py  fit.py  rules.py  candidates.py  score.py  cluster.py  write.py  report.py
@@ -79,9 +79,8 @@ er/
   model.py  to come: the Fellegi–Sunter model as plain Python: levels, points, λ (no SQL)
   config.py the settings and the method, each section saying which step reads it
   …         what the steps call: match.py, candidates.py, cluster.py, folder.py, report.py, …
-design/     select.py  experiments.py  pipeline.py  evaluate.py  tune.py  generate.py  sample.py  probe.py  gap.py
-            design time's modules, beside er/ and never imported by it; local only, on DuckDB
-scripts/    choose.py  benchmark.py  generate.py  …   the design-time entry points
+design/     generate.py  evaluate.py   the generator and the metrics, beside er/ and never imported by it; local only
+scripts/    generate.py  benchmark.py  train_name_model.py   the design-time entry points
 ```
 
 House rules for the rewrite, even where they cost lines: plain names; one statement per line; SQL as formatted
@@ -92,16 +91,16 @@ the jobs, the table each step writes, and where to change what.
 
 ## Order
 
-1. ~~The connection without Splink's wrapper (#151), our connected components (#154), our model dict (#156), our
-   EM (#157); term frequencies and Splink out, the tests held to values recorded from Splink 5.0~~.
-2. **The cut.** Run the production path (build, then an update) under coverage; delete what it never calls (the UI,
-   most of the CLI, auto, trials, try sample, …); `design/` keeps the tuning.
+1. ~~The connection without Splink's wrapper, our connected components, our model dict, our EM; term frequencies
+   and Splink out, the tests held to values recorded from Splink 5.0~~.
+2. ~~**The cut.** The four jobs of `python -m er` are the only entry; the code holds what they and the design-time
+   kit (generate, benchmark, train_name_model) call~~.
 3. **The restructure**, step by step, each move checked by digest against the run before it: ~~`er/engine/` with
    the DuckDB engine, `er/steps/` (one module per step), `er/jobs/` (build, update, decide, index)~~; then
    `model.py`.
 4. **The BigQuery engine**, the string UDFs and the parity check in CI: ~~the engine's verbs, the translation and
    the functions in JavaScript (`er/engine/bigquery.py`), checked offline~~; then the parts it refuses by name (the
-   workspace's files as tables, DESCRIBE, the scoring's slices, the deletion keys, the index), and the parity check
+   run's files as tables, DESCRIBE, the scoring's slices, the deletion keys, the index), and the parity check
    once CI has a sandbox dataset.
 5. **The three jobs** on Cloud Run, wired into Jenkins: ~~`deploy/` (the image, `job.sh`, the jobs, the Jenkinsfile),
    run in Docker on this machine~~; then on GCP, once the project, the bucket, the Artifact Registry repository and

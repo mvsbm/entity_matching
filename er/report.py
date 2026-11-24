@@ -15,11 +15,11 @@ import pandas as pd
 
 from er.engine.engine import Engine
 from er.config import GIVEN, hashed, InputError, Key, lit, Pipeline, q, sources_text
+from er import folder
 from er.io import code_version, read_parquet
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
 from er.match import ELSE, GIVEN_SHARE, _ranked, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, search_floor
 from er.source import filled, fit
-from er.review_state import applied
 
 if TYPE_CHECKING:
     from er.steps.job import Ran
@@ -136,7 +136,7 @@ def qa(run: "Ran", fields: list[str] | None = None, review: int = 50, previous: 
             kind_rows.append(("flag", f"a kind the engine is sure of contradicts it on {a + b:,} records: {a:,} 2 company flagged 1, "
                                       f"{b:,} 1 person flagged 2"))
         if len(mixed):
-            kind_rows.append(("note", f"{len(mixed):,} cluster{'s hold' if len(mixed) > 1 else ' holds'} a sure person and a sure company: see qa.md, mixed kinds"))
+            kind_rows.append(("note", f"{len(mixed):,} cluster{'s hold' if len(mixed) > 1 else ' holds'} a sure person and a sure company"))
     apart = engine.value(f"""SELECT count(*) FROM er_decisions d JOIN gold a ON a.{u} = d.{q(run.l)} JOIN gold b ON b.{u} = d.{q(run.r)}
         WHERE d.decision = 'no_match' AND a.cluster_id = b.cluster_id""")  # kept apart, joined by others
     summary = pd.DataFrame([
@@ -249,7 +249,7 @@ def diagnosis_lines(items: list[dict]) -> list[str]:  # report.txt's DIAGNOSIS, 
 
 def report_text(run: "Ran", tables: dict[str, pd.DataFrame], pipeline: Path, items: list[dict] | None = None) -> str:
     """The run on a page of plain text that holds no record's value (no ID, name, phone or address: the notes that
-    quote one are run.examples, in qa.md only), so it can leave the machine that holds the records. `tables` is qa()'s.
+    quote one are run.examples, never written), so it can leave the machine that holds the records. `tables` is qa()'s.
     It shows what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), what limits
     what the run finds (diagnosis's `items`, made here when not given), the summary, each field's fill and shape, the columns no field reads, scores and accepted links by weight with the false links the
     model expects, each score band's commonest patterns, cluster sizes, each step's time and memory, its time in each string comparison, the model (the prior, the pairs each EM session learned from, and m, u and bits per level), the costliest
@@ -433,7 +433,7 @@ def review_sheet(run: "Ran", pairs: pd.DataFrame) -> pd.DataFrame:
 
 
 def no_run(out: Path, to: str = "") -> InputError:  # a command that needs a run, on a folder without one
-    return InputError(f"no run in {out}" + (f" to {to}" if to else ""), fix="find matches first: nayose resolve records --workspace …")
+    return InputError(f"no run in {out}" + (f" to {to}" if to else ""), fix=f"build it first: python -m er build FILE --out {out}")
 
 
 def key(k: Key) -> dict:  # a field a key or rule reads, as the page words it
@@ -442,3 +442,9 @@ def key(k: Key) -> dict:  # a field a key or rule reads, as the page words it
 
 # ---------- how a match was found: one pair, a customer's pairs, the patterns of the whole file ----------
 
+
+def applied(out: Path, uid: str) -> pd.DataFrame:  # each pair's latest decision the folder holds (decisions/)
+    parts = sorted((out / folder.DECISIONS).glob("part-*.parquet"))
+    if not parts:
+        return pd.DataFrame(columns=[f"{uid}_l", f"{uid}_r", "decision"])
+    return pd.concat([read_parquet(f) for f in parts]).drop_duplicates([f"{uid}_l", f"{uid}_r"], keep="last")

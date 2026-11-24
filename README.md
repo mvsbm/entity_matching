@@ -26,42 +26,57 @@ These numbers come from synthetic records built from real Japanese names, compan
 
 - **It finds almost half the duplicates:** 48.2% of the true pairs on test (95% interval 46.2–50.2%); the rules alone find 9.6%. Test is a split never used for any choice.
 - **The data is hard on purpose.** About 1% of true pairs are direct matches (the same customer ID and name, or the same name, address code and phone), and 11.3% share nothing usable, so no method finds them all ([data](docs/data.md#how-hard-it-is)).
-- **It merged no two unrelated customers:** 0 false merges on test, so the rate is at most 0.26%. Two people of one household (a spouse, a parent or a sibling at one address) can score as high as a duplicate; their pairs are counted apart, 45 on test. On val, people see 27 of the 32 such pairs it accepted labelled "maybe one household" ([usage](docs/usage.md#maybe-one-household)).
+- **It merged no two unrelated customers:** 0 false merges on test, so the rate is at most 0.26%. Two people of one household (a spouse, a parent or a sibling at one address) can score as high as a duplicate; their pairs are counted apart, 45 on test. On val, people see 27 of the 32 such pairs it accepted labelled "maybe one household".
 - **It merges less falsely than the file's person/company flag alone:** on generated files with one name column for both, and company names held out of its name model's training, it calls a kind where it is sure, never a person against a company flag, and takes the flag's elsewhere, flagging where they disagree. It made 33–111 false merges against 38–121 by the flag alone, and called 63–314 companies persons against 102–644; it called more persons companies, 554–2,690 against 306–2,533 ([chapter 7](docs/guide/07-person-or-company.md)).
-- **A million records take 29.7 seconds,** with peak memory 7.1 GB under an 8 GB limit (1,039,995 generated records), and about 3 seconds before that for the reader to read the file as it comes. Every step's work grows about linearly with the file.
+- **A million records take 29.7 seconds,** with peak memory 7.1 GB under an 8 GB limit (1,039,995 generated records), about 3 seconds before that for the reader to read the file as it comes, and 3.2 after it to build the lookup index. Every step's work grows about linearly with the file.
 
 Real data may differ, and only a run on it can tell ([limits](#limits)).
 
-## Use it
+## Quick start
 
 ```bash
-./setup_venv.sh
+./setup_venv.sh          # Windows, in PowerShell: powershell -ExecutionPolicy Bypass -File setup_venv.ps1
 # map the file's columns once: config/settings.toml [columns]
-.venv/bin/nayose resolve records customers.parquet --workspace workspaces/customers # Parquet: one ID per person or company
-.venv/bin/nayose add records new.parquet --workspace workspaces/customers           # a batch joins the run
-.venv/bin/nayose apply decisions --file reviewed.parquet --workspace workspaces/customers   # people's decisions on the pairs
+.venv/bin/python -m er build customers.parquet --out runs/customers     # a full run, then its lookup index
+.venv/bin/python -m er update new.parquet --out runs/customers          # a batch joins the run
+.venv/bin/python -m er decide --out runs/customers                      # people's decisions in review.parquet applied
+.venv/bin/python -m er lookup --out runs/customers --record 1234        # one record looked up, as if it were new
 ```
 
-On Windows, in PowerShell: `powershell -ExecutionPolicy Bypass -File setup_venv.ps1`, then `.venv\Scripts\nayose` in place of
-`.venv/bin/nayose`.
+On Windows, `.venv\Scripts\python` in place of `.venv/bin/python`.
 
-The workspace holds your file (`inputs/`, copied in), `gold.parquet` (each record and its entity's ID, and each one's kind: 1 person, 2 company, 0 not sure), `review.parquet` (pairs for a person to decide or audit), `qa.md` (checks that need no labels) and `report.txt` (the run on one page with no record's value in it, to send when asking for help). Reviewers decide the pairs in a BigQuery table or a Sheet, and the decided rows come back with `apply decisions`. `nayose match records` says what a batch would do without writing it; `build index` and `match record` look one record up. `nayose` (名寄せ, gathering one customer's records) reads as a sentence, verb then noun: every step is in [usage](docs/usage.md), every command in [commands](docs/commands.md).
+The run's folder holds `gold.parquet` (each record and its entity's ID, and each one's kind: 1 person, 2 company, 0 not sure), `review.parquet` (pairs for a person to decide or audit) and `report.txt` (the run on one page with no record's value in it, to send when asking for help). Reviewers fill in `review.parquet`'s `decision`, in a BigQuery table or a Sheet; `decide` applies it, or another file of `<id>_l`, `<id>_r`, `decision`. `lookup` also takes one record's `COLUMN=VALUE` words, or `--file PEOPLE.parquet`: which entity each record of a file would join, writing nothing.
+
+Each job prints one JSON object on stdout, and each step as a JSON line on stderr. Exit 2 is a mistake people fix (the JSON's `error` and `fix`); 75, another job is writing the run. `--pipeline` names another method file (default `config/pipeline.toml`); `--compute memory_limit=8GB threads=4` sets DuckDB's limits for one job.
+
+## Design time
+
+```bash
+.venv/bin/python scripts/generate.py           # synthetic records and their truth: data/medallion/bronze/, data/labels/
+.venv/bin/python scripts/benchmark.py          # quality and cost on generated populations: reports/benchmark.md
+.venv/bin/python scripts/train_name_model.py   # the person-or-company name model: config/kind_names.npz
+```
+
+## Tests
+
+```bash
+.venv/bin/python -m pytest -n auto -q
+```
+
+The tiers, and the rules each test holds: [contributing](CONTRIBUTING.md).
 
 ## Read next
 
 | To | Read |
 |---|---|
-| run it on your records | [usage](docs/usage.md), and [before a run on your file](docs/usage.md#before-a-run-on-your-file) |
-| look up a command | [commands](docs/commands.md) |
-| change the code: the rules, and what checks each | [contributing](CONTRIBUTING.md) |
-| see every step on a small file, with charts | [the demo](notebooks/pdf/demo.pdf) |
-| see what each optimization saves | [the optimizations notebook](notebooks/speedups.ipynb) |
-| see how it is built | [architecture](docs/architecture.md) |
-| understand each method, and why it was chosen | [the guide](docs/guide/01-entity-resolution-and-our-task.md), seven chapters |
+| see how it is built: every job, step and file | [architecture](docs/architecture.md) |
+| understand each method, and why it is the one chosen | [the guide](docs/guide/01-entity-resolution-and-our-task.md) |
 | look up a term | [the glossary](docs/guide/01-entity-resolution-and-our-task.md#words-used-in-this-guide) |
-| check the numbers | [results](docs/results.md) · [performance](docs/performance.md) · [choose report](reports/choose.md) · [kind report](reports/choose_kind.md) · [benchmark](reports/benchmark.md) |
+| know what each step costs | [performance](docs/performance.md) |
+| check the numbers | [benchmark](reports/benchmark.md) |
 | know where the data comes from | [data](docs/data.md) |
-| learn from what went wrong | [lessons](docs/lessons.md) |
+| change the code | [contributing](CONTRIBUTING.md) |
+| see where it is going | [roadmap](docs/roadmap.md) |
 
 ## Limits
 

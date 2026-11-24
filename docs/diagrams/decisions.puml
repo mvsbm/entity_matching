@@ -1,5 +1,5 @@
 @startuml decisions
-title LLD 3 · Decisions: jobs.decide.decide (nayose apply decisions ~--workspace …), scoring nothing
+title LLD 3 · Decisions: jobs.decide.decide (python -m er decide [FILE] ~--out …), scoring nothing, then the index brought up to date
 skinparam defaultFontSize 11
 skinparam rectangle {
   BackgroundColor #F4F6F8
@@ -15,22 +15,23 @@ skinparam note {
 }
 
 actor "people" as people
-file "reviewed.parquet: review.parquet with decision filled in, or any file with <id>_l, <id>_r, decision" as f_decided
+file "the run's review.parquet with decision filled in (given no file), or any Parquet file with <id>_l, <id>_r, decision" as f_decided
 file "gold.parquet (the run's)" as f_gold_in
 
-rectangle "<b>decide</b> · O(D + touched clusters) + O(N)\njobs.decide.decide · steps.job.start · engine.duckdb.connect · folder.run_lock · folder.lockable · folder.held · io.lock · io.object_store\nreport.no_run · folder.finish_writes · folder.latest_decisions · folder.parts · source.decisions · source.file_facts · io.replace_text · io.patiently\nthe checks, every ID a record of the run: source.known · each match pair merges its two clusters: cluster.merge, each cluster one node\nkinds kept, a merged customer's kind again: steps.cluster.customer_kinds\nthe round it is decided in: folder.rounds\nfolder.next_part · folder.stage · steps.write.log_entry · steps.write.run_config · io.config_hash · folder.log · io.code_version" as decide
+rectangle "<b>decide</b> · O(D + touched clusters) + O(N)\njobs.decide.decide · jobs.decide._decide · source.readable · source.find · jobs.build.given · jobs.build.indexed · jobs.build.out_of_memory · jobs.index.update · steps.job.start · engine.duckdb.connect · folder.run_lock · folder.lockable · folder.held · io.lock · io.object_store\nreport.no_run · folder.finish_writes · folder.latest_decisions · source.decisions · source.file_facts · io.replace_text · io.patiently\nthe checks, every ID a record of the run: source.known · each match pair merges its two clusters: cluster.merge, each cluster one node\nkinds kept, a merged customer's kind again: steps.cluster.customer_kinds\nfolder.next_part · folder.stage · steps.write.log_entry · steps.write.run_config · io.config_hash · folder.log · io.code_version" as decide
 
 note right of decide
   stops, with what to fix (exit 2):
   the columns missing; a decision not match or no_match;
   a pair decided both ways; an ID not in the run.
-  A no_match pair splits nothing now: a full run
+  A no_match pair splits nothing here: a full run
   on this folder never accepts it again.
 end note
 
 file "gold.parquet: rewritten; a record joined only this way is resolved by review" as f_gold_out
 file "decisions/part-n.parquet: kept for good; a full run applies them again" as f_kept
 file "steps.json: a decisions entry" as f_steps
+file "index/: brought up to date (jobs.index.update)" as f_index
 
 people --> f_decided
 f_decided --> decide
@@ -38,4 +39,5 @@ f_gold_in --> decide
 decide --> f_gold_out
 decide --> f_kept
 decide --> f_steps
+decide --> f_index
 @enduml

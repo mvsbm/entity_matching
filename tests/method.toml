@@ -1,6 +1,5 @@
-# The chosen pipeline: config/pipeline.toml with config/experiments.py's adopted changes, written by scripts/choose.py.
-# Adopted: rules fold_levenshtein, f2_address_exact, f2_address_prefix, optuna_comparators; Fellegi–Sunter exact_keys_only, optuna_suggestion, compound_phone_keys, sorted_names_for_tfidf, name_keys, bounded_address_keys, u_from_scored_file, u_exact_by_counts, cif_one_digit_off, cif_deletion_key, graded_address, birth_date, birth_date_key, given_name_phone_key, birth_date_deletion_key, u_near_by_keys, fit_u_from_1e6_pairs, company_without_jw_high, name_needed, name_reading_key, given_tail_keys.
-# The tests' own copy (tests/conftest.py's population): what they count on stays when scripts/choose.py writes config/final.toml again.
+# The tests' own method (tests/conftest.py's population): config/pipeline.toml as it was when the tests' expectations were
+# set, so what they count on stays when the method changes.
 
 [fields]
 mandatory = ["id"]
@@ -49,14 +48,9 @@ address_code = { kind = "keys", keys = ["address_code"] }
 cif = { kind = "keys", keys = ["customer_id"] }
 person_name = { kind = "keys", keys = [{ field = "person_name", normalize = "fold" }] }
 company_name = { kind = "keys", keys = [{ field = "company_name", normalize = "company" }] }
-sn_person_name = { kind = "sorted", key = { field = "person_name", normalize = "fold" }, window = 4 }
-sn_company_name = { kind = "sorted", key = { field = "company_name", normalize = "company" }, window = 4 }
-tfidf_person_name = { kind = "tfidf", key = { field = "person_name", normalize = "fold" }, ngram = [2, 3], k = 5, min_cosine = 0.5 }
-tfidf_company_name = { kind = "tfidf", key = { field = "company_name", normalize = "company" }, ngram = [2, 3], k = 5, min_cosine = 0.5 }
 phone_prefecture = { kind = "keys", keys = ["phone", "prefecture"] }
 phone_postal_area = { kind = "keys", keys = ["phone", { field = "postal_code", normalize = "first3" }] }
 phone_name_initial = { kind = "keys", keys = ["phone", { field = "any_name", normalize = "initial" }] }
-sn_person_name_reversed = { kind = "sorted", key = { field = "person_name", normalize = "reversed" }, window = 4 }
 company_name_deletions = { kind = "deletions", key = { field = "company_name", normalize = "company" } }
 cif_deletions = { kind = "deletions", key = "customer_id" }
 person_name_deletions_postal_area = { kind = "deletions", key = { field = "person_name", normalize = "fold" }, within = [{ field = "postal_code", normalize = "first3" }] }
@@ -77,7 +71,7 @@ postal_area_given_tail = { kind = "keys", keys = [{ field = "postal_code", norma
 [model]
 previous_stage = "deterministic"
 stage = "probabilistic"
-generators = ["cif", "sn_company_name", "phone_prefecture", "phone_postal_area", "phone_name_initial", "sn_person_name", "sn_person_name_reversed", "person_name", "company_name", "company_name_deletions", "person_name_deletions_postal_area", "given_name_postal", "address_phone", "address_code_phone", "address_name_initial", "address_code_name_initial", "given_name_address_code", "cif_deletions", "birth_date", "given_name_phone", "birth_date_deletions_prefecture", "name_reading", "phone_given_tail", "postal_given_tail", "postal_area_given_tail"]
+generators = ["cif", "phone_prefecture", "phone_postal_area", "phone_name_initial", "person_name", "company_name", "company_name_deletions", "person_name_deletions_postal_area", "given_name_postal", "address_phone", "address_code_phone", "address_name_initial", "address_code_name_initial", "given_name_address_code", "cif_deletions", "birth_date", "given_name_phone", "birth_date_deletions_prefecture", "name_reading", "phone_given_tail", "postal_given_tail", "postal_area_given_tail"]
 min_match_weight = 8.0
 resolver = { method = "connected_components" }
 bridge = false
@@ -162,10 +156,6 @@ max_fp = 0
 max_fp_rate_hi = 0.05
 margin_steps = 1
 
-[probe]
-pairs = 1000000
-strata = { phone = ["phone"], postal_area = [{ field = "postal_code", normalize = "first3" }] }
-
 [household]
 shared = ["address_code", { field = "address", normalize = "address" }, "phone"]
 apart = [
@@ -173,12 +163,3 @@ apart = [
   { field = "person_name", function = "damerau_levenshtein", threshold = 2, normalize = "given_tail" },
   { field = "birth_date", function = "damerau_levenshtein", threshold = 1 },
 ]
-
-[selection]
-cv_folds = 3
-cv_seed = 0
-decision_p = 0.05
-
-[display]
-explain_show = ["full_name", "company_name", "address", "phone", "customer_id"]
-explain_filled = ["full_name", "address", "customer_id"]

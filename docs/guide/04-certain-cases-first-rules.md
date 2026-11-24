@@ -1,4 +1,4 @@
-[README](../../README.md) · **Guide:** [1 Task](01-entity-resolution-and-our-task.md) · [2 Variants](02-the-same-fact-written-differently.md) · [3 Pairs](03-far-too-many-pairs.md) · **4 Rules** · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · [6 Measuring](06-measuring-and-choosing.md) · [7 Kinds](07-person-or-company.md)
+[README](../../README.md) · **Guide:** [1 Task](01-entity-resolution-and-our-task.md) · [2 Variants](02-the-same-fact-written-differently.md) · [3 Pairs](03-far-too-many-pairs.md) · **4 Rules** · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · [7 Kinds](07-person-or-company.md)
 
 # 4. Certain cases first: rules
 
@@ -52,7 +52,7 @@ The CIF ID is a special case. In our synthetic data, it is never shared by two e
 
 **Fuzzy rules** allow one or two fields to be *close* instead of equal, using the similarity functions from [chapter 2](02-the-same-fact-written-differently.md). For example, rule F1 needs *the name close, plus the same address code and the same phone*. There are seven, including one for a surname change after marriage: same given name, address code and phone.
 
-The close-enough tests are chosen by rule ([chapter 6](06-measuring-and-choosing.md)), and are in `config/final.toml`:
+The close-enough tests are chosen by the decision rule ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)), and are in `config/pipeline.toml`:
 
 | Field | Counts as close when |
 |---|---|
@@ -63,7 +63,7 @@ The close-enough tests are chosen by rule ([chapter 6](06-measuring-and-choosing
 
 **How a rule runs.** Each rule is one plain SQL join on its exact fields. Its fuzzy conditions are then checked only on the pairs that join, and two equal values pass without calling the string function at all. Rule F2 (name and address close, same phone) also joins on the first three characters of the normalized address, where the city starts, so it does not pair everyone who shares four phone digits. A pair found by several rules belongs to the first in order. In a run, a rule also leaves out any key value held by 64 records or more: one customer ID on thousands of records is not one customer's.
 
-The stages run in order, as a **cascade**. Fuzzy rules only add pairs that touch a record the exact rules left unresolved, so the clear cases are settled first. The probabilistic stage follows the same rule: its pairs must touch a record the rules left alone, so it can add a record to a rule cluster. It also scores every pair across two rule clusters, so it can join them. That is one of the changes tested: it finds 8 more true pairs on cross-validated train and loses none ([chapter 6](06-measuring-and-choosing.md#challenge-every-choice-can-overfit)).
+The stages run in order, as a **cascade**. Fuzzy rules only add pairs that touch a record the exact rules left unresolved, so the clear cases are settled first. The probabilistic stage follows the same rule: its pairs must touch a record the rules left alone, so it can add a record to a rule cluster. It also scores every pair across two rule clusters, so it can join them. Measured at design time, it finds 8 more true pairs on cross-validated train and loses none ([chapter 3](03-far-too-many-pairs.md#keeping-every-potential-match)).
 
 ### Why this solution
 
@@ -79,9 +79,9 @@ The stages run in order, as a **cascade**. Fuzzy rules only add pairs that touch
 | val | 11.9% (exact rules alone: 3.6%) | 10.7–13.2% | 0 | 1.01% |
 | **test** | **9.6%** | 8.5–10.9% | **0** | 1.32% |
 
-The exact rules find 4% of the true pairs. The fuzzy rules lift that to 10–12%. No split has a single false merge. A few pairs join two people of one household (18 on train, 5 on val, 5 on test), counted apart, neither true nor false ([chapter 6](06-measuring-and-choosing.md#challenge-every-choice-can-overfit)). The numbers are low by design: the synthetic duplicates rarely agree exactly, as real ones don't ([data](../data.md#how-hard-it-is)).
+The exact rules find 4% of the true pairs. The fuzzy rules lift that to 10–12%. No split has a single false merge. A few pairs join two people of one household (18 on train, 5 on val, 5 on test), counted apart, neither true nor false ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)). The numbers are low by design: the synthetic duplicates rarely agree exactly, as real ones don't ([data](../data.md#how-hard-it-is)).
 
-**Variants we tested.** Each is compared with the rules as written, on the same validation pairs:
+**Variants measured at design time.** Each is compared with the rules as written, on the same validation pairs:
 
 | Change | True pairs gained / lost | Verdict |
 |---|---|---|
@@ -90,7 +90,7 @@ The exact rules find 4% of the true pairs. The fuzzy rules lift that to 10–12%
 | refuse a merge if two given names conflict | +0 / −42 | worse: given-name typos look like conflicts |
 | names within 1 edit (Levenshtein) | +5 / −1 | adopted on train (+18 / −6), then superseded by the last row |
 | F2 with an exact address, or joined on the phone and the address's first three characters | +0 / −0 each | adopted as cheaper: on the phone alone, F2's pairs grow with the square of the file |
-| Optuna's comparators (the table above) | +21 / −1 | adopted (on train, on top of the adopted rows above: +42 / −0) |
+| a search's comparators (the table above) | +21 / −1 | adopted (on train, on top of the adopted rows above: +42 / −0) |
 
 **In short:** rules settle about one true pair in ten for almost nothing, and never wrongly.
 
@@ -111,13 +111,10 @@ Most true pairs are like this: on train, the rules miss 6,355 of them, about nin
 
 ## In the code
 
-- `config/pipeline.toml` `[rules]`: the rules, in logical fields; `design/experiments.py`: `rules_changes` and `RULES_DECISIONS`
-- `design/select.py`: `RulesChooser` (the design analysis, A/B tests, decisions, cost and output), run by `scripts/choose.py`; its tables are in [`reports/choose.md`](../../reports/choose.md)
-- `notebooks/demo.ipynb`, section 6: each rule's pairs on a small file
+- `config/pipeline.toml` `[rules]`: the rules, in logical fields
 - `er/config.py`: `Rule`, `Stage` (`Stage.sql`: a fuzzy condition lets equal values through without the string function), `RulesSpec`, `Comparator`
-- `er/match.py`: `rule_edges` (one SQL join per rule, the first rule wins a pair; for `choose.py`, full runs and increments alike)
-- `er/steps/rules.py`: `steps.rules.rules` (the cascade, `steps.rules._cascade`; each stored cluster merged as one node, `er.cluster.merge`); `design/pipeline.py`: `run_rules` (the run's rules measured against the truth), `preflight`
-- all tables: [results.md](../results.md)
+- `er/match.py`: `rule_edges` (one SQL join per rule, the first rule wins a pair; for full runs and increments alike)
+- `er/steps/rules.py`: `steps.rules.rules` (the cascade, `steps.rules._cascade`; each stored cluster merged as one node, `er.cluster.merge`)
 
 ## Further reading
 

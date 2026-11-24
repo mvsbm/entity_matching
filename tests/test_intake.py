@@ -1,11 +1,11 @@
 """The reader: Parquet files as they come, every column text, what loses nothing fixed and counted."""
-from pathlib import Path
 from dataclasses import replace
 
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
+from pathlib import Path
 
 from er.config import InputError
 from er.settings import load_settings
@@ -118,38 +118,24 @@ def test_a_parquet_file_reads_alike_whatever_its_row_groups_and_text_that_isn_t_
     assert texts["text"] == texts["bytes"] == ({"damaged": 2}, [None, None, "abc"])  # Parquet's text is UTF-8: what isn't says nothing, and is counted
 
 
-def test_a_value_written_as_a_list_reads_as_its_item_and_a_part_an_older_reader_read_is_read_again_once(tmp_path, monkeypatch):
+def test_a_value_written_as_a_list_reads_as_its_item(tmp_path):
     import pyarrow as pa
-    from er import folder, intake
-    spec = intake.InputSpec()
+    from er import intake
     table = pa.table({"id": ["1", "2", "3", "4", "5"],
                       "postal": pa.array([["0708612"], [], [None], ["8700848", "8700849"], None], pa.list_(pa.string())),  # a Parquet list column
                       "phone": pa.array([[1201], [3344], None, [], [7.0]], pa.list_(pa.float64())),
                       "text": ['["大分県"]', "['大分市']", "[株]", "[0708612]", ' ["x"] ']})  # lists a CSV or a text column holds
-    part = tmp_path / "ws" / "inputs" / "0001-x"
-    part.mkdir(parents=True)
-    pq.write_table(table, part / "x.parquet")
-    as_text = lambda r: [{c: x if isinstance(x, str) else None for c, x in row.items()} for row in pd.read_parquet(part / r["files"][0]["read"]).to_dict("records")]
-    with monkeypatch.context() as m:  # as the reader before this one read it: lists kept as JSON
-        m.setattr(intake, "READER", 1)
-        m.setattr(intake, "unlisted", lambda v: None)
-        old = intake.take(part, {part / "x.parquet": "x.parquet"}, spec)
-    assert old["reader"] == 1 and as_text(old)[0]["postal"] == '["0708612"]'
-    r = intake.report(folder.fresh(part, spec))
-    got = as_text(r)
+    pq.write_table(table, tmp_path / "x.parquet")
+    r = intake.take(tmp_path / "part", {tmp_path / "x.parquet": "x.parquet"}, intake.InputSpec())
+    got = [{c: x if isinstance(x, str) else None for c, x in row.items()} for row in pd.read_parquet(tmp_path / "part" / r["files"][0]["read"]).to_dict("records")]
     assert [x["postal"] for x in got] == ["0708612", None, None, "8700848", None]  # the first of several; an empty list or one of nulls, missing
     assert [x["phone"] for x in got] == ["1201", "3344", None, None, "7"] and [x["text"] for x in got] == ["大分県", "大分市", "[株]", "0708612", "x"]
-    assert r["reader"] == intake.READER and r["fixed"] == {"lists": 11, "first of several": 1}  # counted: one loses nothing, the other the rest
-    assert r["files"][0]["versions"][0] == old["files"][0]["sha256"] and r["older_reader"] == [old["files"][0]["sha256"]]  # a run that read the old one still finds its file, and is known to have
-    seconds = (part / intake.REPORT).stat().st_mtime_ns
-    folder.fresh(part, spec)
-    assert (part / intake.REPORT).stat().st_mtime_ns == seconds  # read again once: then as it is
+    assert r["fixed"] == {"lists": 11, "first of several": 1}  # counted: one loses nothing, the other the rest
 
 
-def test_the_reader_reads_its_edge_cases_alike_and_a_part_reads_again_under_new_settings_or_after_a_cut(tmp_path, monkeypatch):
-    import os
+def test_the_reader_reads_its_edge_cases_alike_and_reads_placeholders_as_the_settings_say(tmp_path):
     import pyarrow as pa
-    from er import folder, intake
+    from er import intake
     from er.source import find
     spec = intake.InputSpec()
 
@@ -179,25 +165,12 @@ def test_the_reader_reads_its_edge_cases_alike_and_a_part_reads_again_under_new_
     (exports / "notes.csv").write_text("id\n2\n", encoding="utf-8")
     assert find(exports / "*") == [exports / "a.parquet"] and find(exports) == [exports / "a.parquet"]  # a pattern's files, as a folder's: no folder, no hidden file, Parquet only
 
-    ws = tmp_path / "ws"
+    from er.source import readable
     pd.DataFrame({"id": ["1", "2", "3"], "code": ["-", "N/A", "A1"]}).to_parquet(tmp_path / "f.parquet")
-    part, _ = folder.take_in(ws, tmp_path / "f.parquet", spec)
-    codes = lambda: [x if isinstance(x, str) else None for x in pd.read_parquet(part / intake.report(part)["files"][0]["read"])["code"]]
-    assert codes() == [None, None, "A1"]
-    folder.fresh(part, replace(spec, nulls=("NULL",)))
-    assert codes() == ["-", "N/A", "A1"]  # [input] changed: read again under it
-    replace_ = os.replace
-    def cut(a, b):  # the process stops as a reading again is about to move its report into place
-        if Path(b).name == intake.REPORT:
-            raise KeyboardInterrupt
-        replace_(a, b)
-    monkeypatch.setattr(intake.os, "replace", cut)
-    with pytest.raises(KeyboardInterrupt):
-        intake.take(part, {part / "f.parquet": "f.parquet"}, spec)
-    monkeypatch.undo()
-    assert intake.report(part)["input"] == intake.read_as(replace(spec, nulls=("NULL",)))  # read/ new, the report old
-    folder.fresh(part, spec)  # the next to open it finishes the moves: the reading was complete
-    assert codes() == [None, None, "A1"] and intake.report(part)["input"] == intake.read_as(spec) and not (part / ".read.tmp").exists()
+    for given, want in ((spec, [None, None, "A1"]), (replace(spec, nulls=("NULL",)), ["-", "N/A", "A1"])):  # [input] nulls: what is read as missing
+        with readable(tmp_path / "f.parquet", given) as part:
+            got = pd.read_parquet(find(part)[0])["code"]
+        assert [x if isinstance(x, str) else None for x in got] == want
 
 
 def test_two_files_whose_names_differ_only_by_case_are_refused_not_read_into_one(tmp_path):
@@ -209,17 +182,18 @@ def test_two_files_whose_names_differ_only_by_case_are_refused_not_read_into_one
 
 
 def test_a_file_that_isn_t_parquet_is_refused_saying_how_to_write_it_and_parquet_without_its_ending_is_read(tmp_path):
-    from er import folder, intake
+    from er import intake
+    from er.source import find, readable
     from er.settings import load_settings as settings
     (tmp_path / "x.csv").write_text("id,name\n1,ヤマダ\n", encoding="utf-8")
     (tmp_path / "x.xlsx").write_bytes(b"PK\x03\x04" + b"\0" * 20)
     for f, looks in (("x.csv", "text, perhaps a CSV"), ("x.xlsx", "a ZIP or Excel file")):
-        with pytest.raises(InputError, match=f"not a Parquet file; it looks like {looks}") as e:
-            folder.take_in(tmp_path / "ws", tmp_path / f, intake.InputSpec())
+        with pytest.raises(InputError, match=f"not a Parquet file; it looks like {looks}") as e, readable(tmp_path / f, intake.InputSpec()):
+            pass
         assert "to_parquet" in e.value.fix and "read_csv(path, all_varchar = true)" in e.value.fix
     pd.DataFrame({"id": ["1"]}).to_parquet(tmp_path / "export.dat")
-    part, new = folder.take_in(tmp_path / "ws", tmp_path / "export.dat", intake.InputSpec())
-    assert new and intake.report(part)["rows"] == 1  # Parquet saved without its ending: read as it is
+    with readable(tmp_path / "export.dat", intake.InputSpec()) as part:
+        assert intake.report(Path(part))["rows"] == 1 and len(pd.read_parquet(find(part)[0])) == 1  # Parquet saved without its ending: read as it is
     with pytest.raises(InputError, match=r"\[input\] encodings, margin_text: set nothing") as e:
         settings_file = tmp_path / "settings.toml"
         root = settings().root

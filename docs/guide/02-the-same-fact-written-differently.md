@@ -1,4 +1,4 @@
-[README](../../README.md) · **Guide:** [1 Task](01-entity-resolution-and-our-task.md) · **2 Variants** · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · [6 Measuring](06-measuring-and-choosing.md) · [7 Kinds](07-person-or-company.md)
+[README](../../README.md) · **Guide:** [1 Task](01-entity-resolution-and-our-task.md) · **2 Variants** · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · [7 Kinds](07-person-or-company.md)
 
 # 2. The same fact, written differently
 
@@ -194,7 +194,7 @@ The score runs from 0 (no character in common) to 1 (the same characters).
 |---|---|---|---|
 | カブシキガイシャカネコカイソウテン / カネコカイソウテンカブシキガイシャ | 16 | 0.513 | **1.000** |
 
-To the order-sensitive functions, the same company looks completely different. To Jaccard, it looks identical. But the company normalizer removes the legal form wherever it stands, so both become カネコカイソウテン, and an order-sensitive count works. Jaccard stays in the rules' search space (`design/experiments.py`); the search picks Levenshtein.
+To the order-sensitive functions, the same company looks completely different. To Jaccard, it looks identical. But the company normalizer removes the legal form wherever it stands, so both become カネコカイソウテン, and an order-sensitive count works. Measured at design time on labelled synthetic data, the rules' search over comparators picks Levenshtein.
 
 **Its blind spot, and why we use it nowhere.** Because order doesn't count, Jaccard is the wrong tool for numbers. 0599 and 0959 have the same digits, so their Jaccard is 1.0. So do `千代田区丸の内1-3-17` and `1-3-7`, which may be a different address. For phones and addresses, the order *is* the information.
 
@@ -247,7 +247,7 @@ Reading down each column shows what each function notices:
 
 - **Phonetic codes** such as Soundex give names that sound alike the same code. They were built for English, where spelling and sound often disagree. Katakana is already a phonetic script, and folding does the remaining work.
 - **Weighted edits** could make ガ → カ cost less than ガ → サ. Folding gets the same effect more simply: confusable kana become equal before any comparison.
-- **Character pieces with TF-IDF** compare names by shared fragments, weighting rare fragments more. They suit *finding* candidates, where speed over many names matters more than a precise score, and `scripts/choose.py` measures them there. Their search compares every name with every other, though, so the chosen pipeline finds such pairs by keys instead, such as a name's one-character deletions within its postal area ([chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records)).
+- **Character pieces with TF-IDF** compare names by shared fragments, weighting rare fragments more. They suit *finding* candidates, where speed over many names matters more than a precise score. Their search compares every name with every other, though, so the method finds such pairs by keys instead, such as a name's one-character deletions within its postal area ([chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records)).
 
 **In short:** give each field the function whose idea of a small mistake matches how that field really goes wrong.
 

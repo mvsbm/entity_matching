@@ -5,16 +5,12 @@
 [paths]
 reference = "data/reference"                     # tracked: frozen public reference data for the generator and the name model (SOURCES.md)
 bronze = "data/medallion/bronze"                 # <dataset>.parquet: records as they arrive (generated), the pipeline input
-gold = "data/medallion/gold"                     # <dataset>/: each dataset resolved, a workspace; its state/records/ is the silver layer
-labels = "data/labels"                           # <dataset>.parquet: truth, read only to choose and evaluate
-artifacts = "data/artifacts"                     # what the scripts keep for themselves: models, experiments, benchmark, demo
-experiments = "data/artifacts/experiments"       # leaderboard.parquet
-models = "data/artifacts/models"                 # trained models
-optuna = "data/artifacts/optuna"                 # Optuna studies (SQLite), read by optuna-dashboard
+labels = "data/labels"                           # <dataset>.parquet: truth, read only to evaluate (scripts/benchmark.py)
+artifacts = "data/artifacts"                     # what the scripts keep for themselves: the benchmark's runs
 
 [datasets]
 all = ["train", "val", "test"]                   # one generated population, split by entity: fit / select / report
-synthetic = true                                 # the demo prints records: scripts/export_pdfs.py exports it only while this is true
+synthetic = true                                 # generated records: real (personal) data is never exported
 household = "HOUSEHOLD_ID"                       # the labels' household: a pair of two people of one household is counted apart, not as false
 
 # DuckDB, the columnar engine: past memory_limit it spills to temp_directory, so a file of any size runs in bounded

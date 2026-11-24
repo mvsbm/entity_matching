@@ -5,10 +5,7 @@ existing clusters. `query=None` makes every record a query; with `clusters`, pai
 then dropped, so two clusters can join too.
 
 KeyBlocker            all keys equal                                      self-join             O(N + P)
-SortedNeighbourhood   sort by key, pair records within `window` places    window lead()         O(N log N + N·w)
 DeletionKeys          the value or a one-character deletion of it equal   UNNEST + self-join    O(N·L + P)
-EditKeys              values 1 to k edits apart (Levenshtein)             PassJoin + cpdist     O(U·k³ + S + P)
-TfidfNeighbours       char n-gram TF-IDF, k nearest by cosine (N²: development only, in Python)   O(N·L + U·N·q)
 
 Two values one edit apart (a substitution, an insertion, a deletion or an adjacent swap) always share a deletion key.
 
@@ -18,7 +15,6 @@ its pairs that no other block listed, and joins it in full only if a sampled pai
 skipped and reported. Yield falls as blocks grow, and a placeholder's block (a dummy phone) yields nothing, so this
 spends the work where matches are, with no fixed cap.
 """
-import re
 import time
 import uuid
 from collections.abc import Callable, Iterable
@@ -27,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from er.engine.engine import Engine
-from er.config import Blocker, Budget, DeletionKeys, EditKeys, hashed, InputError, KeyBlocker, keys_of, q, SortedNeighbourhood, TfidfNeighbours
+from er.config import Blocker, Budget, DeletionKeys, hashed, InputError, KeyBlocker, keys_of, q
 from er.engine.duckdb import connect
 
 _CON: Engine | None = None  # for pandas input when the caller passes no connection
@@ -42,7 +38,6 @@ class Records:
         global _CON
         self.engine = engine or (_CON := _CON or connect())
         self.uid, self.views = uid, []
-        self.frame = records if isinstance(records, pd.DataFrame) else None
         base = self._view(records) if isinstance(records, pd.DataFrame) else q(records)
         if clusters is not None:  # a Series uid → cluster, or a table with columns uid and cluster_id
             c = (self._view(pd.DataFrame({uid: clusters.index.to_numpy(), "cluster_id": clusters.to_numpy()}).astype("string"))
@@ -54,8 +49,6 @@ class Records:
                       else self._view(pd.DataFrame({uid: list(query)}, dtype="string")))
         self.touching = False                 # the query is a batch joined against all (an increment), not most of the file
         self.dk: dict[tuple, str] = {}        # deletion-key rows per (key, within), built once (variants)
-        self.near: dict[tuple, str] = {}      # value pairs within k edits per (key, within, k), verified once (near_values)
-        self.most = 2**62                     # a value held by this many records or more pairs by no edit key (candidates: the oversized size)
         self.only: str | None = None          # SQL on a pair's l and r: a pair it is false for is never listed (candidates)
 
     def variants(self, b: DeletionKeys) -> str:
@@ -74,52 +67,6 @@ class Records:
                        f"USING ({keys})")
             self.dk[at] = self._temp(sql)
         return self.dk[at]
-
-    def near_values(self, b: EditKeys, most: int, probe: str | None = None) -> str:
-        """b's distinct value pairs (with their within values) 1 to b.edits edits apart, as a table (w…, v, x, nv, nx):
-        the values and their records. PassJoin (Li et al., VLDB 2011): a value cut into k + 1 segments keeps one of them
-        whole through k edits, at a position at most k from its own, in a value at most k longer or shorter; so the
-        values sharing such a segment are every candidate, and rapidfuzz's cpdist checks them on all cores. A value of
-        fewer than 2(k + 1) characters (k edits in so short a value make another word, and its one-letter segments would
-        pair it with nearly every value), or held by `most` records or more (a placeholder's block), pairs with none. With
-        `probe` (a table of uids), only the pairs with a value one of its records holds. O(U·k³) segment rows, plus the
-        candidates S checked."""
-        at = (b.key.name, tuple(w.name for w in b.within), b.edits, probe)
-        if at not in self.near:
-            from rapidfuzz.distance import Levenshtein
-            from rapidfuzz.process import cpdist
-            k, parts, within = b.edits, b.edits + 1, [q(w.name) for w in b.within]
-            w_ = "".join(f"{w}, " for w in within)
-            values = self._temp(f"""SELECT *, row_number() OVER () AS id FROM (SELECT {w_}{q(b.key.name)} AS v, count(*) AS n, length({q(b.key.name)}) AS len FROM {self.table}
-                WHERE {_filled([b.key.name, *(w.name for w in b.within)])} GROUP BY ALL HAVING count(*) < {most} AND length({q(b.key.name)}) >= {2 * parts})""")  # an id per value: only ids cross into Python
-            seg = lambda length, i: (f"({length}) // {parts} + ({i} >= {parts} - ({length}) % {parts})::INT",  # segment i of a value this long: its length, its start
-                                     f"1 + {i} * (({length}) // {parts}) + greatest(0, {i} - ({parts} - ({length}) % {parts}))")
-            # each row its value's id, not the value: within one block of within values, one id is one value, and a long value isn't copied per segment
-            index = f"SELECT {w_}id, len AS l, i, v[{seg('len', 'i')[1]} : {seg('len', 'i')[1]} + {seg('len', 'i')[0]} - 1] AS s FROM (SELECT *, unnest(range({parts})) AS i FROM {values})"
-            # multi-match-aware starts (Li et al., §4.2): segment i of a value l long, in one len − l longer, only from
-            # max(start − i, start + len − l − (k − i)) to min(start + i, start + len − l + (k − i)); each a complete window
-            lo, hi = f"greatest(st - i, st + len - l - ({k} - i))", f"least(st + i, st + len - l + ({k} - i))"
-            asked = (f"(SELECT * FROM {values} WHERE ({w_}v) IN (SELECT ({w_}{q(b.key.name)}) FROM {self.table} WHERE {q(self.uid)} IN "
-                     f"(SELECT {q(self.uid)} FROM {probe})))" if probe else values)
-            probe_sql = (f"SELECT {w_}id AS ix, l, i, v[p : p + sl - 1] AS s FROM (SELECT *, unnest(range({lo}, {hi} + 1)) AS p FROM "
-                     f"(SELECT *, {seg('l', 'i')[1]} AS st, {seg('l', 'i')[0]} AS sl FROM (SELECT *, unnest(range({parts})) AS i FROM "  # nested: unnests in one SELECT are zipped
-                     f"(SELECT {w_}v, id, len, unnest(range(greatest({parts}, len - {k}), len + {k + 1})) AS l FROM {asked})))) "
-                     f"WHERE p >= 1 AND p + sl - 1 <= length(v)")
-            on = " AND ".join([*(f"a.{w} = c.{w}" for w in within), "a.l = c.l", "a.i = c.i", "a.s = c.s"])
-            ids = self.engine.numpy(f"""SELECT DISTINCT least(a.id, c.ix) AS a, greatest(a.id, c.ix) AS c
-                FROM ({index}) a JOIN ({probe_sql}) c ON {on} AND a.id <> c.ix""")
-            a, c = ids["a"].astype(np.int64), ids["c"].astype(np.int64)
-            if len(a):
-                vs = np.array([None, *(v for v, in self.engine.rows(f"SELECT v FROM {values} ORDER BY id"))], dtype=object)  # vs[id]
-                d = np.concatenate([cpdist(vs[a[i:i + 1_000_000]].tolist(), vs[c[i:i + 1_000_000]].tolist(), scorer=Levenshtein.distance,
-                                           score_cutoff=k, workers=-1) for i in range(0, len(a), 1_000_000)])
-                a, c = a[d <= k], c[d <= k]
-            kept = self._view(pd.DataFrame({"a": a, "c": c}))
-            first = "x.v < y.v"  # each pair as before: its values in order, each with its records
-            self.near[at] = self._temp(f"""SELECT {"".join(f"x.{w}, " for w in within)}least(x.v, y.v) AS v, greatest(x.v, y.v) AS x,
-                CASE WHEN {first} THEN x.n ELSE y.n END AS nv, CASE WHEN {first} THEN y.n ELSE x.n END AS nx
-                FROM {kept} p JOIN {values} x ON x.id = p.a JOIN {values} y ON y.id = p.c""")
-        return self.near[at]
 
     def _view(self, df: pd.DataFrame) -> str:
         name = f"er_{uuid.uuid4().hex[:12]}"
@@ -155,9 +102,8 @@ def _filled(cols: Iterable[str]) -> str:
     return " AND ".join(f"{q(c)} IS NOT NULL" for c in cols) or "TRUE"
 
 
-def block_cols(b: Blocker) -> list[str]:  # the columns naming a generator's block; none for windows and TF-IDF
-    return ([q(k.name) for k in b.keys] if isinstance(b, KeyBlocker)
-            else ["__dk", *(q(w.name) for w in b.within)] if isinstance(b, DeletionKeys) else [])
+def block_cols(b: Blocker) -> list[str]:  # the columns naming a generator's block
+    return [q(k.name) for k in b.keys] if isinstance(b, KeyBlocker) else ["__dk", *(q(w.name) for w in b.within)]
 
 
 def _rows(b: Blocker, r: Records, asked: bool = False) -> str:  # a generator's rows (the query's only, if asked), each with its block columns
@@ -170,8 +116,6 @@ def oversized(b: Blocker, r: Records, from_records: int) -> str | None:
     """The generator's blocks of `from_records` records or more (with a query: those holding a query record), as a
     table of their block columns, `__b` (an id) and `__n` (records); None if there is none. O(N), a group-by."""
     cols = block_cols(b)
-    if not cols:
-        return None
     asked = f" AND count(*) FILTER (WHERE {q(r.uid)} IN (SELECT {q(r.uid)} FROM {r.query})) > 0" if r.query else ""
     table = r._temp(f"""SELECT {', '.join(cols)}, count(*) AS __n, row_number() OVER () AS __b FROM {_rows(b, r)}
                        GROUP BY {', '.join(cols)} HAVING count(*) >= {from_records}{asked}""")
@@ -189,7 +133,6 @@ def pairs_sql(b: Blocker, r: Records, skip: str | None = None, only: str | None 
     """One generator's pairs as SQL: columns l < r (uid strings), each pair once. `skip`: blocks left out (a table from
     oversized()); `only`: the only blocks joined."""
     t, u = r.table, q(r.uid)
-    cl = ", __cluster" if r.cluster else ""
     bcols, blocks, keep = block_cols(b), only or skip, only is not None
     match b:
         case KeyBlocker():
@@ -200,22 +143,6 @@ def pairs_sql(b: Blocker, r: Records, skip: str | None = None, only: str | None 
                         f"ON {on} AND a.{u} <> b.{u} AND {once} WHERE {r.filters('a', 'b', query=False)} AND {_in(bcols, 'a', blocks, keep)}")
             x = f"(SELECT * FROM {t} y WHERE {_in(bcols, 'y', blocks, keep)})"  # both sides' blocks chosen before the join, not its pairs after
             return f"SELECT a.{u} AS l, b.{u} AS r FROM {x} a JOIN {x} b ON {on} AND a.{u} < b.{u} WHERE {r.filters('a', 'b')}"
-        case SortedNeighbourhood():
-            k = q(b.key.name)
-            leads = ", ".join(f"lead({u}, {o}) OVER w AS b{o}" + (f", lead(__cluster, {o}) OVER w AS c{o}" if r.cluster else "")
-                              for o in range(1, b.window))
-            arms = " UNION ALL ".join(f"SELECT {u} AS a, b{o} AS b" + (f", __cluster AS ca, c{o} AS cb" if r.cluster else "") +
-                                      f" FROM s WHERE b{o} IS NOT NULL" for o in range(1, b.window))
-            touch = [f"(x.a IN (SELECT {u} FROM {r.query}) OR x.b IN (SELECT {u} FROM {r.query}))"] if r.query else []
-            cond = " AND ".join(touch + (["x.ca <> x.cb"] if r.cluster else [])) or "TRUE"
-            return (f"WITH s AS (SELECT {u}{cl}, {leads} FROM {t} WHERE {k} IS NOT NULL WINDOW w AS (ORDER BY {k}, {u})) "
-                    f"SELECT least(x.a, x.b) AS l, greatest(x.a, x.b) AS r FROM ({arms}) x WHERE {cond}") if b.window > 1 else \
-                "SELECT NULL::VARCHAR AS l, NULL::VARCHAR AS r WHERE FALSE"
-        case EditKeys():
-            near, k = r.near_values(b, r.most), q(b.key.name)
-            on = lambda x, side: " AND ".join([f"{x}.{k} = p.{side}", *(f"{x}.{q(w.name)} = p.{q(w.name)}" for w in b.within)])
-            return (f"SELECT least(a.{u}, b.{u}) AS l, greatest(a.{u}, b.{u}) AS r FROM {near} p JOIN {t} a ON {on('a', 'v')} "
-                    f"JOIN {t} b ON {on('b', 'x')} WHERE {r.filters('a', 'b')}")
         case DeletionKeys():
             v = r.variants(b)
             same = " AND ".join(["a.__dk = b.__dk", *(f"a.{q(w.name)} = b.{q(w.name)}" for w in b.within)])
@@ -239,27 +166,7 @@ def sample_sql(b: Blocker, r: Records, blocks: str, rows: int) -> str:
             f"ON a.__b = c.__b AND {order} AND a.__k <= {rows} AND c.__k <= {rows} WHERE {r.filters('a', 'c', query=False)}")
 
 
-def _tfidf(b: TfidfNeighbours, r: Records) -> pd.DataFrame:  # N² by design: development files only
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.neighbors import NearestNeighbors
-    uid = r.uid
-    base = (r.frame if r.frame is not None else r.engine.frame(f"SELECT * FROM {r.table}")).dropna(subset=[b.key.name])
-    base = base[[uid, b.key.name]].sort_values(uid, kind="stable").reset_index(drop=True)  # by ID: the neighbours a tie gives don't follow the rows' order
-    query = set(r.engine.frame(f"SELECT {q(uid)} FROM {r.query}")[uid]) if r.query else None
-    qi = np.arange(len(base)) if query is None else np.flatnonzero(base[uid].isin(query).to_numpy())
-    if not len(qi) or len(base) < 2:
-        return pd.DataFrame({"l": pd.Series(dtype="string"), "r": pd.Series(dtype="string")})
-    x = TfidfVectorizer(analyzer="char", ngram_range=b.ngram).fit_transform(base[b.key.name].astype(str))
-    dist, idx = NearestNeighbors(n_neighbors=min(b.k + 1, len(base)), metric="cosine").fit(x).kneighbors(x[qi])
-    ids = base[uid].to_numpy(dtype=object)
-    keep = ((1 - dist) >= b.min_cosine).ravel()
-    a, c = np.repeat(ids[qi], idx.shape[1])[keep], ids[idx.ravel()][keep]
-    lo, hi = np.where(a < c, a, c), np.where(a < c, c, a)
-    out = pd.DataFrame({"l": lo, "r": hi}).astype("string")
-    return out[out["l"] != out["r"]].drop_duplicates(ignore_index=True)
-
-
-def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, engine: Engine | None = None,
+def estimate(b: Blocker, records: pd.DataFrame | str, engine: Engine | None = None,
              uid: str | None = None, oversized_from: int = 2**62, normal: bool = True) -> dict[str, object]:
     """Work before any join: candidate pairs (an upper bound) and the largest block, by group-by; and the blocks of
     `oversized_from` records or more: how many, their records and their pairs; and normal_pairs, those the join lists
@@ -277,10 +184,6 @@ def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, engine: Engi
                                            f"(SELECT count(*) AS c FROM {t} WHERE {_filled(k.name for k in b.keys)} GROUP BY {cols})")
                 return dict(big_o="O(N + P)", filled=f"O({n:,} + {int(p):,})", est_pairs=int(p), largest_block=int(big), **dict(zip(none, map(int, o))),
                             normal_pairs=int(p) - int(o[2]))
-            case SortedNeighbourhood():
-                m = r.engine.value(f"SELECT count({q(b.key.name)}) FROM {t}")
-                return dict(big_o="O(N log N + N·w)", filled=f"O({m:,}·log {m:,} + {m:,}·{b.window})",
-                            est_pairs=m * (b.window - 1), largest_block=b.window, **none, normal_pairs=m * (b.window - 1))
             case DeletionKeys():  # Σ C(k,2) over the key blocks, less the repeats: identical values share all their d keys
                 v, within = r.variants(b), [q(w.name) for w in b.within]
                 p, big, *o = r.engine.row(f"""
@@ -299,15 +202,6 @@ def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, engine: Engi
                              - (SELECT coalesce(sum(greatest(dn - 1, 0) * (__c // d) * (__c // d - 1) // 2), 0) FROM same)""")
                 return dict(big_o="O(N·L + P)", filled=f"O({n:,}·L + {int(p):,})", est_pairs=int(p), largest_block=int(big), **dict(zip(none, map(int, o))),
                             normal_pairs=pairs)
-            case EditKeys():  # exactly the pairs it lists: its value pairs' records multiplied
-                r.most = min(r.most, oversized_from)
-                p = int(r.engine.value(f"SELECT coalesce(sum(nv * nx), 0) FROM {r.near_values(b, r.most)}"))
-                return dict(big_o="O(U·k³ + S + P)", filled=f"O({n:,}·k³ + {p:,})", est_pairs=p, largest_block=0, **none, normal_pairs=p)
-            case TfidfNeighbours():
-                m, length = r.engine.row(f"SELECT count({q(b.key.name)}), avg(length({q(b.key.name)})) FROM {t}")
-                per = (length or 0) * (b.ngram[1] - b.ngram[0] + 1)  # n-grams per record, roughly
-                return dict(big_o="O(N·L + U·N·q)", filled=f"O({m:,}·L + {n_query:,}·{m:,}·{per:.0f})",
-                            est_pairs=n_query * b.k, largest_block=b.k + 1, **none, normal_pairs=n_query * b.k)
     finally:
         if r is not records:
             r.close()
@@ -330,15 +224,6 @@ def estimate_touching(b: Blocker, r: Records) -> dict[str, object]:
             keys = ", ".join(["__dk", *(q(w.name) for w in b.within)])
             sql = (f"WITH k AS (SELECT DISTINCT {keys} FROM {_rows(b, r, asked=True)}), "
                    f"b AS (SELECT count(*) AS c, {asked} AS qn FROM {r.variants(b)} v JOIN k USING ({keys}) GROUP BY {keys}) {total}")
-        case EditKeys():  # the batch's records' pairs, of the value pairs (an upper bound: both records of a pair may be old)
-            p = r.engine.value(f"SELECT count(*) FROM ({pairs_sql(b, r)})")
-            return dict(big_o="O(U·k³ + S + Δ·b)", filled=f"O(N·k³ + {int(p):,})", est_pairs=int(p), largest_block=0)
-        case SortedNeighbourhood():  # each query record pairs with up to window − 1 records on either side
-            m = r.engine.value(f"SELECT count({q(b.key.name)}) FROM {r.asked(t)}")
-            return dict(big_o="O(N log N + Δ·w)", filled=f"O(N log N + {m:,}·{b.window})", est_pairs=2 * m * (b.window - 1), largest_block=b.window)
-        case _:
-            m = r.engine.value(f"SELECT count(*) FROM {r.query}")
-            return estimate(b, r, m)
     p, big = r.engine.row(sql)
     return dict(big_o="O(N + Δ·b)", filled=f"O(N + {int(p):,})", est_pairs=int(p), largest_block=int(big))
 
@@ -348,15 +233,10 @@ def generate(b: Blocker, records: pd.DataFrame | str, uid: str, query: Iterable[
     """One generator's pairs, uid_l < uid_r, as pandas (small files and tests)."""
     r = Records(records, uid, engine, query)
     try:
-        out = _tfidf(b, r) if isinstance(b, TfidfNeighbours) else r.engine.frame(pairs_sql(b, r))
+        out = r.engine.frame(pairs_sql(b, r))
     finally:
         r.close()
     return out.set_axis([f"{uid}_l", f"{uid}_r"], axis=1).astype("string")
-
-
-def found_by(cands: pd.DataFrame, names: Iterable[str]) -> np.ndarray:  # the pairs any of these generators found
-    whole = "(?:^|\\+)(?:" + "|".join(map(re.escape, names)) + ")(?:\\+|$)"  # whole names: person_name ≠ sn_person_name
-    return cands["sources"].str.contains(whole, regex=True).to_numpy(bool)
 
 
 def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: str, query: Iterable[str] | str | None,
@@ -387,28 +267,20 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
         raise InputError(f"{len(blockers)} candidate generators: a run takes at most 63", fix="add fewer name features: each adds its own")
     assert query is not None or not touching, "touching needs the batch as the query"
     r = Records(records, uid, engine, query, clusters, columns=[k.name for b in blockers for k in keys_of(b)])
-    r.touching, r.most, r.only = touching, budget.min_oversized(), only
+    r.touching, r.only = touching, only
     l, rr = f"{uid}_l", f"{uid}_r"
     try:
-        n_query = r.engine.value(f"SELECT count(*) FROM {r.query or r.table}")
         m = budget.min_oversized()
         report, parts, big, pending = [], [], {}, {}
         listed = r._temp("SELECT NULL::BIGINT AS h WHERE FALSE") if keep else None  # each listed pair's hash (config.hashed), before keep()
         if told:
             told(0, len(blockers), "keys")
         for i, b in enumerate(blockers):
-            est = estimate_touching(b, r) if touching else (known or {}).get(b.name) or estimate(b, r, n_query, oversized_from=m, normal=False)  # the budget's count: not made again
+            est = estimate_touching(b, r) if touching else (known or {}).get(b.name) or estimate(b, r, oversized_from=m, normal=False)  # the budget's count: not made again
             t = time.perf_counter()
-            if isinstance(b, TfidfNeighbours):
-                pairs = _tfidf(b, r)
-                if r.cluster:  # TF-IDF is computed in Python, so the cluster filter is applied here
-                    cl = r.engine.frame(f"SELECT {q(uid)}, __cluster FROM {r.table}").set_index(uid)["__cluster"]
-                    pairs = pairs[pairs["l"].map(cl).to_numpy() != pairs["r"].map(cl).to_numpy()]
-                table, n = _kept(r, f"SELECT * FROM {r._view(pairs)}", keep, listed, pending)
-            else:
-                if blocks := oversized(b, r, m):
-                    big[i] = blocks
-                table, n = _kept(r, pairs_sql(b, r, skip=big.get(i)), keep, listed, pending)
+            if blocks := oversized(b, r, m):
+                big[i] = blocks
+            table, n = _kept(r, pairs_sql(b, r, skip=big.get(i)), keep, listed, pending)
             if sum(pending.values()) >= KEEP_SLICE:
                 _bound(r, pending, keep)
             report.append(dict(generator=b.name, **est, pairs=n, seconds=round(time.perf_counter() - t, 3)))

@@ -8,7 +8,7 @@ pipeline {
   agent any
   parameters {
     choice(name: 'RUN', choices: ['none', 'nayose-build', 'nayose-update', 'nayose-lookup'], description: 'a job to start once deployed')
-    string(name: 'ARGS', defaultValue: '', description: "its arguments, comma-separated, e.g. runs/main,match,record,--record,1234")
+    string(name: 'ARGS', defaultValue: '', description: "its arguments, comma-separated, e.g. runs/main,lookup,--record,1234")
   }
   environment {
     IMAGE = "${env.GCP_REGION}-docker.pkg.dev/${env.GCP_PROJECT}/${env.AR_REPO}/nayose:${env.GIT_COMMIT}"

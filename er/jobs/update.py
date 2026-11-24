@@ -12,9 +12,12 @@ from pathlib import Path
 import pandas as pd
 
 from er import folder
+from er.jobs import index
+from er.jobs.build import given, indexed
 from er.config import InputError, Pipeline, lit, q
 from er.report import no_run
 from er.settings import Settings
+from er.source import readable
 from er.steps.candidates import candidates
 from er.steps.cluster import cluster, load_decisions
 from er.steps.fit import u_again
@@ -27,14 +30,18 @@ from er.steps.write import run_config, write
 
 def update(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, *, pipeline_file: Path | None = None,
            echo: Callable[[dict], None] | None = None, told: Callable[..., None] | None = None, reaching_only: bool = True) -> Ran:
-    """The batch at `path` added to the run in `out`, with its reports as a full run writes them (with
-    `pipeline_file`). Nothing is written when every record is already in the run (ran.added 0). `reaching_only` False:
-    every pair the keys list is stored, whatever it scores (design time)."""
+    """The batch at `path` (a Parquet file, a quoted glob or a folder of them), read by the intake
+    (er.source.readable), added to the run in `out`, with its reports as a full run writes them (with
+    `pipeline_file`), then the lookup index brought up to date. Nothing is written when every record is already in the
+    run (ran.added 0). `reaching_only` False: every pair the keys list is stored, whatever it scores (design time)."""
     out = Path(out)
     with folder.run_lock(out):
-        ran = join(path, out, settings, pipeline, echo, told, reaching_only)
+        with readable(path, settings.input, told) as read:
+            ran = join(read, out, settings, pipeline, echo, told, reaching_only)
+            ran.inputs = given(path, ran.inputs, "records")
         if ran.added:
-            write(ran, out, reports=(path, pipeline_file) if pipeline_file else None)
+            write(ran, out, pipeline_file=pipeline_file)
+            ran.index = indexed(out, settings, pipeline, index.update)
         return ran
 
 
@@ -45,8 +52,8 @@ def would_join(path: str | Path, out: Path, settings: Settings, pipeline: Pipeli
     `status` (joins an entity; a new entity; already in the run; or set aside and why); `by`, the rule or `fs` that
     linked it most strongly, and `weight`, its best model link in bits. O(an increment) less its write."""
     out = Path(out)
-    with folder.run_lock(out):
-        ran = join(path, out, settings, pipeline, echo, told)
+    with folder.run_lock(out), readable(path, settings.input, told) as read:
+        ran = join(read, out, settings, pipeline, echo, told)
         engine, u, l, r = ran.engine, q(ran.uid), q(ran.l), q(ran.r)
         if ran.added:
             engine.run(f"""CREATE OR REPLACE TABLE er_match AS WITH
@@ -73,12 +80,9 @@ def join(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, ec
     folder.finish_writes(out)
     if not (state / "model.json").exists():
         raise no_run(out, "add records to")
-    if folder.read_by_older(out):  # a list read as text then, as its item now: the two would never agree
-        raise InputError(f"the run in {out} read its records with an earlier version of the reader: new records would not compare alike with them",
-                         fix=f"run it again first, then add these: nayose resolve records FILE --workspace {out} --overwrite")
     if (state / "config.txt").exists() and (state / "config.txt").read_text(encoding="utf-8") != config:
         raise InputError(f"the pipeline or the column mapping changed since the full run in {out}: an increment would resolve its batch otherwise",
-                         fix="resolve all of them again (nayose resolve records … --overwrite), or add these with the pipeline and config/settings.toml that run used")
+                         fix=f"build the run again with them (python -m er build FILE --out {out} --overwrite), or add these with the pipeline and config/settings.toml that run used")
     job = start(settings, pipeline, echo, told)
     engine, u = job.engine, q(job.uid)
     model = json.loads((state / "model.json").read_text(encoding="utf-8"))

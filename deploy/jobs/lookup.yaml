@@ -21,6 +21,6 @@ spec:
               csi: {driver: gcsfuse.run.googleapis.com, volumeAttributes: {bucketName: "${BUCKET}"}}
           containers:
             - image: ${IMAGE}
-              args: ["runs/main", "match", "record", "--record", "RECORD_ID"]
+              args: ["runs/main", "lookup", "--record", "RECORD_ID"]
               resources: {limits: {cpu: "2", memory: 8Gi}}
               volumeMounts: [{name: bucket, mountPath: /gcs}]

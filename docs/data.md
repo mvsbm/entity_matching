@@ -10,28 +10,24 @@
 
 | Dataset | Entities | Records | Role |
 |---|---|---|---|
-| `train` | 60% | 31,226 | fitting, design analyses, cross-validated threshold and decisions, Optuna objective |
-| `val` | 20% | 10,496 | A/B confirmation and selection checks |
-| `test` | 20% | 10,393 | final report, once per configuration |
+| `train` | 60% | 31,226 | fitting, and every design-time choice: the cross-validated threshold and the decision rule |
+| `val` | 20% | 10,496 | confirming each choice |
+| `test` | 20% | 10,393 | the final report, scored once |
 
 Every table is Parquet. Only `reference/` is in git; everything else rebuilds from the scripts (`.gitignore`). The medallion
 layers follow the pipeline: bronze is the records as they arrive, silver the standardized records each run keeps in its
-folder, gold the resolved workspace. The reference data feeds the generator and the person-or-company name model, so it
+folder, gold the resolved run. The reference data feeds the generator and the person-or-company name model, so it
 sits outside them:
 
 ```
 data/reference/*.json                       public reference data (tracked; SOURCES.md)
 data/medallion/bronze/<dataset>.parquet     records as they arrive (generated)      scripts/generate.py
-data/labels/<dataset>.parquet               truth, read only to choose and evaluate scripts/generate.py
-data/medallion/gold/<dataset>/              each dataset resolved: a workspace     scripts/choose.py, through er.jobs
+data/labels/<dataset>.parquet               truth, read only to measure             scripts/generate.py
+data/artifacts/benchmark/                   the benchmark's runs: a run's folder each   scripts/benchmark.py
                                             (silver: its state/records/)
-data/artifacts/models/*_final.json          the chosen configurations, the fitted model
-data/artifacts/experiments/leaderboard.parquet   one row per experiment and dataset (archive/: earlier passes)
-data/artifacts/optuna/*.db                  the Optuna studies, with --optuna
-data/artifacts/benchmark/, demo/            workspaces of scripts/benchmark.py and the demo
 ```
 
-A workspace is the same wherever it is written, by `scripts/choose.py` here or by `nayose resolve records` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json`, `rounds.json` and `state/`. `nayose` adds `qa.md`, `report.txt` and `review.parquet`; `decisions/` and `set_aside/` appear when there are any. `nayose` also keeps a copy of every records file given to it, in `inputs/`, each with what its reader made of it (`read/`, `intake.json`), and the records as a full run cleaned them, read again by the next while nothing they rest on changed (`prepared/`) ([architecture](architecture.md#the-workspace)).
+A run's folder is the same wherever `python -m er build` writes it: `gold.parquet`, `matches/`, `rule_kept/`, `scored/`, `steps.json`, `state/`, `report.txt`, `review.parquet` and `index/`; `decisions/` and `set_aside/` appear when there are any ([architecture](architecture.md#the-runs-folder)).
 
 ## Reference data: `data/reference/`
 
@@ -44,7 +40,7 @@ Built once from public sources. The downloads are not kept; `SOURCES.md` records
 | `addresses.json` | 46,364 towns, all 47 prefectures | geolonia/japanese-addresses (CC BY 4.0) + yubinbango-data | prefecture, city and town with kana, JIS municipality code, chome, postal code |
 | `registry.json` | 60,000 corporations of three prefectures (Miyagi, Okayama, Fukuoka) | the National Tax Agency's corporate-number site (Public Data License 1.0; processed) | each name's reading, its legal form's reading and bank abbreviation, whether the form leads the name |
 
-Two of them train the person-or-company name model, `config/kind_names.npz` (`scripts/train_name_model.py`, `design.generate.train_name_model`): `individual.json` and `registry.json`, written as `config/generator.toml`'s `kana_confusions` and `branches` say bank records write them; `companies.json` and `addresses.json` are loaded with the personas. A run reads none of them: it loads the model. It trains on one half of them only (`design.generate.name_model_split`): the companies of Miyagi and Okayama, and the first half of the shuffled personas. Fukuoka's companies and the other personas are held out, for `scripts/choose_kind.py` to test on and for `kind_problems` to draw its companies from. The rest is for the generator.
+Two of them train the person-or-company name model, `config/kind_names.npz` (`scripts/train_name_model.py`, `design.generate.train_name_model`): `individual.json` and `registry.json`, written as `config/generator.toml`'s `kana_confusions` and `branches` say bank records write them; `companies.json` and `addresses.json` are loaded with the personas. A run reads none of them: it loads the model. It trains on one half of them only (`design.generate.name_model_split`): the companies of Miyagi and Okayama, and the first half of the shuffled personas. Fukuoka's companies and the other personas are held out, for the person-or-company measurements to test on and for `kind_problems` to draw its companies from. The rest is for the generator.
 
 Two traps in the sources:
 - **Wikidata's class tree:** 13,766 of the 16k "Japanese companies" with kana in the transitive `company` tree are dissolved municipalities. Only direct company types give real companies.
@@ -55,7 +51,7 @@ Two traps in the sources:
 All parameters live in `config/generator.toml`: `[population]` (`design.generate.Spec`) and `[split]` (shares and seed). `design.generate.generate` builds the population, `check` asserts its invariants, and `scripts/generate.py` writes `medallion/bronze/<split>.parquet` and `labels/<split>.parquet` (`--entities` and `--seed` change the population; `--out` writes it there, unsplit, instead of the splits).
 
 - **Entities:** 40,000, 20% companies, and their household members (below). Each entity has `1 + Poisson(0.25)` records.
-  - **Persons** are sampled personas, each at most once, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture. Sampling with replacement would make clones (same name, same prefecture) that no matcher can tell apart, so same-name pairs come only from the persona file itself. A file of more than 50,000 entities is generated in parts (`er.auto.part_persons`): the first draws from the personas as they are, each later one from personas whose given names, with their sex and age, are shuffled among the surnames by the part's seed, so no persona repeats across parts either.
+  - **Persons** are sampled personas, each at most once, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture. Sampling with replacement would make clones (same name, same prefecture) that no matcher can tell apart, so same-name pairs come only from the persona file itself. Past 60,000 entities the benchmark repeats the personas, which makes clones no matcher can tell apart: those files measure cost only.
   - **Companies** are sampled real names with a legal form before or after the name, written as each record's system writes it: カブシキガイシャ, (カ), カ), ｶﾌﾞｼｷｶﾞｲｼｬ or left out; one record in ten adds a branch (ホンシャ, トウキョウシテン …).
   - **Addresses** are real towns with random 番/号, and a real postal code and JIS code.
 - **Multi-valued entities:** each entity owns `1 + Poisson(λ)` phones and addresses (λ = 2.0 for persons, 3.0 for companies: moves and new phones) and names (λ = 0.3 and 1.0: married names, other company names). Each record shows one of them.
@@ -81,7 +77,7 @@ All parameters live in `config/generator.toml`: `[population]` (`design.generate
   - the other half are a spouse or a parent, with an unrelated given name, born 1 to 35 years apart.
 
   A household is never split across train, val and test. With `share = 0`, every record is drawn exactly as in a population without households.
-- **Persons and companies, made hard to tell apart** (`design.generate.kind_problems`, off unless asked for: the benchmark, the demo and the tests turn it on; `scripts/choose_kind.py` builds its own name-only populations). One name column for every kind, NAME_KANA; real company names from `registry.json`'s held-out companies, written as bank records write them (the legal form in full, abbreviated at the front, カ)〇〇, or the end, 〇〇(カ, or left out); company records under their representative's name, the representative a person of the file, half at that person's address and phone; sole traders (legally persons) named like a shop on most of their records; a date in BIRTH_DATE on 30% of company records; and PERSON_ORG_CODE, the file's flag (1 person, 2 company), wrong on 3% of records, on half the representative-named ones and on 30% of the sole traders'. Its own random stream: the records start as `generate` made them.
+- **Persons and companies, made hard to tell apart** (`design.generate.kind_problems`, off unless asked for: the benchmark and the tests turn it on). One name column for every kind, NAME_KANA; real company names from `registry.json`'s held-out companies, written as bank records write them (the legal form in full, abbreviated at the front, カ)〇〇, or the end, 〇〇(カ, or left out); company records under their representative's name, the representative a person of the file, half at that person's address and phone; sole traders (legally persons) named like a shop on most of their records; a date in BIRTH_DATE on 30% of company records; and PERSON_ORG_CODE, the file's flag (1 person, 2 company), wrong on 3% of records, on half the representative-named ones and on 30% of the sole traders'. Its own random stream: the records start as `generate` made them.
 - **Asserts** run on the whole population before it is split: exact rates, digit formats, kind consistency, CONT_ID unique, no CIF shared across entities, address code ↔ address 1:1.
 
 ### How hard it is

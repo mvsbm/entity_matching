@@ -5,7 +5,6 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from er import folder
 from er.match import fit_model, fit_sample_sql, refreshed_u, scored_u, train_fs, u_basis
 from er.steps.job import Job
 
@@ -17,24 +16,22 @@ class Fitted:
     basis: dict = field(default_factory=dict)  # what an increment needs to tell whether those u went stale (er.match.u_basis)
 
 
-def fit(job: Job, n: int, model: dict | None = None, keep: Path | None = None) -> Fitted:
+def fit(job: Job, n: int, model: dict | None = None) -> Fitted:
     """λ from the near-certain rules, u by random sampling, m by EM, on a fixed-size sample of whole postal areas
     (households stay together, and the cost doesn't grow with the file); skipped when a fitted `model` was given. Then
     u measured on this file (the model's choice), which the gate on oversized blocks and the scores both use: the
     sample's u would under-credit a field whose values grow with the file. On a file no bigger than the sample, a fit
-    that samples as many pairs as the file's u (fit_u_max_pairs unset) shares that sample (er.match.scored_sample).
-    `keep`: the workspace whose u samples are read again while what they rest on is unchanged (folder.U_SAMPLED)."""
+    that samples as many pairs as the file's u (fit_u_max_pairs unset) shares that sample (er.match.scored_sample)."""
     t, p, engine, uid = time.perf_counter(), job.pipeline, job.engine, job.uid
-    kept = keep and keep / folder.U_SAMPLED
     if model is None:
         method = fit_model(p.fs)
         sample = engine.frame(f"{fit_sample_sql([method], uid, job.columns())} LIMIT {p.fit_rows}").astype("string")
-        model = train_fs(method, sample, engine, uid, kept=kept)
+        model = train_fs(method, sample, engine, uid)
         job.log.notes += [f"the fit found no two records sharing {f} in its sample of {len(sample):,}, so it learned nothing from them"
                           for f in model["er"].get("skipped", [])]
     fitted, sampled_at = Fitted(model, model), time.perf_counter()
     if p.fs.model.u_from_scored:
-        fitted.scoring, sampled, exact = scored_u(p.fs.model, model, "records", engine, uid, kept=kept)
+        fitted.scoring, sampled, exact = scored_u(p.fs.model, model, "records", engine, uid)
         fitted.basis = u_basis(p.fs.model, sampled, exact, "records", engine)
     job.log.done("fit", "O(n + S·K + P_em·K) + O(N + S·K)", f"n = {model['er']['fit_rows']:,}; u on {n:,} records", t,
                  sample_seconds=round(sampled_at - t, 2), file_u_seconds=round(time.perf_counter() - sampled_at, 2))  # the fit on its sample, then u on this file

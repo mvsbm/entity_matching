@@ -1,4 +1,4 @@
-"""Entity matching & resolution pipeline. No column names live here, except in the synthetic generator (er/generate.py): config/settings.toml maps a file's
+"""Entity matching & resolution pipeline. No column names live here, except in the synthetic generator (design/generate.py): config/settings.toml maps a file's
 columns to logical fields.
 
 Stages and their tables:
@@ -7,9 +7,9 @@ Stages and their tables:
   candidates   records → candidate pairs (uid_l, uid_r, sources)         (er.candidates)
   matching     pairs → scored / decided pairs                            (er.match)
   resolution   accepted pairs → clusters                                 (er.cluster.merge, in a run and at design time)
-  report       qa.md, report.txt, review.parquet    (er.report, by er.run.Run.report)
+  report       report.txt, review.parquet                               (er.report, by er.steps.report)
   evaluation   pairs and clusters vs truth, plus cost                     (design.evaluate)
 
-The command line, nayose: every command declared once (er.cli); an inbox served through it (er.inbox); the same commands in
-a browser (er.ui, er/ui.html).
+The jobs (er.jobs: build, update, decide, lookup) run each as `python -m er JOB` (er/__main__.py), on DuckDB here and
+on Cloud Run alike (deploy/).
 """

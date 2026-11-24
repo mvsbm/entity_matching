@@ -10,19 +10,19 @@ def ran(tmp_path_factory, population):
     s, p, g = population
     ws = tmp_path_factory.mktemp("keep_from") / "run"
     g.df.to_parquet(ws.parent / "all.parquet", index=False)
-    from er import cli
-    assert cli.main(["resolve", "records", str(ws.parent / "all.parquet"), "--workspace", str(ws), "--pipeline", str(s.root / "tests" / "method.toml"), "--format", "json"]) == 0
+    from er.__main__ import main
+    assert main(["build", str(ws.parent / "all.parquet"), "--out", str(ws), "--pipeline", str(s.root / "tests" / "method.toml")]) == 0
     return s, p, ws
 
 
 def test_a_floor_below_0_keeps_the_pairs_down_to_it_and_every_pair_the_default_kept(ran, tmp_path, capsys):
     import duckdb
-    from er import cli
+    from er.__main__ import main
     s, p, ws = ran
     low = tmp_path / "low"
     method = (s.root / "tests" / "method.toml").read_text(encoding="utf-8").replace("\n[threshold]\n", "\n[threshold]\nkeep_from = -10\n", 1)  # the floor, set in the pipeline
     (tmp_path / "low.toml").write_text(method, encoding="utf-8")
-    assert cli.main(["resolve", "records", str(ws.parent / "all.parquet"), "--workspace", str(low), "--pipeline", str(tmp_path / "low.toml"), "--format", "json"]) == 0
+    assert main(["build", str(ws.parent / "all.parquet"), "--out", str(low), "--pipeline", str(tmp_path / "low.toml")]) == 0
     capsys.readouterr()
     read = lambda w: duckdb.sql(f"SELECT * EXCLUDE (match_probability) FROM read_parquet('{w}/scored/*.parquet')").df()
     before, after = read(ws), read(low)

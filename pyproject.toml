@@ -1,11 +1,8 @@
 [project]
 name = "er"
 version = "0.1.0"
-description = "Entity matching and resolution pipeline: candidates → matching → resolution → evaluation"
+description = "Entity resolution jobs (python -m er): candidates, Fellegi–Sunter scoring, people's decisions; DuckDB locally, BigQuery in the cloud"
 requires-python = ">=3.12"
-
-[project.scripts]
-nayose = "er.cli:main"  # the command line: nayose VERB NOUN …
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -21,11 +18,10 @@ include = ["er*", "design*"]  # every subpackage (er.engine, er.steps, er.jobs);
 select = ["F", "B904", "UP017", "TID251"]  # names unused or never defined; an error re-raised without its cause; datetime.UTC; the calls banned below
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"pandas.read_parquet".msg = "use er.io.read_parquet: Arrow opens the file, so the command can't hang at exit"
+"pandas.read_parquet".msg = "use er.io.read_parquet: Arrow opens the file, so a job can't hang at exit"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["TID251"]  # a test's own process; the commands it starts read through er.io
-"notebooks/*" = ["TID251"]
+"tests/*" = ["TID251"]  # a test's own process; the jobs it starts read through er.io
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,56 +1,9 @@
-"""The keys a run lists pairs by: as the method names them (an edit-distance key: er.candidates.EditKeys), the gap
-they leave (design.gap, at design time), and the values read as missing."""
-import itertools
-import json
-import random
+"""The keys a run lists pairs by, as the method names them, and the values read as missing."""
 
 import pandas as pd
 import pytest
-from rapidfuzz.distance import Levenshtein
 
-from er.engine.duckdb import DuckDB
-from er.candidates import Records
-from er.config import EditKeys, InputError, Key
-
-
-@pytest.mark.parametrize("k, grouped", [(1, False), (2, False), (2, True), (3, False)])
-def test_values_within_k_edits_are_every_pair_brute_force_finds_and_no_other(k, grouped):
-    rnd = random.Random(k)
-    vals = ["".join(rnd.choice("アイウカキ") for _ in range(rnd.randint(1, 11))) for _ in range(900)] + \
-           ["".join(rnd.choice("abc") for _ in range(rnd.randint(1, 9))) for _ in range(300)]  # repeats, short values, two scripts
-    df = pd.DataFrame({"uid": [f"r{i}" for i in range(len(vals))], "name": vals, "g": [str(i % 3) for i in range(len(vals))]}, dtype="string")
-    within = (Key("g"),) if grouped else ()
-    r = Records(df, "uid")
-    try:
-        got = {tuple(x) for x in r.engine.rows(f"SELECT {'g, ' if grouped else ''}v, x FROM {r.near_values(EditKeys(name='e', key=Key('name'), within=within, edits=k), 10**9)}")}
-    finally:
-        r.close()
-    u = sorted({(g if grouped else None, v) for v, g in zip(vals, df["g"]) if len(v) >= 2 * (k + 1)})
-    want = {((g,) if grouped else ()) + (min(a, b), max(a, b)) for (g, a), (h, b) in itertools.combinations(u, 2)
-            if g == h and a != b and Levenshtein.distance(a, b) <= k}
-    assert got == want and len(want) > 100  # PassJoin's windows lose none, and cpdist keeps only those within k
-
-
-def test_a_value_a_crowd_holds_pairs_by_no_edit_key():
-    df = pd.DataFrame({"uid": [f"r{i}" for i in range(80)], "name": ["フメイフメイ"] * 70 + ["フメイフメイ1", "フメイフメ", "サトウハナコ", "サトーハナコ", "サトウハナコ", "カトウハナコ", "x", "y", "z", "w"]},
-                      dtype="string")
-    r = Records(df, "uid")
-    try:
-        pairs = {tuple(x) for x in r.engine.rows(f"SELECT v, x FROM {r.near_values(EditKeys(name='e', key=Key('name'), edits=1), 64)}")}
-    finally:
-        r.close()
-    assert ("カトウハナコ", "サトウハナコ") in pairs and not any("フメイフメイ" in p for p in pairs)  # a placeholder's 70 records would pair with each neighbour
-
-
-def test_atoms_follow_the_method_and_the_records(population):
-    from design.sample import atoms
-    s, p, g = population
-    have = {"person_name__kana_fold", "phone", "customer_id", "postal_code", "company_name__nfkc_strip_legal_form_kana_fold", "birth_date"}
-    found = atoms(p, have)
-    assert {a.column for a in found} <= have  # only what the records hold
-    assert any(a.column == "person_name__kana_fold" and a.edits == 2 for a in found)  # compared by a similarity: within two edits
-    assert any(a.column == "customer_id" and a.edits == 1 for a in found) and not any(a.column == "customer_id" and a.edits == 2 for a in found)
-
+from er.config import InputError
 
 
 def _placeholders(population, rows: dict) -> tuple:  # steps.load.placeholders on a table of these columns, as load leaves records
@@ -101,17 +54,6 @@ def test_a_short_phone_held_by_many_records_each_is_kept_and_a_dummy_far_past_th
     assert run.placeholders == {"phone": ["9999"]} and out["phone"].notna().sum() == 20_000
 
 
-def test_the_gap_counts_a_pair_as_the_rules_only_where_they_kept_it():
-    import duckdb
-    from types import SimpleNamespace
-    from design.sample import listed_by
-    engine = DuckDB(duckdb.connect())
-    engine.run("CREATE TABLE rule_edges AS SELECT 'a' AS id_l, 'b' AS id_r UNION ALL SELECT 'c', 'd'")  # both found by a rule
-    engine.run("CREATE TABLE rule_kept AS SELECT 'c' AS id_l, 'd' AS id_r")  # one kept: the other's records were resolved already
-    got = listed_by(SimpleNamespace(engine=engine, l="id_l", r="id_r"), pd.DataFrame({"id_l": ["a", "c"], "id_r": ["b", "d"]}))
-    assert got["ruled"].tolist() == [False, True] and got["listed"].tolist() == [False, True]
-
-
 @pytest.fixture(scope="module")
 def ran(population, tmp_path_factory):
     from er.jobs.build import build
@@ -128,22 +70,11 @@ def test_a_run_lists_by_every_key_the_method_names_and_keeps_none_of_its_own(ran
     assert not (d / "ws" / "state" / "keys.json").exists() and not {"keys", "probe", "gap"} & {x["step"] for x in run.steps}
 
 
-def test_the_gap_counts_from_the_search_floor(ran):
-    from design.gap import gap, thresholds
-    from er.match import review_floor, search_floor
-    s, p, g, d, run = ran
-    assert search_floor(p) < review_floor(p) and thresholds(p) == sorted({search_floor(p), review_floor(p), p.fs.min_match_weight, 20.0})
-    rows = gap(run)["thresholds"]
-    assert [x["bits"] for x in rows] == thresholds(p) and rows[0]["bits"] == search_floor(p)
-    assert all(x["missed_lo"] <= x["missed"] <= x["missed_hi"] for x in rows) and [x["pairs"] for x in rows] == sorted((x["pairs"] for x in rows), reverse=True)
-
-
-def test_a_pipeline_with_keys_to_learn_and_a_workspace_holding_keys_a_run_learned_are_refused(ran, population):
-    from er import folder
+def test_a_pipeline_with_keys_to_learn_or_term_frequencies_is_refused(ran, population):
     from er.config import pipeline_from
     import tomllib
     s, p, g, d, run = ran
-    cfg = tomllib.loads((s.root / "config" / "final.toml").read_text(encoding="utf-8"))
+    cfg = tomllib.loads((s.root / "config" / "pipeline.toml").read_text(encoding="utf-8"))
     with pytest.raises(InputError, match=r"\[keys\] sets nothing") as e:
         pipeline_from({**cfg, "keys": {"records": 50_000}}, s.standardize, s.chains)
     assert e.value.fix == "delete [keys]"
@@ -151,10 +82,4 @@ def test_a_pipeline_with_keys_to_learn_and_a_workspace_holding_keys_a_run_learne
     with pytest.raises(InputError, match="tf sets nothing") as e:  # term frequencies: a level weighs the same whichever value agrees
         pipeline_from({**cfg, "model": {**cfg["model"], "comparisons": [name, *cfg["model"]["comparisons"][1:]]}}, s.standardize, s.chains)
     assert e.value.fix == "delete tf from those comparisons and their levels"
-    (d / "ws" / "state" / "keys.json").write_text(json.dumps({}), encoding="utf-8")
-    try:
-        with pytest.raises(InputError, match="keys learned on its file or left out"):
-            folder.current(d / "ws")
-        folder.current(d / "ws", replacing=True)  # a full run --overwrite replaces state/ whole
-    finally:
-        (d / "ws" / "state" / "keys.json").unlink()
+

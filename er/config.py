@@ -1,6 +1,5 @@
 """Typed, frozen configuration, loaded from config/pipeline.toml (load_pipeline) and written back (dump_pipeline).
 Everything is in field names (config/settings.toml [columns]); nothing here names a file's column."""
-import json
 import math
 import re
 import tomllib
@@ -18,7 +17,7 @@ Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "a
 
 class InputError(ValueError):
     """Something in the input, or in how its columns are mapped, that people must fix; `fix` says how, and `hints`
-    (field → column) what the file's values suggest. nayose prints the two as lines, not a traceback."""
+    (field → column) what the file's values suggest. a job prints the two, not a traceback."""
 
     def __init__(self, message: str, fix: str = "", hints: dict[str, str] | None = None):
         super().__init__(message)
@@ -61,10 +60,6 @@ def toml_of(path: Path | str) -> dict:  # a TOML file people edit, or the mistak
 def checked(ok: object, message: str, path: Path | str = "config/settings.toml") -> None:  # a rule a settings file breaks, as an InputError
     if not ok:
         raise InputError(f"{path}: {message}", fix="correct it there")
-
-
-class OverBudget(InputError):
-    """A rule or candidate generator would exceed the Budget; raised before any join runs."""
 
 
 def column_name(base: str, normalize: tuple[Normalizer, ...]) -> str:
@@ -219,7 +214,7 @@ class Stage:
 
 @dataclass(frozen=True, kw_only=True)
 class Budget:
-    max_pairs_per_record: float               # design time (scripts/choose.py): a rule / generator's pairs, now and projected to
+    max_pairs_per_record: float               # design time: a rule / generator's pairs, now and projected to
                                               # target_rows, above this × records refuse the key; per record, so it means the same
                                               # at any size. A run on a file never stops on it: it samples oversized blocks instead
     max_block_size: int                       # design time: the most records one key value may hold in the labelled files
@@ -277,11 +272,6 @@ class RulesSpec:
         return {c for s in self.stages for r in s.rules for c in (*r.exact, *r.fuzzy, *(k.name for k in r.blocking))}
 
 
-def with_comparators(spec: RulesSpec, stage: str, comparators: Mapping[str, Comparator]) -> RulesSpec:
-    return replace(spec, stages=tuple(replace(s, comparators={**s.comparators, **comparators}) if s.name == stage else s
-                                      for s in spec.stages))
-
-
 # ---------- candidates (probabilistic stage) ----------
 
 @dataclass(frozen=True, kw_only=True)
@@ -291,41 +281,17 @@ class KeyBlocker:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SortedNeighbourhood:
-    name: str
-    key: Key
-    window: int                               # records within this many positions after sorting
-
-
-@dataclass(frozen=True, kw_only=True)
-class TfidfNeighbours:
-    name: str
-    key: Key
-    ngram: tuple[int, int]                    # character n-gram range
-    k: int                                    # neighbours per query record
-    min_cosine: float
-
-
-@dataclass(frozen=True, kw_only=True)
 class DeletionKeys:
     name: str
     key: Key                                  # the value and each one-character deletion of it are its keys
     within: tuple[Key, ...] = ()              # all equal too: limits chance pairs between short values
 
 
-@dataclass(frozen=True, kw_only=True)
-class EditKeys:
-    name: str
-    key: Key                                  # values at most `edits` edits apart (Levenshtein) are a pair: found by PassJoin
-    within: tuple[Key, ...] = ()              # all equal too
-    edits: int = 2
-
-
-Blocker = KeyBlocker | SortedNeighbourhood | TfidfNeighbours | DeletionKeys | EditKeys
+Blocker = KeyBlocker | DeletionKeys
 
 
 def keys_of(b: Blocker) -> tuple[Key, ...]:  # every column a generator reads
-    return b.keys if isinstance(b, KeyBlocker) else (b.key, *b.within) if isinstance(b, DeletionKeys | EditKeys) else (b.key,)
+    return b.keys if isinstance(b, KeyBlocker) else (b.key, *b.within)
 
 
 # ---------- Fellegi–Sunter (probabilistic stage) ----------
@@ -397,28 +363,13 @@ class FSSpec:
         return cols | {k.name for rule in (*m.prior_rules, *m.em_rules) for k in rule}
 
 
-def with_level(model: FSModel, comparison: str, label: str, **changes: object) -> FSModel:
-    """Change the non-exact comparators of one level, e.g. with_level(m, "name", "fold JW high", threshold=0.95)
-    or function="levenshtein", threshold=1."""
-    def level(lv: Level) -> Level:
-        return replace(lv, any_of=tuple((col, comp if comp.function == "exact" else replace(comp, **changes))
-                                        for col, comp in lv.any_of)) if lv.label == label else lv
-    found = [lv for c in model.comparisons if c.name == comparison for lv in c.levels if lv.label == label]
-    assert found, f"no level {label!r} in comparison {comparison!r}"
-    return replace(model, comparisons=tuple(replace(c, levels=tuple(map(level, c.levels))) if c.name == comparison else c
-                                            for c in model.comparisons))
-
-
 # ---------- data, search ----------
 
 @dataclass(frozen=True, kw_only=True)
 class Data:
     bronze_dir: Path                          # <dataset>.parquet: records as they arrive, the input
-    labels_dir: Path                          # <dataset>.parquet: truth, read only to choose and evaluate
-    gold_dir: Path                            # <dataset>/: each dataset resolved, a workspace (er.run)
-    experiments_dir: Path                     # leaderboard.parquet
-    models_dir: Path
-    datasets: tuple[str, ...]                 # every dataset scripts/choose.py writes outputs for: train, val, test
+    labels_dir: Path                          # <dataset>.parquet: truth, read only to evaluate (scripts/benchmark.py)
+    datasets: tuple[str, ...]                 # the generated population's splits: train, val, test (scripts/generate.py)
     unique_id: str
     entity_id: str                            # truth column
     synthetic: bool                           # True for generated data; real (personal) data must not be exported
@@ -436,21 +387,6 @@ class ThresholdRule:
     margin_steps: int
     search_floor: float = 0.0  # bits: the oversized-block gate aims here (er.match.search_floor)
     keep_from: float = field(default=0.0, repr=False)  # bits: a pair the best case says can't reach it is never stored; in the run's hash only when set (run_config)
-
-
-@dataclass(frozen=True, kw_only=True)
-class Probe:
-    """Pairs no pair key lists, sampled within groups matches tend to share (design.probe): each stratum a group as a key
-    names it (records with the same phone, say), and about `pairs` pairs scored in each. It measures, without labels,
-    the matches the keys miss."""
-    strata: tuple[tuple[str, tuple[Key, ...]], ...] = ()
-    pairs: int = 1_000_000
-
-    def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
-        return [(k.column, k.normalize) for _, keys in self.strata for k in keys if k.normalize]
-
-    def used(self) -> set[str]:
-        return {k.name for _, keys in self.strata for k in keys}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -476,47 +412,6 @@ class Household:
 
     def used(self) -> set[str]:
         return {k.name for k in self.shared} | {comp.column(col) for col, comp in self.apart} | {comp.copy(col) for col, comp in self.apart if comp.copy(col)}
-
-
-@dataclass(frozen=True)
-class Candidate:
-    function: Function
-    normalize: tuple[Normalizer, ...] = ()
-    low: float | None = None                  # threshold range; unused for exact
-    high: float | None = None
-    step: float | None = None
-
-    @property
-    def label(self) -> str:
-        return f"{'+'.join(self.normalize) or 'raw'}→{self.function}"
-
-
-@dataclass(frozen=True, kw_only=True)
-class Tune:
-    stage: str                                # the stage whose comparators are searched
-    space: Mapping[str, tuple[Candidate, ...]]
-    n_trials: int                             # the only bound: a wall-clock timeout would make the front depend on machine speed
-    enabled: bool = False                     # off by default: FINAL keeps the suggestions already adopted (design/experiments.py)
-    seed: int
-    storage_path: Path                        # SQLite file the study is saved to; optuna-dashboard reads it
-    study_prefix: str                         # each run is a new study: <prefix>_<timestamp>
-    dashboard_host: str
-    dashboard_port: int
-
-
-@dataclass(frozen=True, kw_only=True)
-class FSTune:
-    """Search over whole components of the probabilistic stage, not just thresholds."""
-    toggle_blockers: tuple[str, ...]          # generators a trial may switch off
-    m_methods: tuple[Literal["em", "labels"], ...]
-    level_thresholds: Mapping[tuple[str, str], tuple[float, float, float]]  # (comparison, level) → low, high, step
-    n_trials: int                             # the only bound, as in Tune
-    enabled: bool = False                     # as in Tune
-    seed: int
-    storage_path: Path
-    study_prefix: str
-    dashboard_host: str
-    dashboard_port: int
 
 
 # ---------- config/pipeline.toml: load, check the fields a file holds, write back ----------
@@ -562,14 +457,8 @@ class Pipeline:
     fs: FSSpec
     generators: Mapping[str, Blocker]         # every generator defined, by name; fs.blockers uses some of them
     threshold: ThresholdRule
-    cv_folds: int
-    cv_seed: int
-    decision_p: float
-    explain_show: tuple[str, ...]             # the worked example's fields
-    explain_filled: tuple[str, ...]
     fit_rows: int = 100_000                   # an unlabelled run fits on a sample of this many records (er.run)
     kind: KindSpec | None = None              # person or company, on every record; None: not told apart
-    probe: Probe = Probe()                    # how the matches no key lists are measured (design.probe)
     household: Household = Household()        # which pairs people see labelled "maybe one household"
 
 
@@ -595,15 +484,9 @@ def generator(name: str, d: dict, chains: Mapping[str, tuple[Normalizer, ...]]) 
     match d["kind"]:
         case "keys":
             return KeyBlocker(name=name, keys=tuple(_key(k, chains) for k in d["keys"]))
-        case "sorted":
-            return SortedNeighbourhood(name=name, key=_key(d["key"], chains), window=d["window"])
-        case "tfidf":
-            return TfidfNeighbours(name=name, key=_key(d["key"], chains), ngram=tuple(d["ngram"]), k=d["k"], min_cosine=d["min_cosine"])
         case "deletions":
             return DeletionKeys(name=name, key=_key(d["key"], chains), within=tuple(_key(k, chains) for k in d.get("within", ())))
-        case "edits":
-            return EditKeys(name=name, key=_key(d["key"], chains), within=tuple(_key(k, chains) for k in d.get("within", ())), edits=d.get("edits", 2))
-    raise ValueError(f"generator {name}: unknown kind {d['kind']!r} (keys, sorted, tfidf, deletions, edits)")
+    raise ValueError(f"generator {name}: unknown kind {d['kind']!r} (keys, deletions)")
 
 
 def _resolver(d: dict) -> Resolver:
@@ -647,18 +530,15 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
     fs = FSSpec(standardize=std, previous_stage=m["previous_stage"], stage=m["stage"], model=model,
                   blockers=tuple(generators[g] for g in m["generators"]), min_match_weight=m["min_match_weight"],
                   resolver=_resolver(m["resolver"]), budget=budget, bridge=m.get("bridge", False), needs=tuple(m.get("needs", ())))
-    t, sel, d = cfg["threshold"], cfg["selection"], cfg["display"]
+    t = cfg["threshold"]
     return Pipeline(fields=Fields(mandatory=tuple(f["mandatory"]), one_of=tuple(map(tuple, f["one_of"])),
                                   optional=tuple(f["optional"]), labels=tuple(f["labels"]), identifying=tuple(f.get("identifying", ()))),
                     rules=rules, fs=fs, generators=generators,
                     threshold=ThresholdRule(grid=tuple(t["grid"]), max_fp=t["max_fp"], max_fp_rate_hi=t["max_fp_rate_hi"],
                                             margin_steps=t["margin_steps"], search_floor=float(t.get("search_floor", 0.0)),
                                             keep_from=float(t.get("keep_from", 0.0))),
-                    cv_folds=sel["cv_folds"], cv_seed=sel["cv_seed"], decision_p=sel["decision_p"],
-                    explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 100_000),
+                    fit_rows=m.get("fit_rows", 100_000),
                     kind=kind_spec(cfg["kind"]) if "kind" in cfg else None,
-                    probe=Probe(strata=tuple((n, tuple(_key(k, chains) for k in keys)) for n, keys in cfg["probe"]["strata"].items()),
-                                pairs=cfg["probe"].get("pairs", 1_000_000)) if "probe" in cfg else Probe(),
                     household=Household(shared=tuple(_key(k, chains) for k in cfg["household"]["shared"]),
                                         apart=tuple((d["field"], _comparator(d, chains)) for d in cfg["household"]["apart"])) if "household" in cfg else Household())
 
@@ -685,7 +565,7 @@ def fields_read(p: Pipeline) -> set[str]:  # every field the rules, the generato
     out |= {k.column for b in p.generators.values() for k in keys_of(b)}
     out |= {col for c in m.comparisons for lv in c.levels for col, _ in lv.any_of} | {col for c in m.comparisons for col in c.null_if_missing}
     out |= {k.column for rule in (*m.prior_rules, *m.em_rules) for k in rule}
-    out |= {*p.explain_show, *p.explain_filled} | {c for s in r.stages for c in s.comparators}
+    out |= {c for s in r.stages for c in s.comparators}
     out |= {k.column for k in p.household.shared} | {col for col, _ in p.household.apart}
     return out
 
@@ -758,115 +638,8 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
     gone += [f"EM rule {[k.column for k in r]}" for r in m.em_rules if r not in em]
     model = replace(m, comparisons=tuple(comparisons), prior_rules=prior, em_rules=em)
     needs = tuple(n for n in p.fs.needs if n in {c.name for c in comparisons})  # [fields] one_of keeps a name comparison
-    strata = tuple((n, keys) for n, keys in p.probe.strata if has(k.column for k in keys))
-    gone += [f"probe {n} (needs {sorted({k.column for k in keys} - present)})" for n, keys in p.probe.strata if (n, keys) not in strata]
     h = p.household
     household = Household(shared=tuple(k for k in h.shared if k.column in present), apart=tuple((c, x) for c, x in h.apart if c in present))
     gone += [f"household label: {c}" for c in sorted({k.column for k in h.shared} | {c for c, _ in h.apart}) if c not in present]
     return replace(p, rules=replace(p.rules, stages=tuple(stages)), fs=replace(p.fs, blockers=tuple(blockers), model=model, needs=needs),
-                   explain_show=tuple(f for f in p.explain_show if f in present),
-                   explain_filled=tuple(f for f in p.explain_filled if f in present), probe=replace(p.probe, strata=strata),
                    household=household), gone
-
-
-def _as_written(chains: Mapping[str, tuple[Normalizer, ...]]) -> tuple[Callable, Callable]:
-    """How config/pipeline.toml writes normalizations (a chain's name where one matches, the first defined winning) and keys."""
-    name_of = {v: k for k, v in reversed(list(chains.items()))}
-    norm = lambda n: name_of.get(tuple(n), list(n))
-    return norm, lambda k: k.column if not k.normalize else {"field": k.column, "normalize": norm(k.normalize)}
-
-
-def generator_dict(b: Blocker, chains: Mapping[str, tuple[Normalizer, ...]] = {}) -> dict:
-    """A generator as config/pipeline.toml writes it (the inverse of generator), normalizations as chain names where one matches."""
-    norm, key = _as_written(chains)
-    match b:
-        case KeyBlocker():
-            return {"kind": "keys", "keys": [key(k) for k in b.keys]}
-        case SortedNeighbourhood():
-            return {"kind": "sorted", "key": key(b.key), "window": b.window}
-        case TfidfNeighbours():
-            return {"kind": "tfidf", "key": key(b.key), "ngram": list(b.ngram), "k": b.k, "min_cosine": b.min_cosine}
-        case DeletionKeys():
-            return {"kind": "deletions", "key": key(b.key), **({"within": [key(k) for k in b.within]} if b.within else {})}
-        case EditKeys():
-            return {"kind": "edits", "key": key(b.key), **({"within": [key(k) for k in b.within]} if b.within else {}), "edits": b.edits}
-
-
-def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> dict:
-    """The inverse of pipeline_from, with normalizations written as chain names where one matches."""
-    norm, key = _as_written(chains)
-    comp = lambda c: {"function": c.function, **({"threshold": c.threshold} if c.threshold is not None else {}),
-                      **({"normalize": norm(c.normalize)} if c.normalize else {})}
-
-    gen = lambda b: generator_dict(b, chains)
-
-    resolver = lambda r: {"method": r.method, **({"cannot_link": list(r.cannot_link)} if r.cannot_link else {})}
-    fs, m = p.fs, p.fs.model
-    f, t = p.fields, p.threshold
-    return {
-        "fields": {"mandatory": list(f.mandatory), "one_of": [list(g) for g in f.one_of], "optional": list(f.optional), "labels": list(f.labels),
-                   **({"identifying": list(f.identifying)} if f.identifying else {})},
-        "budget": {"max_pairs_per_record": fs.budget.max_pairs_per_record, "max_block_size": fs.budget.max_block_size,
-                   "target_rows": fs.budget.target_rows, "benchmark_pairs": fs.budget.benchmark_pairs, "sample_pairs": fs.budget.sample_pairs},
-        "rules": {"resolver": resolver(p.rules.resolver), "stages": [
-            {"name": s.name, **({"comparators": {c: comp(x) for c, x in s.comparators.items()}} if s.comparators else {}),
-             "rules": [{"name": r.name, "exact": list(r.exact), **({"fuzzy": list(r.fuzzy)} if r.fuzzy else {}),
-                        **({"blocking": [key(k) for k in r.blocking]} if r.blocking else {})} for r in s.rules]}
-            for s in p.rules.stages]},
-        "generators": {name: gen(b) for name, b in p.generators.items()},
-        "model": {"previous_stage": fs.previous_stage, "stage": fs.stage, "generators": [b.name for b in fs.blockers],
-                  "min_match_weight": fs.min_match_weight, "resolver": resolver(fs.resolver), "bridge": fs.bridge, "needs": list(fs.needs), "name": m.name,
-                  "prior_rules": [[key(k) for k in r] for r in m.prior_rules], "prior_recall": m.prior_recall,
-                  "u_max_pairs": m.u_max_pairs, "m_method": m.m_method, "em_rules": [[key(k) for k in r] for r in m.em_rules],
-                  "seed": m.seed, "u_from_scored": m.u_from_scored, "u_exact_by_counts": m.u_exact_by_counts, "u_near_by_keys": m.u_near_by_keys,
-                  **({"fit_u_max_pairs": m.fit_u_max_pairs} if m.fit_u_max_pairs else {}), **({"em_median": True} if m.em_median else {}),
-                  **({"em_from_keys": True} if m.em_from_keys else {}), "fit_rows": p.fit_rows,
-                  "comparisons": [{"name": c.name, "null_if_missing": list(c.null_if_missing),
-                                   "levels": [{"label": lv.label, "any_of": [{"field": col, **comp(x)} for col, x in lv.any_of]}
-                                              for lv in c.levels]} for c in m.comparisons]},
-        **({"kind": vars(p.kind)} if p.kind else {}),
-        "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps, "search_floor": t.search_floor,
-                      **({"keep_from": t.keep_from} if t.keep_from else {})},
-        **({"probe": {"pairs": p.probe.pairs, "strata": {n: [key(k) for k in keys] for n, keys in p.probe.strata}}} if p.probe.strata else {}),
-        **({"household": {"shared": [key(k) for k in p.household.shared], "apart": [{"field": col, **comp(x)} for col, x in p.household.apart]}}
-           if p.household.shared or p.household.apart else {}),
-        "selection": {"cv_folds": p.cv_folds, "cv_seed": p.cv_seed, "decision_p": p.decision_p},
-        "display": {"explain_show": list(p.explain_show), "explain_filled": list(p.explain_filled)},
-    }
-
-
-def _toml(v: object, inline: bool = False) -> str:  # one TOML value; tables inside a section are written inline
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, int | float):
-        return repr(v)
-    if isinstance(v, str):
-        return json.dumps(v, ensure_ascii=False)  # JSON's string escapes are valid TOML basic-string escapes
-    if isinstance(v, dict):
-        keys = lambda k: k if re.fullmatch(r"[A-Za-z0-9_-]+", k) else json.dumps(k, ensure_ascii=False)
-        return "{ " + ", ".join(f"{keys(k)} = {_toml(x, inline=True)}" for k, x in v.items()) + " }" if v else "{}"
-    if not inline and any(isinstance(x, dict) for x in v):  # a list of tables, one per line
-        return "[\n" + "".join(f"  {_toml(x, inline=True)},\n" for x in v) + "]"
-    return "[" + ", ".join(_toml(x, inline=True) for x in v) + "]"
-
-
-def dump_toml(cfg: dict, header: str = "") -> str:
-    """A pipeline dict as TOML, in the layout of config/pipeline.toml: one [section] per top-level key, a section's
-    lists of tables as [[section.key]], everything deeper inline."""
-    out = [header] if header else []
-    for section, body in cfg.items():
-        out.append(f"\n[{section}]")
-        arrays = {k: v for k, v in body.items() if isinstance(v, list) and v and all(isinstance(x, dict) for x in v)
-                  and k in ("stages", "comparisons")}
-        out += [f"{k} = {_toml(v)}" for k, v in body.items() if k not in arrays]
-        for k, items in arrays.items():
-            for item in items:
-                out.append(f"\n[[{section}.{k}]]")
-                out += [f"{kk} = {_toml(vv)}" for kk, vv in item.items()]
-    return "\n".join(out) + "\n"
-
-
-def dump_pipeline(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]], path: Path, header: str = "") -> None:
-    text = dump_toml(pipeline_dict(p, chains), header)
-    assert pipeline_from(tomllib.loads(text), p.rules.standardize, chains) == p, "the written pipeline must load back unchanged"
-    Path(path).write_text(text, encoding="utf-8")

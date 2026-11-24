@@ -21,6 +21,6 @@ spec:
               csi: {driver: gcsfuse.run.googleapis.com, volumeAttributes: {bucketName: "${BUCKET}"}}
           containers:
             - image: ${IMAGE}
-              args: ["runs/main", "add", "records", "/gcs/in/batch.parquet"]
+              args: ["runs/main", "update", "/gcs/in/batch.parquet"]
               resources: {limits: {cpu: "4", memory: 16Gi}}
               volumeMounts: [{name: bucket, mountPath: /gcs}]

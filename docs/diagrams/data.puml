@@ -1,5 +1,5 @@
 @startuml data
-title LLD 5 · The workspace: every file, its columns, and who writes it (<id> is [columns] id, <field> a logical field)
+title LLD 5 · The run's folder: every file, its columns, and who writes it (<id> is [columns] id, <field> a logical field)
 set namespaceSeparator none
 left to right direction
 hide circle
@@ -59,10 +59,6 @@ package "the answer: steps.write.write" {
     inputs: file, role, bytes, sha256
     each step: big_o, filled, seconds, peak_memory_gb, facts
   }
-  entity "rounds.json" as rounds {
-    one entry per method the workspace ran; kept by --overwrite
-    config, at, matched, expected_false
-  }
 }
 
 package "state/, for increments: steps.write.write" {
@@ -96,13 +92,18 @@ package "state/, for increments: steps.write.write" {
   }
 }
 
-package "kept for the next run: steps.load.load, steps.fit.fit" {
-  entity "prepared/<key>/records.parquet" as prepared {
-    * <id>
-    <the records as step 1 cleans them: the columns state/records/ holds>
+package "the lookup index: jobs.index.build, jobs.index.update" {
+  entity "index/manifest.json" as manifest {
+    the index's files, what they rest on (each run file's size and time), its records and columns
   }
-  entity "u_sampled.json" as usampled {
-    <hash of a comparison, its sample size and seed, the values it reads, the code> : each level's u from its random pairs
+  entity "index/<id>.duckdb" as ix {
+    each key's table: h, the key's hash · uid, sorted by h
+  }
+  entity "index/<id>.records.duckdb" as ixr {
+    records: h, the uid's hash · the records as state/records/ holds them · entity · resolved
+  }
+  entity "index/<id>-<n>.duckdb" as dx {
+    what changed since the build: the records added, every key of theirs, the records whose entity moved
   }
 }
 
@@ -121,10 +122,6 @@ package "for people: steps.report.report" {
     <comparison> : its level
     <comparison>_bits
   }
-  entity "qa.md" as qa {
-    the label-free checks: summary, fill, steps, weight bands,
-    clusters, kinds, oversized blocks, the review queue
-  }
   entity "report.txt" as report {
     the run on a page, with no record's value in it
   }
@@ -136,7 +133,6 @@ package "people's work and the writers' state" {
     * <id>_r
     decision : match · no_match
     why : decide · audit, from the sheet
-    round : the round it was decided in (rounds.json)
   }
   entity "pending.json" as pending {
     the moves a write still owes; only while one is cut short
@@ -148,7 +144,6 @@ matches }o--|| gold : <id>_l, <id>_r
 rule_kept }o--|| gold : <id>_l, <id>_r
 scored }o--|| gold : <id>_l, <id>_r
 records ||--|| gold : <id>
-prepared ||--|| records : <id>
 review }o--|| gold : <id>_l, <id>_r
 decisions }o--|| gold : <id>_l, <id>_r
 @enduml
