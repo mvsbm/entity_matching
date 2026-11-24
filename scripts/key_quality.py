@@ -3,7 +3,7 @@ records can be read anywhere: which keys find a match no other key or rule finds
 
     python scripts/key_quality.py RUN [--truth TRUTH.parquet] [--points 6]
 
-RUN: a run folder (its run.duckdb, read-only). A match: a pair the run scored at --points or more with a name
+RUN: a build's run folder (its run.duckdb, read-only; an update keeps its last batch's candidates alone, so refused). A match: a pair the run scored at --points or more with a name
 compared ([lookup] likely_from: as people review), or a rule's pair. A key's candidates: the pairs it lists (cands'
 sources). Only it: a match no other key lists and no rule finds, lost were the key to go. Can go together: the keys
 that list no match alone, less, one at a time, the one whose return keeps the most matches, until none is lost.
@@ -29,15 +29,19 @@ def generators() -> list[str]:  # score.sql's, in the order of their bits in sou
 
 def measure(run: Path, truth: Path | None, points: float) -> dict:
     con = duckdb.connect(str(run / "run.duckdb"), read_only=True)
+    if con.execute("SELECT MAX(batch) FROM records").fetchone()[0]:
+        raise SystemExit(f"{run}: updated since its build, and cands holds its last batch's pairs alone: count a build's run")
     names = generators()
     same = "a.entity = b.entity" if truth else "NULL"
     if truth:
         con.execute(f"CREATE TEMP TABLE truth AS SELECT CAST(CONT_ID AS VARCHAR) AS id, CAST(ENTITY_ID AS VARCHAR) AS entity FROM read_parquet('{truth}')")
+        if con.execute("SELECT COUNT(*) FROM records WHERE id NOT IN (SELECT id FROM truth)").fetchone()[0]:
+            raise SystemExit(f"{truth}: it lacks some of the run's IDs (read as text, as the run's are)")
     join = "LEFT JOIN truth AS a ON a.id = s.id_l LEFT JOIN truth AS b ON b.id = s.id_r" if truth else ""
     con.execute(f"""CREATE TEMP TABLE m AS
         SELECT string_split(COALESCE(s.sources, ''), '+') AS keys, s.rule IS NOT NULL AS ruled, {same} AS same
         FROM scored AS s {join} WHERE s.rule IS NOT NULL OR (s.match_weight >= ? AND s.named)""", [points])
-    used = [n for n in names if con.execute("SELECT COUNT(*) FROM every_key WHERE g = ?", [names.index(n)]).fetchone()[0]]
+    used = [n for n in names if n in nayose.config()["score"]["keys"]]  # a key with no rows too: 0, and it can go
     rows = []
     for g, k in enumerate(names):
         if k not in used:
@@ -83,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--truth", type=Path, help="a generated population's truth: CONT_ID, ENTITY_ID")
     p.add_argument("--points", type=float, default=float(nayose.config()["lookup"]["likely_from"]), help="the matches' line, in points")
     a = p.parse_args(argv)
+    if a.points < float(nayose.config()["score"]["keep_from"]):
+        p.error("--points below [score] keep_from: the run keeps no pair below it")
     print(report(measure(a.run, a.truth, a.points), a.truth is not None))
     return 0
 

@@ -95,11 +95,11 @@ The run's tables are DuckDB's. Past `memory_limit` (`--compute memory_limit=8GB`
 
 ## Each key's worth
 
-`python scripts/key_quality.py RUN [--truth TRUTH.parquet]` counts, for each key of a run, the pairs it lists
+`python scripts/key_quality.py RUN [--truth TRUTH.parquet] [--points 6]` counts, for each key of a build's run, the pairs it lists
 (candidates), the matches among them (6 points or more with a name compared, or a rule's), and the matches it alone
 finds, which no other key or rule does. It then names the keys that can go together losing no match, and what they
 cost: their index rows and the candidates only they list. Counts alone, so a run on real records can be read anywhere.
-On 1M generated records, 9 of the 22 keys can go together: 19% of the index's rows and 25% of the candidates.
+On 1M generated records, 9 of the 22 keys can go together: 19% of `every_key`'s rows and 25% of the candidates.
 
 ## What keeps the cost down
 
