@@ -31,6 +31,8 @@ from pathlib import Path
 import duckdb
 import numpy as np
 import pandas as pd
+import sqlglot
+from sqlglot import exp
 
 HERE = Path(__file__).parent
 SQL = HERE / "sql"
@@ -77,14 +79,30 @@ def mapping() -> Path:  # mapping.sql, or the file NAYOSE_MAPPING names (another
 
 
 def mapping_statements(path: Path) -> list[str]:
-    """A mapping's statements, refused unless each makes a temporary table or only reads. A mapping turns the input's
-    columns into fields and keeps nothing: a table of its own would be dropped by the next build (engines.procedures),
-    which makes again all it writes, and a function of its own would replace one of the method's on BigQuery alone."""
+    """A mapping's statements, refused unless each, as BigQuery parses it, is one query or makes one temporary table of
+    a name the method doesn't use. A mapping turns the input's columns into fields and keeps nothing: a table of its
+    own would be dropped by the next build (engines.procedures), which makes again all it writes; a temporary table
+    named as one of the method's would hide it (a statement reads the temporary one first); and a function of its own
+    would replace one of the method's on BigQuery alone."""
+    taken = {"input", "name_weights", "method"} | {m[3] for f in SQL.glob("*.sql") for m in map(WRITE.match, statements(f.read_text(encoding="utf-8"))) if m}
     out = statements(path.read_text(encoding="utf-8"))
-    if bad := [s for s in out if not READ.match(s) or TEMP_FUNCTION.match(s)]:
-        said = " ".join(re.sub(rf"^{LEAD}", "", bad[0], flags=re.S).split())[:80]
-        raise InputError(f"{path.name}: a mapping makes temporary tables alone, and this statement doesn't: {said}",
-                         fix="make it CREATE OR REPLACE TEMP TABLE; what a run keeps is the method's tables")
+    for sql in out:
+        said = " ".join(sql.split())[-100:]
+        try:
+            trees = [t for t in sqlglot.parse(sql, read="bigquery") if t is not None and not isinstance(t, exp.Semicolon)]
+        except sqlglot.errors.ParseError as e:
+            raise InputError(f"{path.name}: a statement doesn't parse as BigQuery's: {said}", fix=str(e).split("\n")[0]) from e
+        one = trees[0] if len(trees) == 1 else None
+        made = one if isinstance(one, exp.Create) and one.kind == "TABLE" and one.find(exp.TemporaryProperty) else None
+        name = made and (made.this.this if isinstance(made.this, exp.Schema) else made.this).name
+        if isinstance(one, exp.Create) and one.kind == "FUNCTION":
+            raise InputError(f"{path.name}: a mapping makes no function of its own: {said}", fix="write it in place, or call one of functions.sql's")
+        if made is not None and name in taken:
+            raise InputError(f"{path.name}: the temporary table {name} has the name of one of the method's tables, which it would hide",
+                             fix="give it a name of its own")
+        if made is None and not isinstance(one, exp.Query):
+            raise InputError(f"{path.name}: a mapping reads, and makes temporary tables alone, one statement to a line ending in ';': {said}",
+                             fix="make it CREATE OR REPLACE TEMP TABLE <a name of its own> AS SELECT …")
     return out
 
 
