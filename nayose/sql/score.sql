@@ -120,10 +120,13 @@ SELECT g, k, id, id IN (SELECT id FROM fresh) AS new FROM (
   UNION ALL SELECT 21, postal_code__first3 || CHR(31) || person_name__kana_fold_long_vowel_last3, id FROM records  -- postal_area_given_tail
 ) WHERE k IS NOT NULL AND g IN (SELECT g FROM generators WHERE used);
 
+CREATE TEMP TABLE IF NOT EXISTS block_size (g INT64, k STRING, n INT64);  -- a block records holds in part, its size whole: a lookup's, else none
+
 CREATE OR REPLACE TEMP TABLE key_blocks AS
 SELECT e.g, e.k, e.id, e.new, s.n
 FROM every_key AS e
-JOIN (SELECT g, k, COUNT(*) AS n FROM every_key GROUP BY g, k HAVING (COUNT(*) > 1 OR @lookup) AND LOGICAL_OR(new)) AS s USING (g, k)
+JOIN (SELECT b.g, b.k, COALESCE(u.n, b.n) AS n FROM (SELECT g, k, COUNT(*) AS n FROM every_key GROUP BY g, k HAVING (COUNT(*) > 1 OR @lookup) AND LOGICAL_OR(new)) AS b
+      LEFT JOIN block_size AS u USING (g, k)) AS s USING (g, k)
 WHERE s.n > 1 OR e.new;
 
 -- every pair of a block under @oversized records that touches the batch, each generator's bit set

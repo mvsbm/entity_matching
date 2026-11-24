@@ -170,19 +170,39 @@ def lookup(engine, record: str | None = None, values: dict | None = None, at_lea
         asked(engine, c, record, values, [me] if record is not None else [], until="every_key")
         keys = {"every_key": set(engine.rows("SELECT g, k FROM every_key WHERE id = @me", {"me": me})),
                 "rule_keys": set(engine.rows("SELECT i, k FROM rule_keys WHERE id = @me", {"me": me}))}
+    big = int(c["score"]["oversized"])
     ids = {me} if record is not None else set()
-    for table, wanted in keys.items():  # 2. the run's index, by key: every record of its blocks, each rule key's too
-        if wanted:
-            ids |= {i for g, k, i in engine.rows(f"SELECT {'g' if table == 'every_key' else 'i'}, k, id FROM {table} WHERE k IN UNNEST(@ks)",
-                                                 {"ks": sorted({k for _, k in wanted})}) if (g, k) in wanted}
-    with engine.scratch():  # 3. it scored against those records alone
-        temp = asked(engine, c, record, values, sorted(ids), outside=held - len(ids))
-        stage(engine, "lookup", scratch=temp, at_least=at_least, likely_from=float(c["lookup"]["likely_from"]),
-              oversized=int(c["score"]["oversized"]), stored=record is not None)
-        view = engine.frame(f"SELECT {', '.join(SHOWN)}{'' if record is not None else ', kind'} FROM records WHERE id = @me", {"me": me}).iloc[0]
-        cands = engine.frame("SELECT * FROM candidates ORDER BY points DESC, id")
-        found = engine.frame("SELECT * FROM entities ORDER BY rule IS NULL, ROUND(points, 2) DESC, points DESC, id")
-        checked = engine.frame("SELECT * FROM checked ORDER BY position")
+    if keys["rule_keys"]:  # 2. the run's index, by key: every record of each rule key
+        ids |= {i for g, k, i in engine.rows("SELECT i, k, id FROM rule_keys WHERE k IN UNNEST(@ks)", {"ks": sorted({k for _, k in keys["rule_keys"]})})
+                if (g, k) in keys["rule_keys"]}
+    blocks = {}  # and of each block, an oversized one's first records by hash alone: the gate's sample (score.sql), one spare
+    if keys["every_key"]:
+        for g, k, i, n in engine.rows("SELECT g, k, id, COUNT(*) OVER (PARTITION BY g, k) AS n FROM every_key WHERE k IN UNNEST(@ks) "
+                                      "QUALIFY COUNT(*) OVER (PARTITION BY g, k) < @big OR ROW_NUMBER() OVER (PARTITION BY g, k ORDER BY er_hash(id)) <= @big + 1",
+                                      {"ks": sorted({k for _, k in keys["every_key"]}), "big": big}):
+            if (g, k) in keys["every_key"]:
+                blocks.setdefault((g, k), [n, set()])[1].add(i)
+    ids |= {i for _, held_here in blocks.values() for i in held_here}
+    while True:
+        with engine.scratch():  # 3. it scored against those records alone; a block read in part, at its size whole
+            sized = [(g, k, n + (record is None)) for (g, k), (n, members) in blocks.items() if n > len(members)]  # a typed record: one more
+            temp = asked(engine, c, record, values, sorted(ids), outside=held - len(ids), sized=sized)
+            kept = {(g, k) for g, k in engine.rows("SELECT g, value FROM gated WHERE decision = 'kept'")} & {(g, k) for g, k, _ in sized}
+            if not kept:
+                stage(engine, "lookup", scratch=temp, at_least=at_least, likely_from=float(c["lookup"]["likely_from"]),
+                      oversized=big, stored=record is not None)
+                view = engine.frame(f"SELECT {', '.join(SHOWN)}{'' if record is not None else ', kind'} FROM records WHERE id = @me", {"me": me}).iloc[0]
+                cands = engine.frame("SELECT * FROM candidates ORDER BY points DESC, id")
+                found = engine.frame("SELECT * FROM entities ORDER BY rule IS NULL, ROUND(points, 2) DESC, points DESC, id")
+                checked = engine.frame("SELECT * FROM checked ORDER BY position")
+        if not kept:
+            break
+        # a big block the gate keeps: every pair of it a candidate, so it is read whole, from the run's index (past the
+        # scratch, whose every_key is the lookup's own), and scored again
+        for g, k, i in engine.rows("SELECT g, k, id FROM every_key WHERE k IN UNNEST(@ks)", {"ks": sorted({k for _, k in kept})}):
+            if (g, k) in kept:
+                blocks[g, k][1].add(i)
+                ids.add(i)
     text = lambda v: None if pd.isna(v) else str(v)
     shown = lambda x: {f: text(x[f]) for f in SHOWN}
     compared = lambda x: {k: x[f"level_{k}"] for k in ("name", "company", "address", "phone", "cif", "birth")}
@@ -212,12 +232,19 @@ def unchanged(engine, fix: str) -> None:
         raise InputError(CHANGED, fix=fix)
 
 
-def asked(engine, c: dict, record: str | None, values: dict | None, ids: list, until: str | None = None, outside: int = 0) -> set:
+def asked(engine, c: dict, record: str | None, values: dict | None, ids: list, until: str | None = None, outside: int = 0,
+          sized: list = ()) -> set:
     """The run as a lookup sees it, in temporary tables of the run's names (run_file's scratch): records and gold, of
     `ids` alone (each read by ID: on BigQuery, its clustering's blocks), placeholders whole; the record asked about,
     a batch of its own (a stored one's batch raised, or `values` made a record by records.sql); then score.sql, up to
-    `until`, `outside` the run's records the temporary records don't hold. The temporary tables' names."""
-    temp = set()
+    `until`, `outside` the run's records the temporary records don't hold, `sized` each block they hold in part, at its
+    whole size (g, k, n). The temporary tables' names."""
+    temp = {"block_size"}
+    if sized:  # three arrays: a parameter is an array of values on both engines
+        engine.run("CREATE OR REPLACE TEMP TABLE block_size AS SELECT g, @k[OFFSET(i)] AS k, @n[OFFSET(i)] AS n FROM UNNEST(@g) AS g WITH OFFSET AS i",
+                   {"g": [g for g, _, _ in sized], "k": [k for _, k, _ in sized], "n": [n for _, _, n in sized]})
+    else:
+        engine.run("CREATE OR REPLACE TEMP TABLE block_size (g INT64, k STRING, n INT64)")
     for table, which in (("records", "WHERE id IN UNNEST(@ids)"), ("gold", "WHERE id IN UNNEST(@ids)"), ("placeholders", "")):
         engine.run(f"CREATE TEMP TABLE {table} AS SELECT * FROM {table} {which}", {"ids": ids} if which else None)
         temp.add(table)

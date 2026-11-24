@@ -165,8 +165,11 @@ alone would score it. It reads what it touches, in three steps:
    rows go through `records.sql` with `@lookup`: the run's placeholders still apply, and the record adds none of its
    own.
 2. **The run's key index,** read by those keys. `score.sql` keeps every record's keys as the run's tables `every_key`
-   and `rule_keys`, clustered by key on BigQuery. Every record of the record's blocks, and of its rule keys, comes
-   back.
+   and `rule_keys`, clustered by key on BigQuery. Every record of its rule keys comes back, and of its blocks, but of
+   an oversized block (`oversized` records or more) only the first 65 by hash: the gate's sample and one more, so the
+   record asked about may rank anywhere. Such a block's whole size goes in `block_size`, which `key_blocks` takes
+   for its count, so sizes and the gate's report stay exact. If the gate keeps such a block, every pair of it is a
+   candidate: the lookup reads the rest of it from the run's index and scores again.
 3. **The record scored against those records alone,** read by ID, with their entities (`records` and `gold` are
    clustered by ID). `score.sql` scores every candidate, whatever its points, with the run's model as it stands. Its
    prior is read at the run's size: `@outside` counts the records the step doesn't hold.
@@ -183,7 +186,8 @@ record. It also reports, key by key, what was looked up and what the gate decide
 
 **BigQuery** runs the SQL as written, in one session per job, so the temporary tables die with the job. The run's
 dataset is the session's default, so statements name tables alone. Calls to the deploy's functions are qualified with
-the dataset (`BigQuery.CALLS`).
+the dataset (`BigQuery.CALLS`), and so are the method's own SQL functions, which the deploy made in the dataset
+(`BigQuery.OWN`): a statement that would make one again, Python's (a lookup's, the report's), isn't sent.
 
 **A statement that may not need to run** says when it does, in a comment: `-- when: <condition>`, a SQL condition
 on the job's values and tables. `run_file` asks the engine and skips the statement where it is false. The deploy
@@ -239,7 +243,7 @@ Where sqlglot's translation answers otherwise, `as_bigquery` rewrites the node t
 A job that writes (build, update, decide) takes the folder's lock, an OS lock that the system releases if the process
 dies. It works on a copy, `run.duckdb.new` (a build starts from an empty one), and renames the copy over `run.duckdb`
 once done. A run is therefore never half written, and a job that fails leaves the run as it was. A job that reads
-(match, lookup) copies the run to a folder of its own, so it never waits and writes nothing back. `build --overwrite`
+(match, lookup) never waits and writes nothing back: match works on a copy of the run, a lookup on the run itself, read-only (on a copy on Windows, where an open file can't be replaced). `build --overwrite`
 replaces the run and keeps people's decisions. An update with nothing new changes nothing and says `added: 0`.
 
 Each job prints one JSON object on stdout, and one JSON line on stderr as each stage ends. The exit code is 0 on

@@ -87,7 +87,7 @@ These use the US list price; the region's price differs (`asia-northeast1` is th
 | decide, as its own job | a run of 1M | 0.6 s |
 | lookup, as its own job | 200k | 1.2 s |
 
-A lookup reads the key index by its keys, and the records it touches by ID: 2.2 s at 1,039,995 records as a job of its own, most of it copying the run's 1.28 GB file first. On BigQuery, 96 statements for a stored record and 169 for typed values, each billed at least 10 MB a table: about 0.7 GB, whatever the run's size, plus the index's blocks its keys fall in (`scripts/estimate_cost.py` can't tell those from the whole index, 1.7 GB at 1M). `scripts/estimate_cost.py` doesn't measure an update's bytes.
+A lookup reads the key index by its keys, and the records it touches by ID. Of an oversized block it reads the gate's sample alone (65 records), so it reads at most about 65 records a block key whatever the run's size (a rule key's records it reads whole): at 1M, 69 at the median and 160 at p99; at 1B, without the sample, a lookup would read whole blocks of thousands. 1.3 s at 1,039,995 records as a job of its own, the run read in place, read-only. On BigQuery, 48 statements for a stored record and 78 for typed values: Python's statements call the functions the deploy made, never making them again. Each is billed at least 10 MB a table it reads: about 0.4 GB, whatever the run's size, plus the index's blocks its keys fall in (`scripts/estimate_cost.py` can't tell those from the whole index, 1.7 GB at 1M). `scripts/estimate_cost.py` doesn't measure an update's bytes.
 
 ## Memory and disk
 

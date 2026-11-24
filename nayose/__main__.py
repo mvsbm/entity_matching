@@ -9,8 +9,8 @@
     python -m nayose lookup --out runs/main --file people.parquet  each record of a file looked up
 
 A run is a folder: run.duckdb (its tables), report.txt, matched/. A job that writes takes the folder's lock, works on
-a copy of run.duckdb and puts it in place whole when done, so a run is never half written and readers (match, lookup:
-each on a copy of its own) never wait. Each prints one JSON object on stdout; each stage, as it ends, one JSON line on
+a copy of run.duckdb and puts it in place whole when done, so a run is never half written and readers never wait
+(match on a copy of its own, a lookup on the run itself, read-only: on a copy on Windows). Each prints one JSON object on stdout; each stage, as it ends, one JSON line on
 stderr. Exit codes: 0; 2, a mistake people fix (the JSON says what is wrong, and the fix); 75, another job is writing
 the run: try again later. The method is nayose/sql/, its values nayose/config.toml, the input's columns mapping.sql.
 """
@@ -72,9 +72,16 @@ def writing(out: Path, make: bool = False, compute: dict | None = None):
 
 
 @contextlib.contextmanager
-def reading(out: Path):  # the run in `out` to read, on a copy of its own: a lookup's or a match's statements write nothing back
+def reading(out: Path, copy: bool = True):  # the run in `out` to read: a match's statements write, on a copy of its own
     if not (out / RUN).is_file():
         raise InputError(f"no run at {out}", fix=f"check the path, or build one: python -m nayose build FILE --out {out}")
+    if not copy and os.name != "nt":  # a lookup's write temporary tables alone: the run itself, read-only; a writer's
+        engine = DuckDB(out / RUN, read_only=True)  # os.replace leaves this open file as it was (Windows can't: a copy there)
+        try:
+            yield engine
+        finally:
+            engine.close()
+        return
     with tempfile.TemporaryDirectory(prefix="nayose-") as tmp:
         shutil.copyfile(out / RUN, Path(tmp) / RUN)
         engine = DuckDB(Path(tmp) / RUN)
@@ -183,7 +190,7 @@ def lookup(a: argparse.Namespace) -> dict:
     values = dict(typed(x) for x in a.given)
     if sum(map(bool, (values, a.record, a.file))) != 1:
         raise InputError("give one of: a record's COLUMN=VALUE words, --record ID, --file FILE", fix="for example: python -m nayose lookup --out runs/main --record 1234")
-    with reading(a.out) as engine:
+    with reading(a.out, copy=False) as engine:
         if not a.file:
             return nayose.lookup(engine, record=a.record, values=values or None, at_least=a.at_least, most=a.count)
         id_column, out = nayose.config()["input"]["id"], []
