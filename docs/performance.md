@@ -30,7 +30,7 @@ What a run costs, and how each figure is measured. BigQuery bills in one of two 
 |---|---|---|---|
 | records | `records.sql` | O(Δ·L) + O(N) | each record of the batch is read and standardized; placeholders are counted over the whole run |
 | fit (a build) | `fit.sql`, `em.py` | O(n + P_em·K) + O(N + S·K) | EM learns on a fixed sample. u is counted exactly for the equality and one-edit levels (by value counts, never pair by pair) and sampled for the rest |
-| fit (an update) | `fit.sql` | O(N) + O(S·K) for a stale comparison | the build's model is kept; u is measured again, and a sampled comparison is sampled again only once it has gone stale |
+| fit (an update) | `fit.sql` | O(N) + O(S·K) for a stale comparison | the build's model is kept; u is counted again exactly, and the file is sampled only when a comparison has gone stale |
 | score | `score.sql` | O(N·L) + O(Δ·b + C_Δ·K·L²) | every record's keys are made again, and kept as the key index; then the batch's blocks are joined and their pairs compared |
 | decide | `decide.sql` | O(D + N) | connected components over the match decisions; then every record placed |
 | match | `match.sql` | O(C + P·F) | a scan of the scored pairs; those kept are joined to their records |
@@ -106,4 +106,4 @@ Every speed-up keeps every table the same: `tests/test_parity.py` holds each job
 - **Cheap tests before a comparison call:** an edit distance is never less than the two lengths' difference, nor less than the distance between the values' `one_byte_hash` copies. A Jaro–Winkler is never more than the lengths and the common start allow (`jaro_winkler_most`), nor, for two katakana names, more than the letters both hold allow (`name_jw_most`, from each record's letter bits). Those are tested first, so many pairs never reach the JavaScript (or, on DuckDB, rapidfuzz).
 - **On DuckDB, its own functions** where both strings are one byte per character, and a comparison told its threshold stops once the answer is known (`cl_*_cut`). BigQuery computes it in full.
 - **Each distinct name scored once** by the name model, however many records share it.
-- **An update touches its batch:** only the pairs touching it are scored, and u is sampled again only for a comparison that has gone stale.
+- **An update touches its batch:** only the pairs touching it are scored, and the file is sampled for u only when a comparison has gone stale: a 1% update at 1M bills 4,302 MB, not 4,691, and makes 20,653 comparison calls, not 352,909. A statement an update needn't run says so (`-- when:`), and isn't run, since BigQuery bills a statement's scans whatever it returns.
