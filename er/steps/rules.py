@@ -7,17 +7,11 @@ clusters and each new record alone). Writes rule_edges (every rule's pairs, with
 (their scores, when a model is given), rule_kept (the pairs the cascade kept), rule_clusters, and er_untrusted_<i>
 (each rule's values held by an oversized block)."""
 import time
-from dataclasses import dataclass
 
 from er.cluster import merge
 from er.config import q
 from er.match import rule_edges, score_fs
 from er.steps.job import Job
-
-
-@dataclass
-class Ruled:
-    seconds: dict[str, float]                 # each rule's join, in seconds
 
 
 def sized(clusters: str, op: str, uid: str) -> str:  # the records in a cluster whose size is `op` 1: "> 1" joined, "= 1" alone
@@ -29,23 +23,22 @@ def alone(a: str, b: str, uid: str) -> str:  # SQL: the pair (a, b) touches a re
     return f"NOT ({a} IN {joined} AND {b} IN {joined})"
 
 
-def rules(job: Job, n: int, scoring: dict | None, batch: str | None = None) -> Ruled:
+def rules(job: Job, n: int, scoring: dict | None, batch: str | None = None) -> None:
     """The rules' pairs and their cascade. A full run starts rule_clusters here, each record alone; an increment
     (`batch`: new_records) has started it from the stored clusters. `scoring`: the model the rules' pairs are scored
     with, for scored/ (None: design time measures the rules alone, before any model is fitted)."""
     t, engine, uid = time.perf_counter(), job.engine, job.uid
     if batch is None:
         engine.run(f"CREATE OR REPLACE TABLE rule_clusters AS SELECT {q(uid)}, {q(uid)} AS cluster_id FROM records")
-    seconds = _cascade(job, scoring, batch)
+    _cascade(job, scoring, batch)
     if batch is None:
         p = job.count("rule_edges")
         job.log.done("rules", "O(N + Σ P_r·L²) + O(E·log E + N)", f"O({n:,} + {p:,} pairs)", t, pairs=p, kept=job.count("rule_kept"))
     else:
         job.log.done("rules", "O(|Δ|·Σ b + scan)", f"O({job.count('new_ids'):,} new records)", t, kept=job.count("rule_kept"))
-    return Ruled(seconds)
 
 
-def _cascade(job: Job, scoring: dict | None, batch: str | None) -> dict[str, float]:
+def _cascade(job: Job, scoring: dict | None, batch: str | None) -> None:
     """The rules' pairs (er.match.rule_edges: every record, or a batch against all), less the values each rule
     doesn't trust (_untrusted), each scored by the model too (rule_scores: what scored/ keeps of them), then the
     cascade into rule_clusters: a stage's pair is kept only if it touches a record still unresolved, and merged in
@@ -56,7 +49,7 @@ def _cascade(job: Job, scoring: dict | None, batch: str | None) -> dict[str, flo
     for i, st, rule in rules_spec.each():
         if (untrusted := _untrusted(job, i, rule.name, st.keys(rule), within=batch)):
             trust[i] = f"NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
-    _, seconds = rule_edges(rules_spec, "records", engine, uid, batch=batch, trust=trust, into="rule_edges", told=job.log.told)
+    rule_edges(rules_spec, "records", engine, uid, batch=batch, trust=trust, into="rule_edges")
     if scoring is None:  # design time measures the rules alone, before any model is fitted: nothing reads their weights
         engine.run("CREATE OR REPLACE TABLE rule_edges AS SELECT *, NULL::DOUBLE AS match_weight FROM rule_edges")
     else:
@@ -67,7 +60,6 @@ def _cascade(job: Job, scoring: dict | None, batch: str | None) -> dict[str, flo
         engine.run(f"""CREATE OR REPLACE TABLE er_stage AS SELECT * FROM rule_edges WHERE stage = '{st.name}' AND {alone(l, r, uid)}""")
         engine.run("INSERT INTO rule_kept SELECT * FROM er_stage")
         merge(engine, "rule_clusters", "er_stage", "rule_clusters", uid)
-    return seconds
 
 
 def _untrusted(job: Job, i: int, rule: str, rule_keys: list[str], within: str | None = None) -> str | None:

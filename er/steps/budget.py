@@ -16,7 +16,6 @@ BYTES_PER_PAIR = 350  # shortcut: measured at 1M (candidate and score tables hel
 @dataclass
 class Budget:
     plan: pd.DataFrame                        # per rule and generator: pairs, pairs per record, the largest block, the oversized blocks
-    estimates: dict[str, dict]                # each generator's estimate, by name: the candidates step reads them, not the records
 
 
 def capacity(engine: Engine) -> int:
@@ -32,11 +31,8 @@ def budget(job: Job, n: int, stop: bool = True) -> Budget:
     which reads plan["normal"] against capacity."""
     t, rows, p = time.perf_counter(), [], job.pipeline
     m = p.fs.budget.min_oversized()
-    estimates = {}
     for kind, x in [*(("rule", k) for k in p.rules.blockers()), *(("generator", g) for g in p.fs.blockers)]:
         est = estimate(x, "records", job.engine, oversized_from=m)
-        if kind == "generator":
-            estimates[x.name] = est
         rows.append(dict(kind=kind, name=x.name, **est))
     plan = pd.DataFrame(rows).assign(per_record=lambda d: (d["est_pairs"] / max(n, 1)).round(2),
                                      normal=lambda d: d["normal_pairs"])
@@ -47,4 +43,4 @@ def budget(job: Job, n: int, stop: bool = True) -> Budget:
                          f"({cap:,} pairs at about {BYTES_PER_PAIR} bytes each); the most: " +
                          ", ".join(f"{x.name} {x.normal:,}" for x in plan.nlargest(3, "normal").itertuples()),
                          fix="give DuckDB more room (--compute memory_limit=… temp_directory=<a disk with space>), or resolve the file in parts")
-    return Budget(plan, estimates)
+    return Budget(plan)

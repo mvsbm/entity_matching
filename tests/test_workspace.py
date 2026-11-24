@@ -8,8 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from er.candidates import Records, estimate_touching, generate
-from er.config import (DeletionKeys, InputError, Key, KeyBlocker)
+from er.config import (InputError)
 from er.match import exact_u, stale_u
 from er.settings import load_settings
 
@@ -42,18 +41,6 @@ def test_a_pair_with_no_name_compared_is_offered_saying_so(tmp_path, population)
     table = pd.read_parquet(match(tmp_path / "a", s, p, 4.0)["into"])
     row = table[(table[l] == pair[0]) & (table[r] == pair[1])]
     assert len(row) == 1 and not row["named"].any()
-
-
-def test_the_batch_budget_counts_the_pairs_touching_the_batch():
-    df = pd.DataFrame({"id": [f"{i:02d}" for i in range(9)], "k": list("aaabbbccc"), "n": ["サトウ", "サト", "サウ", "スズキ", "スズ", "ヤマダ",
-                                                                                         "ヤマダ", "ヤマ", "タナカ"]})
-    batch = ["00", "03", "04"]
-    for b in (KeyBlocker(name="k", keys=(Key("k"),)), DeletionKeys(name="d", key=Key("n"))):
-        r = Records(df, "id", query=batch)
-        est, pairs = estimate_touching(b, r), generate(b, df, "id", batch)
-        r.close()
-        assert est["est_pairs"] >= len(pairs) > 0  # an upper bound, exact for equal keys
-        assert est["est_pairs"] == len(pairs) or isinstance(b, DeletionKeys)
 
 
 def test_decisions_on_a_match_table_join_records_and_a_full_run_applies_them_again(tmp_path, wide_band):

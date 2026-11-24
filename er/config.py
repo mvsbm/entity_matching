@@ -333,11 +333,6 @@ class FSModel:
     em_median: bool = False                   # one EM session per rule, each level's m the median of the sessions that learned it (not Splink's mean)
     em_from_keys: bool = False                # the EM sessions blocked on the method's equality keys, not on em_rules (er.run.fit)
 
-    def u_keys(self) -> dict[str, str]:
-        """What each comparison's u depends on, besides the fitting records: the comparison, the sample size and the
-        seed. Equal keys give identical u, also across models."""
-        return {c.name: repr((c, self.u_max_pairs, self.seed)) for c in self.comparisons}
-
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
         out = [(col, comp.normalize) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.normalize]
         out += [(col, comp.copied()) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.copied()]

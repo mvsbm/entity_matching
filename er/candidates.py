@@ -172,10 +172,10 @@ def sample_sql(b: Blocker, r: Records, blocks: str, rows: int) -> str:
 
 
 def estimate(b: Blocker, records: pd.DataFrame | str, engine: Engine | None = None,
-             uid: str | None = None, oversized_from: int = 2**62, normal: bool = True) -> dict[str, object]:
+             uid: str | None = None, oversized_from: int = 2**62) -> dict[str, object]:
     """Work before any join: candidate pairs (an upper bound) and the largest block, by group-by; and the blocks of
     `oversized_from` records or more: how many, their records and their pairs; and normal_pairs, those the join lists
-    with the oversized blocks left out (an upper bound too; a deletion key's only with `normal`, a scan more). O(N)."""
+    with the oversized blocks left out (an upper bound too; a deletion key's a scan more). O(N)."""
     m = oversized_from
     over = f"count(*) FILTER (WHERE c >= {m}), coalesce(sum(c) FILTER (WHERE c >= {m}), 0), coalesce(sum(c * (c - 1) // 2) FILTER (WHERE c >= {m}), 0)"
     none = dict(oversized_blocks=0, oversized_records=0, oversized_pairs=0)
@@ -197,7 +197,7 @@ def estimate(b: Blocker, records: pd.DataFrame | str, engine: Engine | None = No
                          agg AS (SELECT coalesce(sum(c * (c - 1) // 2), 0) AS p, coalesce(max(c), 0) AS big, {over} FROM blocks)
                     SELECT agg.p - (SELECT coalesce(sum((d - 1) * (c // d) * (c // d - 1) // 2), 0) FROM same), agg.* EXCLUDE (p) FROM agg""")
                 pairs = int(p) if not o[0] else None
-                if o[0] and normal:  # the repeats taken off only where they are joined: a value's pairs once, if one of its d blocks is normal
+                if o[0]:  # the repeats taken off only where they are joined: a value's pairs once, if one of its d blocks is normal
                     keys = ", ".join(["__dk", *within])
                     pairs = r.engine.value(f"""
                         WITH blocks AS (SELECT {keys}, count(*) AS __c FROM {v} GROUP BY {keys}),
@@ -210,27 +210,6 @@ def estimate(b: Blocker, records: pd.DataFrame | str, engine: Engine | None = No
     finally:
         if r is not records:
             r.close()
-
-
-def estimate_touching(b: Blocker, r: Records) -> dict[str, object]:
-    """For an increment: the pairs a generator would make that touch the query records (an upper bound), and the
-    largest block they fall in. Only the blocks the query's keys reach are counted: a join against the query's distinct
-    keys, then a group-by. O(N) to scan the key columns, plus the touched blocks; no group-by of the whole file."""
-    t, u = r.table, q(r.uid)
-    asked = f"sum(({u} IN (SELECT {u} FROM {r.query}))::INT)"
-    total = "SELECT coalesce(sum(c * (c - 1) // 2 - (c - qn) * (c - qn - 1) // 2), 0), coalesce(max(c), 0) FROM b"
-    match b:
-        case KeyBlocker():
-            cols = ", ".join(q(k.name) for k in b.keys)
-            filled = _filled(k.name for k in b.keys)
-            sql = (f"WITH k AS (SELECT DISTINCT {cols} FROM {r.asked(t)} WHERE {filled}), "
-                   f"b AS (SELECT count(*) AS c, {asked} AS qn FROM {t} JOIN k USING ({cols}) GROUP BY {cols}) {total}")
-        case DeletionKeys():
-            keys = ", ".join(["__dk", *(q(w.name) for w in b.within)])
-            sql = (f"WITH k AS (SELECT DISTINCT {keys} FROM {_rows(b, r, asked=True)}), "
-                   f"b AS (SELECT count(*) AS c, {asked} AS qn FROM {r.variants(b)} v JOIN k USING ({keys}) GROUP BY {keys}) {total}")
-    p, big = r.engine.row(sql)
-    return dict(big_o="O(N + Δ·b)", filled=f"O(N + {int(p):,})", est_pairs=int(p), largest_block=int(big))
 
 
 def generate(b: Blocker, records: pd.DataFrame | str, uid: str, query: Iterable[str] | None,
@@ -247,19 +226,18 @@ def generate(b: Blocker, records: pd.DataFrame | str, uid: str, query: Iterable[
 def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: str, query: Iterable[str] | str | None,
                budget: Budget, clusters: pd.Series | str | None = None, engine: Engine | None = None,
                into: str | None = None, touching: bool = False, gate: Callable[[str], str] | None = None,
-               floor: float = 0.0, capacity: int | None = None, told: Callable[..., None] | None = None,
-               known: dict[str, dict] | None = None, keep: Callable[[str], str] | None = None,
+               floor: float = 0.0, capacity: int | None = None,
+               keep: Callable[[str], str] | None = None,
                only: str | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
     """The union of all generators, with the generators that found each pair in `sources`, and a per-generator report.
     With `into`, the union is written to that table in `engine` and its name returned instead of a frame, so nothing of
-    size C reaches pandas. `touching` (an increment, with `query` the batch): the estimates count only the blocks the
+    size C reaches pandas. `touching` (an increment, with `query` the batch): the deletion keys hold only the blocks the
     batch reaches. Oversized blocks (budget.min_oversized() records or more) are left out of each generator's join.
     With a `gate` (it scores a table of pairs, uid_l / uid_r, into a table it names, with match_weight), a sample of each such
     block's pairs that no other block listed is scored, and the block joined only if a sampled pair reaches `floor`;
     with `capacity`, at most that many pairs in all, the highest-yield blocks first. Without a gate they are joined in
     full. report.attrs["gated"] has one row per oversized block: its value, records, pairs, sample and decision.
-    `told(done, total, "keys")` as the joins begin and after each generator: how far they are. `known`: generators'
-    estimates made already on these records (er.run's budget), by name, not counted again. `keep(pairs SQL)`: the SQL
+    `keep(pairs SQL)`: the SQL
     of those of a generator's pairs worth keeping (er.match.reaching_sql), applied a slice at a time (_kept), so only
     one generator's pairs are ever held in full. Each listed pair leaves its hash, so what the gate reads of the pairs
     other keys listed, each generator's pairs and report.attrs["listed"] (the distinct pairs listed) are as without it.
@@ -278,20 +256,15 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
         m = budget.min_oversized()
         report, parts, big, pending = [], [], {}, {}
         listed = r._temp("SELECT NULL::BIGINT AS h WHERE FALSE") if keep else None  # each listed pair's hash (config.hashed), before keep()
-        if told:
-            told(0, len(blockers), "keys")
         for i, b in enumerate(blockers):
-            est = estimate_touching(b, r) if touching else (known or {}).get(b.name) or estimate(b, r, oversized_from=m, normal=False)  # the budget's count: not made again
             t = time.perf_counter()
             if blocks := oversized(b, r, m):
                 big[i] = blocks
             table, n = _kept(r, pairs_sql(b, r, skip=big.get(i)), keep, listed, pending)
             if sum(pending.values()) >= KEEP_SLICE:
                 _bound(r, pending, keep)
-            report.append(dict(generator=b.name, **est, pairs=n, seconds=round(time.perf_counter() - t, 3)))
+            report.append(dict(generator=b.name, pairs=n, seconds=round(time.perf_counter() - t, 3)))
             parts.append(f"SELECT l, r, {1 << i}::BIGINT AS bit FROM {table}")
-            if told:
-                told(i + 1, len(blockers), "keys")
         _bound(r, pending, keep)
         gated, added = _gate(blockers, r, big, parts, gate, floor, capacity, m, (l, rr), keep, listed) if big else (pd.DataFrame(), {})
         for i, extra in added.items():

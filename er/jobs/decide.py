@@ -17,8 +17,7 @@ from er.steps.job import Ran, start
 from er.steps.write import log_entry, run_config
 
 
-def decide(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, echo: Callable[[dict], None] | None = None,
-           told: Callable[..., None] | None = None) -> Ran:
+def decide(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, echo: Callable[[dict], None] | None = None) -> Ran:
     """The decisions in `path` (Parquet: uid_l, uid_r, decision, as a match table holds them filled in; read by the
     intake, er.source.readable) applied to the run in `out`, then the lookup index brought up to date. Every decision
     is stored in decisions/, each pair's latest standing, and the entities are made again from them all: connected
@@ -27,15 +26,15 @@ def decide(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, 
     changes nothing. O(D + N) for D decisions."""
     out = Path(out)
     with folder.run_lock(out), readable(path, settings.input) as read:
-        ran = _decide(read, path, out, settings, pipeline, echo, told)
+        ran = _decide(read, path, out, settings, pipeline, echo)
     if ran.n:
         ran.index = indexed(out, settings, pipeline, index.update)
     return ran
 
 
-def _decide(path: str | Path, given: str | Path, out: Path, settings: Settings, pipeline: Pipeline, echo: Callable[[dict], None] | None,
-            told: Callable[..., None] | None) -> Ran:  # the decisions read from `path` (`given`, as people named it)
-    job = start(settings, pipeline, echo, told)
+def _decide(path: str | Path, given: str | Path, out: Path, settings: Settings, pipeline: Pipeline,
+            echo: Callable[[dict], None] | None) -> Ran:  # the decisions read from `path` (`given`, as people named it)
+    job = start(settings, pipeline, echo)
     engine, log, u, l, r = job.engine, job.log, q(job.uid), q(job.l), q(job.r)
     t = time.perf_counter()
     folder.finish_writes(out)

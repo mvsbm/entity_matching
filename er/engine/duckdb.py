@@ -6,8 +6,6 @@ import os
 import re
 import shutil
 import tempfile
-import threading
-import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -140,38 +138,6 @@ class DuckDB:
         self.con.close()
 
 
-SPENT: dict[str, list[float]] = {}  # per function and "all", in this process: its CPU seconds (each calling thread's own, not its wait for
-# Python's lock), values, calls, and the wall seconds while any call ran; a run reads each step's; bounded: one entry per function
-_spent = threading.Lock()  # DuckDB calls a function on several threads at once
-_running: dict[str, list[float]] = {}  # per function and "all": calls running now, and since when one has; bounded: one entry per function
-
-
-def spent() -> dict[str, tuple[float, ...]]:  # SPENT as it stands, read whole
-    with _spent:
-        return {k: tuple(v) for k, v in SPENT.items()}
-
-
-def _enter(names: tuple[str, ...], now: float) -> None:
-    with _spent:
-        for k in names:
-            r = _running.setdefault(k, [0, 0.0])
-            if not r[0]:
-                r[1] = now
-            r[0] += 1
-
-
-def _leave(names: tuple[str, ...], cpu: float, now: float, values: int) -> None:
-    with _spent:
-        for k in names:
-            s, r = SPENT.setdefault(k, [0.0, 0, 0, 0.0]), _running[k]
-            s[0] += cpu
-            s[1] += values
-            s[2] += 1
-            r[0] -= 1
-            if not r[0]:
-                s[3] += now - r[1]
-
-
 def udf(function: str, cut: bool = False) -> Callable[..., pa.Array]:  # vectorized, character-level, NULL-safe
     """cl_<function>(a, b), and cl_<function>_cut(a, b, threshold): the same score wherever it passes the threshold
     (a similarity at or above it, a distance at or below), and a value that fails it elsewhere, found without finishing
@@ -183,14 +149,6 @@ def udf(function: str, cut: bool = False) -> Callable[..., pa.Array]:  # vectori
     # (Damerau–Levenshtein on 1M records: rules 15 s → 4 s, its calls of ~20 values each starting a pool)
 
     def f(a: pa.Array, b: pa.Array, threshold: pa.Array | None) -> pa.Array:
-        _enter((function, "all"), time.perf_counter())
-        start = time.thread_time()  # this thread's own: not its wait for Python's lock
-        try:
-            return run(a, b, threshold)
-        finally:
-            _leave((function, "all"), time.thread_time() - start, time.perf_counter(), len(a))
-
-    def run(a: pa.Array, b: pa.Array, threshold: pa.Array | None) -> pa.Array:
         null = pc.or_(a.is_null(), b.is_null())
         x, y = pc.fill_null(a, "").to_pylist(), pc.fill_null(b, "").to_pylist()
         # a similarity's cut a hair below its threshold: the scores are float32, which round a value just under it up to it

@@ -71,10 +71,9 @@ def qa(run: "Ran", fields: list[str] | None = None) -> dict[str, pd.DataFrame]:
     """The label-free report of a run: a summary in words (records, the candidates scored for match runs, the entities
     people's decisions made, what the loader fixed), fill rate per field (flagged under 5%) (of `fields`, by default
     every logical field) with the share that looks like the field and the share of its most common value, what was
-    disabled, every step's cost, scored pairs by weight band, the entities' sizes, and the patterns no key lists."""
+    disabled, every step's cost, the entities' sizes, and the patterns no key lists."""
     engine, u = run.engine, q(run.uid)
     fill = fill_rates(run, fields)
-    bands = engine.frame("SELECT floor(match_weight / 2) * 2 AS weight_from, count(*) AS pairs FROM scores GROUP BY 1 ORDER BY 1")
     sizes = engine.frame("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1")
     engine.run(f"CREATE TABLE IF NOT EXISTS er_decisions ({q(run.l)} VARCHAR, {q(run.r)} VARCHAR, decision VARCHAR)")
     steps = pd.DataFrame(run.steps)
@@ -126,7 +125,7 @@ def qa(run: "Ran", fields: list[str] | None = None) -> dict[str, pd.DataFrame]:
         *(("note", f"turned off, a field it reads is missing: {d}") for d in run.disabled),
         *(("note", note) for note in run.notes),
         *(("example", x) for x in run.examples)], columns=["what", "value"])
-    return dict(summary=summary, fill=fill, disabled=pd.DataFrame({"disabled": run.disabled}), steps=steps, weight_bands=bands,
+    return dict(summary=summary, fill=fill, disabled=pd.DataFrame({"disabled": run.disabled}), steps=steps,
                 cluster_sizes=sizes, patterns_without_a_key=coverage.head(20), kinds=kinds, oversized_blocks=run.gated)
 
 
@@ -300,20 +299,6 @@ def report_text(run: "Ran", tables: dict[str, pd.DataFrame], pipeline: Path, ite
     if (c := by_step.get("candidates")) and c.get("generators"):  # where the candidates' time goes
         out += ["KEYS  (pairs each lists, seconds; slowest first)",
                 *table(pd.DataFrame([dict(key=x["name"], pairs=f"{x['pairs']:,}", seconds=f"{x['seconds']:.1f}") for x in sorted(c["generators"], key=lambda x: -x["seconds"])])), ""]
-
-    def row(x: dict, f: str, c: dict) -> dict:
-        every = f == "all"
-        return dict(step=x["step"], function="all of them" if every else f, wall=f"{c['wall']:,.2f}" if every else "",
-                    share=pct(min(1, c["wall"] / x["seconds"])) if every and x["seconds"] else "", cpu=f"{c['cpu']:,.2f}",
-                    cores=f"{c['cpu'] / c['wall']:,.1f}" if every and c["wall"] else "", values=f"{c['values']:,}",
-                    per_call=f"{c['values'] / c['calls']:,.0f}", us_per_value=f"{1e6 * c['cpu'] / c['values']:,.2f}")
-    spent = [row(x, f, c) for x in run.steps for f, c in sorted(x.get("compared", {}).items(), key=lambda fc: (fc[0] != "all", -fc[1]["cpu"]))
-             if c["cpu"] >= 0.05 or (f == "all" and c["wall"] >= 0.01)]
-    out += ["TIME IN COMPARISONS  (all of them: a step's wall seconds while any string function ran, its share of the step, and the cores "
-            "they kept busy on average (Python runs one at a time: about 1 means the others waited); per function: its CPU seconds, "
-            "from 0.05 s, the values it compared, per_call at a time, and CPU per value; the rest of a step is DuckDB's joins and sums, "
-            "and the comparisons DuckDB makes itself)",
-            *table(pd.DataFrame(spent)), ""]
 
     lam, m = scaled_prior(run.scoring, run.n), run.scoring["er"]
     params = parameters(run.scoring)

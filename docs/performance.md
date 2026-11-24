@@ -122,12 +122,6 @@ Identical results, covered by tests/:
 - **Each distinct value prepared once** (`er.standardize.normalize`): every step reads one value alone, so a column's
   distinct values go through the steps and the column is made of them; 25 to 40 times faster on a column that repeats
   (phones, postal codes, common names), and done value by value where most values are distinct.
-- **The budget's counts read again** (`er.candidates.candidates`, `known`): each generator's pairs and blocks are
-  counted once, by the budget, and step 4 reads them, not the records.
-- **One u sample per set of records** (`er.match.scored_sample`, `SCORED_U`). A comparison's u depends only on
-  itself, the sample size, the seed (`FSModel.u_keys`) and the values it reads, since the sampled pairs are picked by
-  a hash of the record ID, as Splink picks them. So the cache is keyed by the comparison and a fingerprint of those values, a frame and a
-  table with the same rows alike: within one process, a model's variants share one sample. cif, phone and birth need none: their levels are counted (`exact_u`, once per fit).
 - **The u sample counted in one pass** (`er.match.sample_u`). The records and pairs are drawn as Splink draws them (a
   hash of the ID and the seed: the portable one, `config.hashed`), and every comparison's levels are counted in one pass
   over the pairs, where Splink's estimate joins them again for each comparison, chunk by chunk: on the same pairs, the
@@ -180,8 +174,7 @@ Identical results, covered by tests/:
 - **Each candidate pair listed once**: a key's join over the query keeps one order of a pair of two queried records
   instead of both and a DISTINCT; the union's parts are freed as soon as it is made.
 - **Scoring in slices** (`steps.score.SCORE_PAIRS`, 5 million pairs at a time). A pair's score depends on it alone, so the
-  slices score as the whole would; each slice says how far scoring is (pairs scored, and those at the model's line so
-  far), and bounds the step's memory. Each slice joins every record again, about 0.75 s at a million records: 9.3
+  slices score as the whole would, and a slice bounds the step's memory. Each slice joins every record again, about 0.75 s at a million records: 9.3
   million pairs in slices of a million took 13.8 s, in slices of 5 million 8.8 s, for 0.2 GB more at the peak.
 - **Chunks standardized in parallel** (`steps.load.load`, `steps.load.ahead`). Every step reads one record, or one chunk's
   values, so the chunks are cleaned in worker processes, spawned on every system (as many as DuckDB's threads, at most

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from er.config import InputError, Pipeline
-from er.engine.duckdb import connect, spent
+from er.engine.duckdb import connect
 from er.engine.engine import Engine
 from er.settings import Settings
 
@@ -33,26 +33,17 @@ def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss:
 @dataclass
 class Log:
     """What a job tells as it goes. `steps`: each step's facts as it ends (steps.json), `echo` called with each, for
-    people; `told(done, total, unit, **facts)` as a long step goes; `notes`: what the steps detected or fixed, for the
-    summary, never a record's value; `examples`: notes that quote one, kept in memory for
+    people; `notes`: what the steps detected or fixed, for the summary, never a record's value; `examples`: notes that quote one, kept in memory for
     whoever runs the job, never written: report.txt holds no value)."""
     echo: Callable[[dict], None] | None = None
-    told: Callable[..., None] | None = None
     steps: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     examples: list[str] = field(default_factory=list)
-    spent: dict = field(default_factory=spent)  # the comparison functions' time when the last step ended
 
     def done(self, name: str, big_o: str, filled: str, t: float, **facts: object) -> None:
-        """A step ended: its Big-O, with the numbers filled in, its seconds since `t`, the peak memory so far, its facts,
-        and the comparison functions' time since the step before (compared)."""
-        now = spent()
-        was = lambda k: self.spent.get(k, (0, 0, 0, 0))
-        compared = {k: dict(cpu=round(s - was(k)[0], 4), values=int(n - was(k)[1]), calls=int(c - was(k)[2]), wall=round(w - was(k)[3], 4))
-                    for k, (s, n, c, w) in now.items() if n > was(k)[1]}
-        self.spent = now
+        """A step ended: its Big-O, with the numbers filled in, its seconds since `t`, the peak memory so far, and its facts."""
         self.steps.append(dict(step=name, big_o=big_o, filled=filled, seconds=round(time.perf_counter() - t, 2),
-                               peak_memory_gb=round(peak_gb(), 2), **facts, **({"compared": compared} if compared else {})))
+                               peak_memory_gb=round(peak_gb(), 2), **facts))
         if self.echo:
             self.echo(self.steps[-1])
 
@@ -85,14 +76,14 @@ class Job:
         return {c for c, _ in self.engine.columns(table)}
 
 
-def start(settings: Settings, pipeline: Pipeline, echo: Callable[[dict], None] | None = None, told: Callable[..., None] | None = None) -> Job:
+def start(settings: Settings, pipeline: Pipeline, echo: Callable[[dict], None] | None = None) -> Job:
     """A job on an engine of its own (config/settings.toml [compute]): the method checked first, so a wrong value stops it
     before any work."""
     if {pipeline.rules.resolver.method, pipeline.fs.resolver.method} != {"connected_components"}:
         raise InputError("the run clusters by connected components only; the pipeline asks for "
                          f"{pipeline.rules.resolver.method} (rules) and {pipeline.fs.resolver.method} (model)",
                          fix='set resolver = { method = "connected_components" } in both stages of the pipeline')
-    return Job(connect(settings.compute), settings, pipeline, Log(echo, told))
+    return Job(connect(settings.compute), settings, pipeline, Log(echo))
 
 
 @dataclass
@@ -114,10 +105,7 @@ class Ran:
     placeholders: dict[str, list[str]] = field(default_factory=dict)  # each field's values read as missing
     inputs: list[dict] = field(default_factory=list)  # the files read: path, bytes, SHA-256
     part: int = 0                             # the part written: 0 a full run's, an increment's one past the run's highest
-    listed: int = 0                           # the pairs the keys listed
-    rule_seconds: dict[str, float] = field(default_factory=dict)  # each rule's join
     config: str = ""                          # the run's fingerprint: what an increment needs the full run's to be (steps.write.run_config)
-    tables: dict = field(default_factory=dict)  # qa's tables, the summary first, once the report step built them
     index: dict = field(default_factory=dict)  # the lookup index as the job left it (er.jobs.index), or why it couldn't
 
     engine = property(lambda self: self.job.engine)

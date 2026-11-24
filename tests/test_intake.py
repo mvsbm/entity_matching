@@ -55,7 +55,7 @@ def test_a_parquet_file_read_by_column_reads_as_value_by_value_does(tmp_path, mo
     monkeypatch.setattr(intake, "settled", lambda a, *_: np.zeros(len(a), bool))  # nothing settled in Arrow: every value read one by one
     slow = read("slow")
     assert {k: v for k, v in quick[0].items() if k != "files"} == {k: v for k, v in slow[0].items() if k != "files"}  # the same counts and fixes
-    assert [{k: v for k, v in x.items() if k not in ("sha256", "versions")} for x in quick[0]["files"]] == [{k: v for k, v in x.items() if k not in ("sha256", "versions")} for x in slow[0]["files"]]
+    assert quick[0]["files"] == slow[0]["files"]
     pd.testing.assert_frame_equal(quick[1], slow[1])
     assert quick[0]["fixed"]["placeholders"] > 0 and quick[0]["fixed"]["damaged"] > 0 and quick[1]["raw"].isna().sum() > n // 3  # both paths taken; bytes that aren't UTF-8 missing
 

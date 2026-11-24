@@ -27,7 +27,7 @@ from er.steps.write import run_config, write
 
 def build(path: str | Path | list[Path], out: Path, settings: Settings, pipeline: Pipeline, *, model: dict | None = None,
           overwrite: bool = False, pipeline_file: Path | None = None, echo: Callable[[dict], None] | None = None,
-          told: Callable[..., None] | None = None, reaching_only: bool = True) -> Ran:
+          reaching_only: bool = True) -> Ran:
     """The records at `path` (a Parquet file, a quoted glob or a folder of them), read by the intake
     (er.source.readable), resolved into the workspace `out` with people's decisions kept there, then the lookup index
     built (er.jobs.index). With `pipeline_file` (named in the reports), the reports are written with the run's files.
@@ -40,8 +40,8 @@ def build(path: str | Path | list[Path], out: Path, settings: Settings, pipeline
         held = folder.held(out)
         if held and not overwrite:
             raise InputError(f"{out} already holds a run", fix=f"choose another folder, or replace the run: python -m er build {path} --out {out} --overwrite")
-        with readable(path, settings.input, told) as read:
-            ran = resolve(read, settings, pipeline, model=model, decided=out, echo=echo, told=told, reaching_only=reaching_only)
+        with readable(path, settings.input) as read:
+            ran = resolve(read, settings, pipeline, model=model, decided=out, echo=echo, reaching_only=reaching_only)
             ran.inputs = given(path, ran.inputs, "records")
             write(ran, out, replace_files=held, pipeline_file=pipeline_file)
         ran.index = indexed(out, settings, pipeline, index.build)
@@ -49,23 +49,22 @@ def build(path: str | Path | list[Path], out: Path, settings: Settings, pipeline
 
 
 def resolve(path: str | Path | list[Path], settings: Settings, pipeline: Pipeline, *, model: dict | None = None,
-            decided: Path | None = None, echo: Callable[[dict], None] | None = None, told: Callable[..., None] | None = None,
-            reaching_only: bool = True) -> Ran:
+            decided: Path | None = None, echo: Callable[[dict], None] | None = None, reaching_only: bool = True) -> Ran:
     """The steps on the records at `path` as the intake read them, writing nothing: each record's cluster (gold), with
     the decisions the workspace `decided` keeps (None: none)."""
-    job = start(settings, pipeline, echo, told)
+    job = start(settings, pipeline, echo)
     loaded = load(job, path, model=model)
     job.pipeline = loaded.pipeline  # the method as this file lets it run
     planned = budget(job, loaded.n)
     fitted = fit(job, loaded.n, model)
-    ruled = rules(job, loaded.n, fitted.scoring)
-    listed = candidates(job, loaded.n, fitted.scoring, planned, reaching_only=reaching_only)
+    rules(job, loaded.n, fitted.scoring)
+    listed = candidates(job, loaded.n, fitted.scoring, reaching_only=reaching_only)
     score(job, fitted.scoring, listed.listed)
     load_decisions(job, decided)
     cluster(job, loaded.n)
     return Ran(job, n=loaded.n, model=fitted.model, scoring=fitted.scoring, basis=fitted.basis, disabled=loaded.disabled,
                present=loaded.present, unmapped=loaded.unmapped, gated=listed.gated, plan=planned.plan, classifier=loaded.classifier,
-               placeholders=loaded.placeholders, inputs=loaded.inputs, listed=listed.listed, rule_seconds=ruled.seconds,
+               placeholders=loaded.placeholders, inputs=loaded.inputs,
                config=run_config(pipeline, settings))
 
 

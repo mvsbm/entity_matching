@@ -133,7 +133,7 @@ An exact address would defeat F2's purpose, which is address typos. The first th
 - **Counted** for a one-edit level right after them on the same column: the CIF ID, the phone and the birth date "one digit off". The distinct values are joined on their one-deletion keys, so these three comparisons need no sample at all.
 - **Sampled** for the other levels of the name, the company and the address, from 10⁷ random pairs, every one of them used.
 
-The gate on oversized blocks and the scores both use these u. The fit costs O(n + S·K + P_em·K) and u on the file O(N + S·K): fixed, apart from the O(N) counts. Each u sample is kept per comparison and the values it reads (`er.match.scored_sample`), so within one process a model and its variants share one sample, and a file no bigger than the fit's sample is sampled once when the fit samples as many pairs as the file's u (`fit_u_max_pairs` unset). A run fits on the file it resolves, then scores the whole file, with λ rescaled to the file's size ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)). An increment keeps the stored model and refreshes u before its rules: the counted levels are counted again, and a sampled comparison is sampled again only once its drift outgrows its sampling error.
+The gate on oversized blocks and the scores both use these u. The fit costs O(n + S·K + P_em·K) and u on the file O(N + S·K): fixed, apart from the O(N) counts. A run fits on the file it resolves, then scores the whole file, with λ rescaled to the file's size ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)). An increment keeps the stored model and refreshes u before its rules: the counted levels are counted again, and a sampled comparison is sampled again only once its drift outgrows its sampling error.
 
 **Not chosen, to keep TF-IDF:**
 
@@ -248,7 +248,7 @@ On train, every true pair that could reach the threshold shares a key, at its si
 - `er/config.py`: the generator types `KeyBlocker` and `DeletionKeys` (one-deletion keys); `er/candidates.py`: each as SQL (`pairs_sql`), `candidates` (merge by bits), `estimate` (the count before any join)
 - `er/match.py`: `pattern_coverage` (the same question without labels, which every run's `report.txt` reports)
 - `er/config.py`: `Budget` (`max_pairs_per_record`, `max_block_size`, `target_rows`, `sample_pairs`); `FSSpec.bridge` (score every pair across two clusters)
-- `er/match.py`: `exact_u` (u counted: the leading exact levels, and a one-edit level after them through one-deletion keys), `scored_sample` (u sampled, kept per comparison and the values it reads), `assemble_u`, `refreshed_u` (an increment's u)
+- `er/match.py`: `exact_u` (u counted: the leading exact levels, and a one-edit level after them through one-deletion keys), `sample_u` (u sampled, every comparison's levels in one pass), `assemble_u`, `refreshed_u` (an increment's u)
 - `config/pipeline.toml`: every generator, in logical fields; `config/settings.toml`: the fields behind the compound keys (`any_name`, the postal area) and the normalizers `initial` and `first3`
 - `er/steps/budget.py`: `steps.budget.budget`, the exact count on the file before any join; `steps.budget.capacity`, the memory limit plus the spill room; `er/steps/fit.py`: `steps.fit.fit`, the fit and then u on the file; `er/candidates.py`: `oversized`, `sample_sql`, `_gate`, the sample check of big blocks; `scripts/benchmark.py`: whole runs on generated files from 13,000 to a million records
 
