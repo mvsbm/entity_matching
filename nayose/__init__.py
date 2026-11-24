@@ -463,13 +463,15 @@ def run_file(engine, path: Path, scratch: set | None = None, until: str | None =
     runs it, writing the temporary tables it names alone (scratched); `until`: up to the statement that makes that table."""
     for sql in statements(path.read_text(encoding="utf-8")):
         named = set(re.findall(r"@(\w+)", re.sub(r"--[^\n]*|'(?:[^'\\]|\\.)*'", "", sql)))
-        guard = WHEN.match(sql)
-        told = set(re.findall(r"@(\w+)", guard[1])) if guard else set()
+        guard = when(sql)
+        told = set(re.findall(r"@(\w+)", guard)) if guard else set()
         if missing := (named | told) - set(values):
             raise ValueError(f"{path.name} names @{', @'.join(sorted(missing))}, which no value gives")
-        if guard and not engine.value(f"SELECT {guard[1]}", {k: values[k] for k in told}):
-            continue
         made = WRITE.match(sql)
+        if guard and not engine.value(f"SELECT {guard}", {k: values[k] for k in told}):
+            if until is not None and made and made.group(3) == until:
+                return
+            continue
         if scratch is not None and (sql := scratched(sql, scratch)) is None:
             continue
         engine.run(sql, {k: values[k] for k in named})
@@ -477,7 +479,20 @@ def run_file(engine, path: Path, scratch: set | None = None, until: str | None =
             return
 
 
-WHEN = re.compile(r"\A(?:\s*--(?! when:)[^\n]*\n)*\s*-- when: ([^\n]+)")  # a statement's condition, in its leading comments
+WHEN = re.compile(r"^\s*--\s*when:(.*)$", re.M | re.I)
+
+
+def when(sql: str) -> str | None:
+    """A statement's condition: its leading comments' `-- when: <condition>`, a comment after it aside; None without.
+    Refused where there are two, or one on a function (the deploy makes those apart), or one past the statement's start."""
+    body = re.match(r"\A(?:\s*--[^\n]*\n)*", sql)[0]
+    lines = WHEN.findall(body)
+    if len(lines) > 1 or (lines and TEMP_FUNCTION_START.match(sql)) or len(WHEN.findall(sql)) > len(lines):
+        raise ValueError(f"a statement holds one condition, in its leading comments, and a function none: {sql.strip()[:80]}")
+    return lines[0].split("--")[0].strip() or None if lines else None
+
+
+TEMP_FUNCTION_START = re.compile(r"\A(?:\s*--[^\n]*\n)*\s*CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+FUNCTION\b", re.I)
 LEAD = r"(?:\s*--[^\n]*\n|\s*/\*.*?\*/)*\s*"  # a statement's leading comments
 WRITE = re.compile(rf"^({LEAD})(CREATE\s+OR\s+REPLACE\s+TEMP(?:ORARY)?\s+TABLE|CREATE\s+OR\s+REPLACE\s+TABLE|"
                    r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS|CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW|CREATE\s+TABLE|"
