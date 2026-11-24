@@ -72,7 +72,7 @@ FROM UNNEST(JSON_QUERY_ARRAY(entities_of((
   WHERE d.latest AND d.decision = 'match' AND d.id_l IN (SELECT id FROM records) AND d.id_r IN (SELECT id FROM records)
 )))) AS e;
 
-CREATE OR REPLACE TABLE gold AS
+CREATE OR REPLACE TABLE gold CLUSTER BY id AS  -- a lookup reads its records' by ID
 WITH placed AS (
   SELECT r.id, COALESCE(j.entity, r.id) AS cluster_id, r.kind, r.kind_p, r.kind_by, r.kind_flagged
   FROM records AS r LEFT JOIN joined AS j USING (id)

@@ -102,7 +102,7 @@ python -m nayose lookup --out runs/main --record 1234          or COLUMN=VALUE â
 
 ## What isn't there yet
 
-- **Lookups on BigQuery.** There is no lookup procedure, so lookups run only locally. A lookup is an update of one record that is then rolled back, and BigQuery takes no DDL in a transaction.
+- **Lookups on BigQuery.** `nayose.lookup` runs on BigQuery, but `deploy/run.py` has no lookup job yet: lookups run locally.
 - **Nothing has run on BigQuery yet.** `tests/test_deploy.py` checks the deploy and the jobs against a client that records what it is sent. The parity check (the tests' population built in `nayose_ci` and held to the same digests as DuckDB) waits for the sandbox. Confirm these on the first staging deploy: the Python functions (`python-3.11`) can be made in the dataset's location; the OIDC token each WIF configuration reads is on the agent, since the Jenkinsfile binds only the configuration file; the smoke test says `the same`.
 - **All or nothing, on BigQuery.** A procedure's statements replace tables one at a time, so a failed job may leave some tables made again and others not. Run it again: a build from every input file so far (decisions stay), or bring the tables back with BigQuery's time travel. Only Jenkins keeps jobs to one at a time (`disableConcurrentBuilds`, per branch), so start jobs from main only. Nothing in BigQuery stops a second call.
 

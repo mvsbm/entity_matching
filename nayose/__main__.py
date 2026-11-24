@@ -116,6 +116,7 @@ def build(a: argparse.Namespace) -> dict:
         timed(steps, "fit", nayose.fit, engine)
         timed(steps, "score", nayose.score, engine)
         timed(steps, "decide", nayose.decide, engine, [])
+        engine.run(nayose.METHOD, {"fingerprint": nayose.fingerprint()})
         n = engine.value("SELECT COUNT(*) FROM records")
         report(engine, out, steps, "build")
     return dict(records=n, seconds=round(sum(steps.values()), 1), steps=steps)
@@ -136,6 +137,7 @@ def kept(out: Path) -> str | None:  # the run's decisions as a Parquet file besi
 def update(a: argparse.Namespace) -> dict:
     out, given, steps = a.out, files(a.given), {}
     with writing(out, compute=limits(a)) as engine:
+        nayose.unchanged(engine, f"build the run again with them (python -m nayose build FILE --out {out} --overwrite), or update with the code the build ran")
         before = engine.value("SELECT COUNT(*) FROM records")
         timed(steps, "records", nayose.records, engine, given)
         added = engine.value("SELECT COUNT(*) FROM records") - before

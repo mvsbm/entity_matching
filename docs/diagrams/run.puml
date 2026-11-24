@@ -32,7 +32,7 @@ rectangle "<b>match.sql</b> (the match job): the pairs at a threshold,\nless tho
 
 database "records · this_batch\nset_aside · placeholders" as t_records
 database "fit_sample · fit_prior · em_patterns\nu_outside · u_counted · u_near · u_sampled · u_filled\nmodel · fit" as t_fit
-database "rule_pairs · cands · gated · scored" as t_score
+database "rule_keys · every_key (the key index)\nrule_pairs · cands · gated · scored" as t_score
 database "decisions · gold" as t_decide
 database "report_counts · report_fields · report_scores\nreport_patterns · report_keys · report_clusters" as t_report
 database "matched" as t_matched

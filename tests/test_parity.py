@@ -83,3 +83,26 @@ def got(tmp_path_factory, population) -> dict:
 def test_every_job_s_tables_are_as_recorded(got):
     want = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert {k: v for k, v in got.items() if want.get(k) != v} == {} and set(got) == set(want)
+
+
+def test_a_lookup_writes_none_of_the_run_s_tables_even_without_a_transaction(tmp_path, population):
+    import contextlib
+    named = population.df[population.df["FULL_NAME_KANA"].notna()]
+    population.df.to_parquet(tmp_path / "in.parquet", index=False)
+    engine = DuckDB()
+    nayose.build(engine, [tmp_path / "in.parquet"])
+    tables = [t for (t,) in engine.con.execute("SELECT table_name FROM duckdb_tables() WHERE NOT temporary ORDER BY 1").fetchall()]
+    run = lambda: {t: digest(engine.con.execute(f'SELECT * FROM "{t}" ORDER BY ALL').df()) for t in tables}
+    before = run()
+    asks = [dict(record=named["CONT_ID"].iloc[3]), dict(values={"FULL_NAME_KANA": named["FULL_NAME_KANA"].iloc[5], "PHONE_NUM_4": "1234"})]
+    rolled_back = [nayose.lookup(engine, **a) for a in asks]
+
+    @contextlib.contextmanager
+    def session():  # as BigQuery's scratch: nothing undone, only the temporary tables gone after
+        yield
+        for (t,) in engine.con.execute("SELECT table_name FROM duckdb_tables() WHERE temporary").fetchall():
+            engine.con.execute(f'DROP TABLE temp."{t}"')
+    engine.scratch = session
+    assert [nayose.lookup(engine, **a) for a in asks] == rolled_back and run() == before
+    with pytest.raises(ValueError, match="would write the run's scored"):
+        nayose.scratched("INSERT INTO scored SELECT * FROM batch_scored", set())
