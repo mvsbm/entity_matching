@@ -64,17 +64,17 @@ Billed, rows and calls: `scripts/estimate_cost.py` on 1M generated records. Wall
 |---|---|---|---|---|
 | records | 2,487 MB | 280M | 0 | 9.8 s |
 | fit | 1,105 MB | 483M | 19.2M | 6.0 s |
-| score | 10,596 MB | 788M | 23.2M | 14.8 s |
+| score | 4,631 MB | 644M | 23.2M | 14.8 s |
 | decide (the build's) | 161 MB | 15M | 0 | 0.18 s |
-| **build** | **14,349 MB** | **1,566M** | **42.3M** | **30.9 s** |
+| **build** | **8,384 MB** | **1,422M** | **42.3M** | **30.9 s** |
 | match at `keep_from` | 199 MB | 4.1M | 205k | 0.6 s, as its own job |
 
 ```
-dollars(build) = 14,349 × 10⁶ B / 2⁴⁰ × $6.25 = 0.0131 TiB × $6.25 ≈ $0.08
+dollars(build) = 8,384 × 10⁶ B / 2⁴⁰ × $6.25 = 0.0076 TiB × $6.25 ≈ $0.05
 dollars(match) =    199 × 10⁶ B / 2⁴⁰ × $6.25 = 0.0002 TiB × $6.25 ≈ $0.001
 ```
 
-These use the US list price; the region's price differs (`asia-northeast1` is the Terraform default). Score bills three quarters of the build's bytes. For each stage, the estimator lists the five costliest statements, by their shares of bytes, rows and calls together.
+These use the US list price; the region's price differs (`asia-northeast1` is the Terraform default). Score bills over half of the build's bytes. For each stage, the estimator lists the five costliest statements, by their shares of bytes, rows and calls together.
 
 - **At 1B records** (each statement's a·N^b, b from 200k and 1M): records 1.5 TiB, fit 0.3 TiB, decide and match under 0.1 TiB. Score's projection, 686 TiB, is no estimate: a phone key's blocks grow with the square of the file only until the gate caps them at 64 records, which no power law fitted between 200k and 1M sees.
 - **On BigQuery itself:** not measured yet: it needs the sandbox dataset
