@@ -27,8 +27,8 @@ def size_bytes(text: str) -> int:  # one of DuckDB's sizes: "8.0 GiB", "512.0 Mi
 
 class DuckDB:
     """SQL on one DuckDB connection (`con`). The verbs say what comes back: run nothing, value one value, row the first
-    row, first the first row or None, rows every row, frame a pandas frame, numpy columns as arrays, arrow an Arrow
-    table, batches Arrow batches as they come. The last four are for small results, or results read in chunks: no
+    row, rows every row, frame a pandas frame, numpy columns as arrays, batches Arrow batches as they come. The last
+    four are for small results, or results read in chunks: no
     step pulls a table that grows with the records into Python whole. register puts a frame (or an Arrow table) where
     SQL reads it by name, unregister takes it away."""
     name = "duckdb"
@@ -47,9 +47,6 @@ class DuckDB:
     def row(self, sql: str, params: list | None = None) -> tuple:
         return self.con.execute(sql, params).fetchall()[0]
 
-    def first(self, sql: str, params: list | None = None) -> tuple | None:
-        return self.con.execute(sql, params).fetchone()
-
     def rows(self, sql: str, params: list | None = None) -> list[tuple]:
         return self.con.execute(sql, params).fetchall()
 
@@ -58,9 +55,6 @@ class DuckDB:
 
     def numpy(self, sql: str, params: list | None = None) -> dict[str, np.ndarray]:
         return self.con.execute(sql, params).fetchnumpy()
-
-    def arrow(self, sql: str, params: list | None = None) -> pa.Table:
-        return self.con.execute(sql, params).fetch_arrow_table()
 
     def batches(self, sql: str, rows: int) -> Iterator[pa.RecordBatch]:
         """The rows of `sql` in Arrow batches of about `rows`, read on a cursor of their own: statements on the engine

@@ -421,7 +421,7 @@ class Pipeline:
     rules: RulesSpec
     fs: FSSpec
     threshold: ThresholdRule
-    fit_rows: int = 100_000                   # an unlabelled run fits on a sample of this many records (er.run)
+    fit_rows: int = 100_000                   # a run fits on a sample of this many records (steps.fit)
     kind: KindSpec | None = None              # person or company, on every record; None: not told apart
     household: Household = Household()        # which pairs people see labelled "maybe one household"
 

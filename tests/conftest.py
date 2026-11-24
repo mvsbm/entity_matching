@@ -95,36 +95,6 @@ def population():
     return s, p, g
 
 
-def flag_wrong(df: pd.DataFrame) -> pd.DataFrame:  # a person/company flag that says person on every record: the engine flags the companies it is sure of
-    return df.assign(PERSON_ORG_CODE=pd.Series("1", index=df.index, dtype="string"))
-
-
-def dirty_csv(df: pd.DataFrame, name: str, address: str, path: Path) -> tuple[int, tuple[str, str], tuple[str, str, str]]:
-    """The records as a CSV another system wrote: some names in CP932, one unquoted comma between an address's street
-    and building, one name garbled upstream (its UTF-8 read as CP932, then saved). How many CP932 names, (id, the
-    address as written), (id, the name, the name garbled)."""
-    cols, cp932, spilled, garbled = list(df.columns), 0, None, None
-    lines = [",".join(cols).encode()]
-    for i, r in enumerate(df.itertuples(index=False)):
-        vals = ["" if pd.isna(v) else v for v in r]
-        cells = [v.encode("utf-8") for v in vals]
-        if i % 40 == 3 and vals[cols.index(name)]:
-            cells[cols.index(name)], cp932 = vals[cols.index(name)].encode("cp932"), cp932 + 1
-        elif spilled is None and "　" in vals[cols.index(address)]:
-            spilled = (vals[0], vals[cols.index(address)].replace("　", ","))
-            cells[cols.index(address)] = spilled[1].encode("utf-8")
-        elif garbled is None and i % 40 == 7:
-            try:
-                garbled = (vals[0], vals[cols.index(name)], vals[cols.index(name)].encode("utf-8").decode("cp932"))
-                cells[cols.index(name)] = garbled[2].encode("utf-8")
-            except UnicodeDecodeError:
-                pass
-        lines.append(b",".join(cells))
-    path.write_bytes(b"\n".join(lines) + b"\n")
-    assert spilled and garbled and cp932 > 5
-    return cp932, spilled, garbled
-
-
 def clustered(engine, base: pd.DataFrame, edges: pd.DataFrame, ids: pd.Series, uid: str) -> pd.Series:
     """`base` (uid, cluster_id) with `edges` added, as a run clusters (er.cluster.merge), in the order of ids."""
     from er.cluster import merge
