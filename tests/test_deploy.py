@@ -93,55 +93,88 @@ def test_a_job_loads_its_input_into_the_dataset_and_calls_its_procedure(monkeypa
     assert run.main(["p.run", "lookup", "x"], client=Recorded(), bigquery=MODULE) == 2  # not a job BigQuery runs
 
 
-class Tables(Recorded):  # a dataset's tables, each a version: what a job's statements and loads leave there
-    def __init__(self, tables: dict, job: dict | None = None, fail: bool = False):
+class Tables(Recorded):  # a dataset's tables, each a version and a type, as BigQuery lists them: what a job's statements leave
+    def __init__(self, tables: dict, job: dict | None = None, fail: str | None = None):
         super().__init__()
-        self.tables, self.job, self.fail, self.marked = dict(tables), job or {}, fail, []
+        self.tables, self.job, self.fail = dict(tables), job or {}, fail  # job: the procedure's tables (None: dropped)
+        self.kind = dict.fromkeys(tables, "BASE TABLE")
+        self.mark, self.sessions, self.running = {}, 0, set()
 
     def query(self, sql, job_config=None):
         self.sent.append(sql)
-        rows = []
+        if getattr(job_config, "create_session", False):
+            self.sessions += 1
+        session, given, rows = f"s{self.sessions}", {p[0]: p[2] for p in getattr(job_config, "query_parameters", [])}, []
         for s in sql.split(";\n"):
             name = [x.split(".")[-1] for x in re.findall(r"`p\.run`\.(\w+)", s)]
-            if "INFORMATION_SCHEMA" in s:
-                rows = [{"table_name": t} for t in sorted(self.tables)]
-            elif s.startswith("SELECT tables FROM"):
-                rows = [{"tables": self.marked}]
+            if self.fail and self.fail != "procedure" and self.fail in s:
+                self.fail = None
+                raise RuntimeError(f"failed: {s[:60]}")
+            if "INFORMATION_SCHEMA.TABLES" in s:
+                kinds = re.findall(r"'([A-Z ]+)'", s)
+                rows = [{"table_name": x} for x in sorted(self.tables) if self.kind[x] in kinds]
+            elif "INFORMATION_SCHEMA.JOBS_BY_USER" in s:
+                rows = [{"n": int(given["session"] in self.running)}]
+            elif s.startswith("SELECT session, tables FROM"):
+                rows = [self.mark]
             elif s.startswith("CREATE TABLE") and name[0] in self.tables:
                 raise RuntimeError(f"Already Exists: {name[0]}")
             elif " CLONE " in s:
-                self.tables[name[0]] = self.tables[name[1]]
+                self.tables[name[0]], self.kind[name[0]] = self.tables[name[1]], "CLONE"
             elif s.startswith("CREATE TABLE"):  # the mark
-                self.tables[name[0]], self.marked = "mark", re.findall(r"'(\w*)'", s.split("AS started, ")[1])
+                self.tables[name[0]], self.kind[name[0]] = "mark", "BASE TABLE"
+                tail = s.split("AS session, ")
+                self.mark = {"session": re.findall(r"'(\w*)'", tail[0])[-1], "tables": re.findall(r"'(\w*)'", tail[1])}
             elif s.startswith("DROP TABLE"):
-                del self.tables[name[0]]
+                del self.tables[name[0]], self.kind[name[0]]
             elif s.startswith("CALL `p.run`."):
-                self.tables.update(self.job)
-                if self.fail:
+                for x, v in self.job.items():
+                    if v is None:
+                        self.tables.pop(x, None), self.kind.pop(x, None)
+                    else:
+                        self.tables[x], self.kind[x] = v, "BASE TABLE"
+                if self.fail == "procedure":
                     raise RuntimeError("the procedure failed partway")
-        return SimpleNamespace(result=lambda rows=rows: rows, session_info=SimpleNamespace(session_id="s1"))
+        return SimpleNamespace(result=lambda rows=rows: rows, session_info=SimpleNamespace(session_id=session))
 
     def load_table_from_uri(self, uris, table, job_config=None):
-        self.tables[table.split(".")[-1]] = "loaded"
+        self.tables[table.split(".")[-1]], self.kind[table.split(".")[-1]] = "loaded", "BASE TABLE"
         return SimpleNamespace(result=lambda: None)
+
+    def get_dataset(self, dataset):
+        return SimpleNamespace(location="asia-northeast1")
 
 
 def test_a_job_on_bigquery_is_all_or_nothing(monkeypatch):
     run = script("run")
     monkeypatch.setattr(run.nayose, "report_text", lambda engine, steps, job: "")
+    build = ["p.run", "build", "gs://b/x.parquet"]
     before = {"records": 1, "scored": 1, "decisions": 1, "name_weights": 1}
-    made = {"records": 2, "scored": None, "report_steps": 2}  # what the procedure leaves, partway: one dropped, one new
+    made = {"records": 2, "scored": None, "report_steps": 2}  # what the procedure leaves: one replaced, one dropped, one new
+    after = {"records": 2, "decisions": 1, "name_weights": 1, "report_steps": 2, "input": "loaded"}
     done = Tables(before, made)
-    assert run.main(["p.run", "build", "gs://b/x.parquet"], client=done, bigquery=MODULE) == 0
-    assert done.tables == {**before, **made, "input": "loaded"}  # no mark, no clone left
-    failed = Tables(before, made, fail=True)
+    assert run.main(build, client=done, bigquery=MODULE) == 0 and done.tables == after  # no mark, no clone left
+    assert run.main(build, client=done, bigquery=MODULE) == 0 and done.tables == after  # and the next job runs as well
+    failed = Tables(before, made, fail="procedure")
     with pytest.raises(RuntimeError, match="partway"):
-        run.main(["p.run", "build", "gs://b/x.parquet"], client=failed, bigquery=MODULE)
-    assert failed.tables == before  # each table from its clone; the input and the new table dropped
-    died = Tables(before, made)  # a job whose process died after its procedure: marked, so the next refuses; undo undoes it
-    engine = run.BigQuery("p.run", "p.run", client=died, bigquery=MODULE)
-    assert run.begin(engine, "p.run", "build")
-    died.tables.update(made)
-    assert run.main(["p.run", "match", "8"], client=died, bigquery=MODULE) == 75 and not any(s.startswith("CALL `p.run`.") for s in died.sent)
-    assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 0 and died.tables == before
-    assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 0 and died.tables == before  # nothing marked: nothing done
+        run.main(build, client=failed, bigquery=MODULE)
+    assert failed.tables == before  # each table from its clone, the one dropped too; the input and the new table dropped
+    left = Tables(before, made, fail="DROP TABLE `p.run`.before__records")  # a job done, its mark gone, a clone left behind
+    with pytest.raises(RuntimeError, match="failed"):
+        run.main(build, client=left, bigquery=MODULE)
+    left.job, left.fail = {"records": 3}, "CREATE TABLE `p.run`.before__records"  # the next job fails cloning
+    with pytest.raises(RuntimeError, match="failed"):
+        run.main(build, client=left, bigquery=MODULE)
+    assert left.tables == after  # the left clone was dropped first, so nothing older came back
+
+    died = Tables(before, made)  # a job whose process died, its procedure run: the next job refuses; undo waits for it, then undoes
+    assert run.begin(run.BigQuery("p.run", "p.run", client=died, bigquery=MODULE), "p.run", "build")
+    died.query("CALL `p.run`.build()")
+    died.running, died.tables["name_weights"] = {"s1"}, 2  # its procedure still running; a deploy since, with a new name model
+    assert run.main(["p.run", "match", "8"], client=died, bigquery=MODULE) == 75 and not [s for s in died.sent if s.startswith("CALL `p.run`.match")]
+    assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 75 and died.tables["records"] == 2
+    died.running, died.fail = set(), "DROP TABLE `p.run`.report_steps"  # it ended; an undo stopped partway runs again
+    with pytest.raises(RuntimeError, match="failed"):
+        run.main(["p.run", "undo"], client=died, bigquery=MODULE)
+    assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 0 and died.tables == {**before, "name_weights": 2}
+    assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 0 and died.tables == {**before, "name_weights": 2}  # nothing marked

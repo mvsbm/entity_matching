@@ -241,7 +241,7 @@ In prod, the run is the dataset `nayose` in each project, and nothing changes it
 - **`deploy/run.py PROJECT.DATASET JOB ARGS`** loads the job's input from Cloud Storage into `input` or `given` and
   `CALL`s the procedure. After a build or an update it prints `report.txt` from the `report_` tables. A job is all
   or nothing: it first marks the dataset (`job_running`) and clones each table, and a failed job is undone from the
-  clones (`undo` undoes one whose process died).
+  clones (`undo` undoes one whose process died, once its procedure has ended in BigQuery).
 - **`deploy/smoke.py`** builds one generated file on BigQuery in staging and on DuckDB on the agent, and compares
   `scored` and `gold` row for row, and an edit distance on kanji.
 - **`deploy/Jenkinsfile`** runs the stages in order. Checks runs the lint and the tests. Staging deploys and runs the
