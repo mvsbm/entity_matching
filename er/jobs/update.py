@@ -28,15 +28,15 @@ from er.steps.write import run_config, write
 
 
 def update(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, *, pipeline_file: Path | None = None,
-           echo: Callable[[dict], None] | None = None, told: Callable[..., None] | None = None, reaching_only: bool = True) -> Ran:
+           echo: Callable[[dict], None] | None = None, reaching_only: bool = True) -> Ran:
     """The batch at `path` (a Parquet file, a quoted glob or a folder of them), read by the intake
     (er.source.readable), added to the run in `out`, with its reports as a full run writes them (with
     `pipeline_file`), then the lookup index brought up to date. Nothing is written when every record is already in the
     run (ran.added 0). `reaching_only` False: every pair the keys list is stored, whatever it scores (design time)."""
     out = Path(out)
     with folder.run_lock(out):
-        with readable(path, settings.input, told) as read:
-            ran = join(read, out, settings, pipeline, echo, told, reaching_only)
+        with readable(path, settings.input) as read:
+            ran = join(read, out, settings, pipeline, echo, reaching_only)
             ran.inputs = given(path, ran.inputs, "records")
         if ran.added:
             write(ran, out, pipeline_file=pipeline_file)
@@ -45,7 +45,7 @@ def update(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, 
 
 
 def join(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, echo: Callable[[dict], None] | None = None,
-         told: Callable[..., None] | None = None, reaching_only: bool = True) -> Ran:
+         reaching_only: bool = True) -> Ran:
     """The increment's steps on the batch at `path` against the run in `out`, up to its clusters (gold), writing
     nothing. ran.added is 0 when every record is already in the run, and nothing else ran."""
     state, config = out / "state", run_config(pipeline, settings)
@@ -55,7 +55,7 @@ def join(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, ec
     if (state / "config.txt").exists() and (state / "config.txt").read_text(encoding="utf-8") != config:
         raise InputError(f"the pipeline or the column mapping changed since the full run in {out}: an increment would resolve its batch otherwise",
                          fix=f"build the run again with them (python -m er build FILE --out {out} --overwrite), or add these with the pipeline and config/settings.toml that run used")
-    job = start(settings, pipeline, echo, told)
+    job = start(settings, pipeline, echo)
     engine, u = job.engine, q(job.uid)
     model = json.loads((state / "model.json").read_text(encoding="utf-8"))
     parts = sorted((state / "records").glob("part-*.parquet"))  # not a glob: this run's own part comes later
@@ -78,9 +78,9 @@ def join(path: str | Path, out: Path, settings: Settings, pipeline: Pipeline, ec
     ran.scoring, ran.basis = fitted.scoring, fitted.basis
     engine.run(f"""CREATE OR REPLACE TABLE rule_clusters AS SELECT * FROM {engine.read(state / 'rule_clusters.parquet')}
         UNION ALL SELECT {u}, {u} AS cluster_id FROM new_ids""")  # the stored clusters, and each new record alone
-    ran.rule_seconds = rules(job, ran.n, fitted.scoring, batch="new_records").seconds
-    listed = candidates(job, ran.n, fitted.scoring, None, batch="new_ids", reaching_only=reaching_only)  # the full run's steps, on the pairs touching the batch
-    ran.gated, ran.listed = listed.gated, listed.listed
+    rules(job, ran.n, fitted.scoring, batch="new_records")
+    listed = candidates(job, ran.n, fitted.scoring, batch="new_ids", reaching_only=reaching_only)  # the full run's steps, on the pairs touching the batch
+    ran.gated = listed.gated
     score(job, fitted.scoring, listed.listed)
     load_decisions(job, out)  # people's "different" on a record back in the run stands, as in a full run
     cluster(job, ran.n, old=out / "gold.parquet")

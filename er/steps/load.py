@@ -40,7 +40,7 @@ class Loaded:
     present: dict                             # each field the file holds, and the source columns it is built from
     unmapped: pd.DataFrame | None             # the file's columns no field reads, on a sample (report.unmapped_columns)
     classifier: object | None                 # each record's kind, person or company (er.kind); None: the method doesn't ask
-    inputs: list[dict]                        # the files read: path, bytes, SHA-256 (steps.json)
+    inputs: list[dict]                        # the name model read: path, bytes, SHA-256 (steps.json); the job adds the files people gave (jobs.build.given)
     placeholders: dict[str, list[str]] = field(default_factory=dict)  # each field's values read as missing (placeholders)
 
 
@@ -70,7 +70,7 @@ def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "
     t, engine, s, log, chunk_rows = time.perf_counter(), job.engine, job.settings, job.log, CHUNK_ROWS
     src = open_source(path, engine, {c for f, alts in s.columns.items() if f != "entity" for alt in alts for c in alt},
                       reserved={*s.columns, *KIND_COLUMNS, "cluster_id", "resolved_stage", "resolved_by", "er_file", "er_path", "er_first"})
-    log.notes[:], inputs = list(src.notes), file_facts(src.files, "records")
+    log.notes[:] = list(src.notes)
     present = present_fields(s, src.columns)
     hints = suggest(src, engine, [f for f in s.columns if f not in present and f != "entity"], s.detect)
     mapped = {c for alts in s.columns.values() for alt in alts for c in alt}
@@ -94,7 +94,7 @@ def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "
         if fitted != here:
             raise InputError(f"{path}: the model was fitted on other comparison levels (only in the model: {sorted(fitted - here)}; "
                              f"only here: {sorted(here - fitted)})", fix="give no model: the run then fits its own on this file")
-    loaded = Loaded(n=0, pipeline=pipeline, disabled=disabled, present=present, unmapped=unmapped, classifier=None, inputs=inputs)
+    loaded = Loaded(n=0, pipeline=pipeline, disabled=disabled, present=present, unmapped=unmapped, classifier=None, inputs=[])
     rows = _set_aside(job, src.sql, stored)
     engine.run(f"DROP TABLE IF EXISTS {into}")
     if not job.count(rows):
@@ -110,8 +110,6 @@ def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "
     home = pipeline.household  # the label's fields: made with the rest
     normalized, used = [*rules.normalized(), *fs.normalized(), *home.normalized()], rules.used() | fs.used() | home.used()
     total, done = job.count(rows), 0
-    if log.told:
-        log.told(0, total, "records")
     reads = {job.uid, *(c for d in fs.standardize.derived for cols in d.sources for c in cols), *used}  # what cleaning reads: a wide file's other columns never enter the run
     cols = ", ".join([*(q(c) for c, *_ in engine.columns(rows) if c in reads), *(f"NULL::VARCHAR AS {q(c)}" for c in extra)])
     reader = engine.batches(f"SELECT {cols} FROM {rows}", chunk_rows)  # its own cursor: inserts go on alongside
@@ -129,8 +127,6 @@ def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "
             engine.run(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
             engine.unregister("er_chunk")
             done += len(chunk)
-            if log.told:
-                log.told(done, total, "records")
     engine.run("DROP TABLE IF EXISTS er_in")  # the file kept once, read: a copy of it no step reads again
     loaded.n = job.count(into)
     if stored is None:  # an increment's batch: read as missing with the run's records (jobs.update)

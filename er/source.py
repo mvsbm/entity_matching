@@ -65,16 +65,15 @@ def find(path: str | Path) -> list[Path]:
 
 
 @contextlib.contextmanager
-def readable(path: str | Path, spec: "intake.InputSpec", told=None):
+def readable(path: str | Path, spec: "intake.InputSpec"):
     """The records `path` names (a Parquet file, a quoted glob or a folder of them) as a job reads them: read by the
     intake (er.intake: placeholders and blanks as missing, a number's text as written, control characters out) into a
     folder of the job's own, which goes once it ends. An error names the files given, not that folder. O(bytes)."""
     p = Path(path).expanduser()
     files, root = find(path), p if p.is_dir() else None
-    progress = (lambda done, total: told(done, total, "rows")) if told else None
     with tempfile.TemporaryDirectory(prefix="er-", ignore_cleanup_errors=True) as t:  # Windows: a file DuckDB still holds can't go yet
         named = {f: (f.relative_to(root) if root else Path(f.name)).as_posix() for f in files}
-        back = [*((str(Path(t) / x["read"]), str(f)) for f, x in zip(named, intake.take(Path(t), named, spec, progress=progress)["files"])), (t, str(path))]
+        back = [*((str(Path(t) / x["read"]), str(f)) for f, x in zip(named, intake.take(Path(t), named, spec)["files"])), (t, str(path))]
         try:
             yield t
         except InputError as e:  # said of the files people gave, not of the folder they were read into

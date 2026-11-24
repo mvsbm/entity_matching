@@ -9,8 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from er.config import (InputError, Resolver, bits)
-from er.match import named_sql
+from er.config import (InputError, Resolver)
 
 
 def test_a_run_refuses_a_resolver_it_cannot_apply(population):
@@ -301,40 +300,18 @@ def test_an_increment_needs_a_workspace_that_holds_a_run(tmp_path, population):
         update(tmp_path / "all.parquet", tmp_path / "empty", s, p)
 
 
-def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_each_long_step_says_how_far_it_is(tmp_path, population, monkeypatch):
+def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives(tmp_path, population, monkeypatch):
     from er.jobs.build import build
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     first = build(tmp_path / "all.parquet", tmp_path / "a", s, p)
-    told = []
     whole = build(tmp_path / "all.parquet", tmp_path / "b", s, p, model=first.model)
     monkeypatch.setattr("er.steps.score.SCORE_PAIRS", 20)  # many slices
     monkeypatch.setattr("er.steps.load.CHUNK_ROWS", 100)  # and many chunks
-    sliced = build(tmp_path / "all.parquet", tmp_path / "c", s, p, model=first.model, told=lambda *a, **k: told.append((*a, k)))
+    sliced = build(tmp_path / "all.parquet", tmp_path / "c", s, p, model=first.model)
     monkeypatch.undo()
     scores = [r.engine.frame(f"SELECT * FROM scores ORDER BY {r.l}, {r.r}") for r in (whole, sliced)]
     pd.testing.assert_frame_equal(*scores, rtol=1e-9)  # a pair's score depends on it alone: the same in a slice as in the whole
-    counts = {}
-    for done, of, unit, _ in told:
-        counts.setdefault(unit, []).append((done, of))
-    assert {"records", "rules", "keys", "pairs"} <= set(counts)  # load, rules, candidates' joins, scoring: each counts its own work
-    for unit, seen in counts.items():  # up to its total, never back
-        assert [d for d, _ in seen] == sorted(d for d, _ in seen) and seen[-1][0] == seen[-1][1] == seen[0][1], unit
-    assert counts["records"][-1][0] == whole.n and counts["rules"][-1][0] == len(list(p.rules.each())) and len(counts["records"]) > 2  # from 0, a chunk at a time
-    weighed = []
-    from er.steps.budget import Budget
-    from er.steps.candidates import _joined
-    from er.steps.job import Job, Log
-    probe = Job(whole.engine, s, p, Log(told=lambda *a, **k: weighed.append((*a, k["more"]))))
-    g = len(p.fs.blockers)  # the joins weighed by the budget's pairs: a generator whose blocks are all oversized lists none
-    plan = pd.DataFrame(dict(kind=["rule", *["generator"] * g], normal=[5, 0, *[10] * (g - 1)], oversized_blocks=[0, 1, *[0] * (g - 1)]))
-    for i in range(g + 1):
-        _joined(probe, 1000, Budget(plan, {}))(i, g, "keys")
-    assert [x[0] for x in weighed] == sorted(x[0] for x in weighed) and weighed[0][0] == 0 and weighed[-1][0] == weighed[-1][1] > 0 and all(x[3] for x in weighed)
-    told = [(*x[:3], x[3]["likely"]) for x in told if x[2] == "pairs"]
-    total = whole.count("cands")
-    assert len(told) == -(-total // 20) > 1 and [x[0] for x in told] == sorted({min(total, 20 * (i + 1)) for i in range(len(told))})
-    assert {x[1:3] for x in told} == {(total, "pairs")} and told[-1][3] == whole.count(f"scores s WHERE match_weight >= {bits(p.fs.min_match_weight)} AND {named_sql(p.fs)}")
     assert pd.read_parquet(tmp_path / "b" / "gold.parquet").equals(pd.read_parquet(tmp_path / "c" / "gold.parquet"))
     views = lambda run: run.count("duckdb_views() WHERE NOT internal")
     assert views(sliced) == views(whole)  # each slice's lookups released: memory doesn't grow with the slices

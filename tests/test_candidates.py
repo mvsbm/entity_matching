@@ -187,8 +187,8 @@ def test_a_blocking_key_limits_a_rule_join(engine):
         return RulesSpec(standardize=std, resolver=Resolver(method="connected_components"), budget=budget,
                          stages=(Stage(name="fuzzy", rules=(Rule(name="R", exact=("phone",), fuzzy=("name",), blocking=blocking),),
                                        comparators={"name": Comparator("levenshtein", 1)}),))
-    plain = set(map(tuple, rule_edges(spec(()), df, engine, UID)[0][["uid_l", "uid_r"]].to_numpy()))
+    plain = set(map(tuple, rule_edges(spec(()), df, engine, UID)[["uid_l", "uid_r"]].to_numpy()))
     s = spec((Key("name", ("initial",)),))
-    blocked = set(map(tuple, rule_edges(s, prepare(std, df, s.normalized()), engine, UID)[0][["uid_l", "uid_r"]].to_numpy()))
+    blocked = set(map(tuple, rule_edges(s, prepare(std, df, s.normalized()), engine, UID)[["uid_l", "uid_r"]].to_numpy()))
     assert plain == {("A", "B"), ("A", "C")} and blocked == {("A", "B")}  # カトウ starts differently: not joined
 

@@ -10,8 +10,7 @@ import copy
 import itertools
 import math
 import re
-import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from itertools import combinations, product
 
@@ -25,37 +24,30 @@ from er.strings import FUNCTIONS
 from er.config import Comparator, Comparison, COPIES, DeletionKeys, FSModel, FSSpec, GIVEN, hashed, InputError, Key, KeyBlocker, keys_sql, PERSON, Pipeline, q, RulesSpec, unpivoted
 
 def rule_edges(spec: RulesSpec, records: "Records", engine: Engine, uid: str, batch: str | None = None,
-               trust: Mapping[int, str] | None = None, into: str | None = None, told: Callable[..., None] | None = None) -> tuple[pd.DataFrame | str, dict[str, float]]:
+               trust: Mapping[int, str] | None = None, into: str | None = None) -> pd.DataFrame | str:
     """Every rule's pairs, uid_l < uid_r, with the rule and stage that found it (the first rule in order wins a pair)
     and score 1.0: one equi-join per rule, its fuzzy conditions checked on the joined pairs only. `batch`: a table of
     records joined against all of them (an increment), O(|batch|·b) instead of every pair; `trust`: per rule (its index
     in order), a condition its record `l` must meet (values it doesn't trust left out: the keys are equal on both
-    sides). With `into`, a table in the engine, else a frame. Also returns each rule's seconds. `told(done, total,
-    "rules")` after each rule: how far it is."""
+    sides). With `into`, a table in the engine, else a frame."""
     l, r, u = q(f"{uid}_l"), q(f"{uid}_r"), q(uid)
     name = records if isinstance(records, str) else f"er_rules_{abs(hash(id(records)))}"
     if not isinstance(records, str):  # a frame not prepared by er.standardize has no one-byte copy: the Python function compares its pairs
         copies = {comp.copy(c) for s in spec.stages for c, comp in s.comparators.items() if comp.copy(c)} - set(records.columns)
         engine.register(name, records.assign(**{c: pd.Series(pd.NA, index=records.index, dtype="string") for c in copies}))
     left, order = (batch, "<>") if batch else (name, "<")  # a batch pair can come both ways round: DISTINCT ON keeps one
-    seconds, parts, every = {}, [], list(spec.each())
-    if told:
-        told(0, len(every), "rules")
+    parts = []
     try:
-        for i, s, rule in every:
-            t = time.perf_counter()
+        for i, s, rule in spec.each():
             keep = f" WHERE {trust[i]}" if trust and i in trust else ""  # in WHERE, tested before the join: in ON, after it, a placeholder's whole block joined and compared first
             engine.run(f'CREATE OR REPLACE TEMP TABLE er_rule_{i} AS SELECT least(l.{u}, r.{u}) AS {l}, greatest(l.{u}, r.{u}) AS {r} '
                         f'FROM "{left}" l JOIN "{name}" r ON {s.sql(rule)} AND l.{u} {order} r.{u}{keep}')
-            seconds[rule.name] = time.perf_counter() - t
             parts.append(f"SELECT {l}, {r}, '{rule.name}' AS rule, '{s.name}' AS stage, {i} AS i FROM er_rule_{i}")
-            if told:
-                told(len(parts), len(every), "rules")
         sql = f'SELECT DISTINCT ON ({l}, {r}) {l}, {r}, rule, stage, 1.0 AS score FROM ({" UNION ALL ".join(parts)}) ORDER BY {l}, {r}, i'
         if into:
             engine.run(f'CREATE OR REPLACE TABLE "{into}" AS {sql}')
-            return into, seconds
-        return engine.frame(sql).astype({f"{uid}_l": "string", f"{uid}_r": "string"}), seconds
+            return into
+        return engine.frame(sql).astype({f"{uid}_l": "string", f"{uid}_r": "string"})
     finally:
         for i in range(len(parts)):
             engine.run(f"DROP TABLE IF EXISTS er_rule_{i}")
@@ -273,39 +265,6 @@ def u_bound(model: FSModel, c: Comparison, records: Records, engine: Engine) -> 
     return 1 - 0.05 ** (1 / n_filled)  # the one-sided 95% Clopper–Pearson bound at zero hits (design.evaluate.fp_upper(0, n))
 
 
-SCORED_U: dict[tuple[str, int], dict[str, float]] = {}  # (FSModel.u_keys() value, fingerprint of what it reads) → u per level
-# shortcut: one entry per comparison and file this process scores, never dropped; fine for a job, a
-# long-lived process that scores file after file needs a limit
-
-
-def fingerprint(records: Records, cols: list[str], engine: Engine) -> int:
-    """The same set of records and values, in any order, a frame or a table alike: hashed by DuckDB either way."""
-    name = records if isinstance(records, str) else f"er_fp_{abs(hash(id(records)))}"
-    if not isinstance(records, str):
-        engine.register(name, records)
-    try:
-        return int(engine.value(f'SELECT coalesce(bit_xor({hashed(*map(q, cols))}), 0) FROM "{name}"'))
-    finally:
-        if not isinstance(records, str):
-            engine.unregister(name)
-
-
-def scored_sample(model: FSModel, df: Records, engine: Engine, uid: str, comparisons: Iterable[Comparison] | None = None) -> U:
-    """u by random sampling on these records, per comparison (all, or these), cached (SCORED_U) by the comparison and
-    the values it reads, within this process. Splink picks the sampled pairs by a hash of the record ID, so nothing else
-    changes them: a model and its variant share one sample, and so do a fit on a whole small file and the run's u on it
-    when both sample as many pairs (fit_u_max_pairs unset). O(N) per comparison for
-    the fingerprint, plus u_max_pairs per comparison not cached yet."""
-    keys, wanted = model.u_keys(), list(model.comparisons if comparisons is None else comparisons)
-    reads = {c.name: [uid, *sorted({comp.column(col) for lv in c.levels for col, comp in lv.any_of} | set(c.null_if_missing))] for c in wanted}
-    prints = {c.name: fingerprint(df, reads[c.name], engine) for c in wanted}
-    todo = [c for c in wanted if (keys[c.name], prints[c.name]) not in SCORED_U]
-    fresh = sample_u(model, todo, df, engine, uid)
-    for name, u in fresh.items():
-        SCORED_U[keys[name], prints[name]] = u
-    return {c.name: SCORED_U[keys[c.name], prints[c.name]] for c in wanted}
-
-
 def assemble_u(model: FSModel, model_json: dict, sampled: U, exact: U, df: Records, engine: Engine) -> dict:
     """model_json with each level's u: counted exactly (when the model counts them), else sampled, else, for a level no
     sampled pair reached, the bound on these records. A level never seen in training gets m = u, 0 bits. m and λ stay as
@@ -330,7 +289,7 @@ def scored_u(model: FSModel, model_json: dict, df: Records, engine: Engine, uid:
     from the fitting set under-credits it. Needs no labels; O(N) counts and u_max_pairs sampled, whatever the file's size."""
     exact = exact_u(model, df, engine)
     skip = counted(model, exact)
-    sampled = scored_sample(model, df, engine, uid, [c for c in model.comparisons if c.name not in skip])
+    sampled = sample_u(model, [c for c in model.comparisons if c.name not in skip], df, engine, uid)
     return assemble_u(model, model_json, sampled, exact, df, engine), sampled, exact
 
 
@@ -447,8 +406,6 @@ def train_fs(model: FSModel, df: pd.DataFrame, engine: Engine, uid: str, labels:
              u: dict[str, dict[str, float]] | None = None) -> dict:
     """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the model JSON plus "er":
     what scoring needs (the fitting-set size) and which levels had no estimate.
-    u-sampling is ~97% of training time and depends only on each comparison and the records (FSModel.u_keys), not on
-    the m method, so it goes through scored_sample's cache.
     A level without an estimate never falls back to a default: no sampled pair → u at its upper bound (the
     weight is a lower bound on the evidence); never seen in training → m = u (0 bits). A prior or EM rule that finds no
     pair in df (its fields nearly empty there) is skipped, and listed in "er"; none left of either stops the fit.
@@ -465,7 +422,7 @@ def train_fs(model: FSModel, df: pd.DataFrame, engine: Engine, uid: str, labels:
     else:
         exact = exact_u(model, t, engine) if model.u_exact_by_counts else {}  # the leading exact levels, exactly
         skip = counted(model, exact)
-        u = {**{c: {} for c in skip}, **scored_sample(model, t, engine, uid, [c for c in model.comparisons if c.name not in skip])}
+        u = {**{c: {} for c in skip}, **sample_u(model, [c for c in model.comparisons if c.name not in skip], t, engine, uid)}
         u = {c: {**levels, **exact.get(c, {})} for c, levels in u.items()}
         filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]
         u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, engine) for lv in labels_of[c.name]} for c in model.comparisons}

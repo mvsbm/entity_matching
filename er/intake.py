@@ -8,20 +8,17 @@ list (a Parquet list column, or text like ["8700848"]) read as its item: the fir
 apart. Text is UTF-8: a value stored as bytes that aren't, or holding U+FFFD (bytes decoded wrong upstream), is made
 missing and counted as damaged. A blank column name is numbered, and one that repeats another but for case suffixed.
 
-A part holds what was given, `read/` (what runs read) and intake.json (counts only: no value). The intake is a
-function of the files given and [input], so a part read by an older reader or under other settings is read again
-(er.folder.fresh). O(bytes) in one pass: what reading keeps as it is settled in Arrow, the rest one value at a time.
+A part (a job's own temporary folder, er.source.readable) holds `read/` (what the job reads) and intake.json (counts
+only: no value). O(bytes) in one pass: what reading keeps as it is settled in Arrow, the rest one value at a time.
 """
 import ast
 import functools
 import hashlib
 import json
-import os
 import re
-import shutil
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,7 +30,6 @@ import pyarrow.parquet as pq
 from er.config import InputError
 
 REPORT, READ = "intake.json", "read"
-READER = 4  # what reads a part: one an older reader read is read again (er.folder.fresh). 2: lists read as their item; 3: whole floats as digits, names apart case aside; 4: Parquet only
 SUFFIXES = (".parquet",)  # the records files a folder holds
 CHUNK = 200_000  # shortcut: about 9 s a million records of 25 columns; past ~20M rows on one machine, split the file
 CONVERT = ("write it as Parquet, every column as text: in Python, pandas.read_csv(path, dtype=str).to_parquet(new); "
@@ -251,9 +247,8 @@ def names_of(header: list[str]) -> list[str]:  # each column a name of its own: 
     return names
 
 
-def read_one(f: Path, out: Path, spec: InputSpec, progress: Callable[[int], None] | None = None) -> dict:
-    """One Parquet file into `out` (Parquet, every column text), and its facts: counts only. `progress` is told the
-    rows read after each chunk. O(bytes)."""
+def read_one(f: Path, out: Path, spec: InputSpec) -> dict:
+    """One Parquet file into `out` (Parquet, every column text), and its facts: counts only. O(bytes)."""
     check(f)
     parts = chunks(f)
     header = next(parts)
@@ -301,21 +296,12 @@ def read_one(f: Path, out: Path, spec: InputSpec, progress: Callable[[int], None
             writer = pq.ParquetWriter(out, table.schema)
         writer.write_table(table)
         facts["rows"] += table.num_rows
-        if progress:
-            progress(facts["rows"])
     if writer is None:  # no record: the header alone
         out.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.table({n: pa.array([], pa.string()) for n in names}), out)
     else:
         writer.close()
     return facts
-
-
-def rows_in(f: Path) -> int:  # how many records a Parquet file holds, for progress: its own count
-    try:
-        return pq.ParquetFile(f).metadata.num_rows
-    except (OSError, pa.ArrowException):  # its reading says why
-        return 0
 
 
 # ---------- a part: the files given, read ----------
@@ -325,18 +311,10 @@ def sha256(f: Path) -> str:
         return hashlib.file_digest(fh, "sha256").hexdigest()
 
 
-def take(part: Path, given: dict[Path, str], spec: InputSpec, progress: Callable[[int, int], None] | None = None) -> dict:
-    """Read every file given (file → its name in the part) into part/read/, and write what was found: intake.json.
-    Read again (by a newer reader, or under other [input] settings), each read file keeps the SHA-256 of what it
-    replaced, so a run that read the earlier one still finds its file (er.folder.inputs). `progress` is told the rows
-    read and how many there are, as each chunk is read. The report. O(bytes)."""
+def take(part: Path, given: dict[Path, str], spec: InputSpec) -> dict:
+    """Read every file given (file → its name in the part) into part/read/, and write what was found: intake.json,
+    counts only. The report. O(bytes)."""
     t = time.time()
-    whole, seen = sum(map(rows_in, given)) if progress else 0, 0
-    old = json.loads((part / REPORT).read_text(encoding="utf-8")) if (part / REPORT).is_file() else {}
-    before = {x["read"]: x.get("versions", []) for x in old.get("files", [])}
-    older = old.get("older_reader", []) + ([x["sha256"] for x in old.get("files", [])] if old and old.get("reader", 1) < READER else [])  # what an earlier reader read
-    tmp = part / ".read.tmp"
-    shutil.rmtree(tmp, ignore_errors=True)
     files = []
     for f, name in given.items():
         rel = Path(name)
@@ -345,43 +323,12 @@ def take(part: Path, given: dict[Path, str], spec: InputSpec, progress: Callable
         if any(map(same, files)):
             raise InputError(f"{name} and {next(x['given'] for x in files if same(x))} would be read into one file",
                              fix="rename one of them, then give them again")
-        facts = read_one(f, tmp / READ / rel, spec, progress and (lambda n, b=seen: progress(b + n, max(whole, b + n))))
-        seen += facts["rows"]
-        sha = sha256(tmp / READ / rel)
-        files.append(dict(facts, given=name, read=(Path(READ) / rel).as_posix(), sha256=sha,
-                          versions=list(dict.fromkeys([*before.get((Path(READ) / rel).as_posix(), []), sha]))))
-    older = [x for x in older if x not in {f["sha256"] for f in files}]  # read again to the same bytes: nothing an earlier reader read differently
+        files.append(dict(read_one(f, part / READ / rel, spec), given=name, read=(Path(READ) / rel).as_posix()))
     report = dict(files=files, rows=sum(x["rows"] for x in files), fixed=dict(sum((Counter(x["fixed"]) for x in files), Counter())),
-                  notes=[n for x in files for n in x["notes"]], seconds=round(time.time() - t, 2), reader=READER, input=read_as(spec), older_reader=older)
-    (tmp / REPORT).write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    settle(part)
+                  notes=[n for x in files for n in x["notes"]], seconds=round(time.time() - t, 2))
+    part.mkdir(parents=True, exist_ok=True)
+    (part / REPORT).write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     return report
-
-
-def read_as(spec: InputSpec) -> str:  # the [input] settings a part was read with, as intake.json keeps them
-    return hashlib.sha256(repr(spec).encode()).hexdigest()[:16]
-
-
-EARLIER = ("proposals.parquet", "unread.parquet")  # what an earlier reader wrote beside its report: gone once a part is read again
-
-
-def settle(part: Path) -> None:
-    """A reading's moves, once its files are complete (.read.tmp holds its report): read/ swapped in, the report last,
-    since a part with a report is whole. A reading cut short in its moves is done by the next (er.folder.fresh); done
-    twice, the same as once. Nothing without a complete reading."""
-    tmp, gone = part / ".read.tmp", part / ".read.old"
-    if not (tmp / REPORT).is_file():
-        return
-    if (tmp / READ).exists():
-        shutil.rmtree(gone, ignore_errors=True)
-        if (part / READ).exists():
-            os.replace(part / READ, gone)
-        os.replace(tmp / READ, part / READ)
-        shutil.rmtree(gone, ignore_errors=True)
-    for name in EARLIER:
-        (part / name).unlink(missing_ok=True)
-    os.replace(tmp / REPORT, part / REPORT)
-    shutil.rmtree(tmp, ignore_errors=True)
 
 
 def report(part: Path) -> dict | None:  # what the intake found in a part, or None for a path that is no part

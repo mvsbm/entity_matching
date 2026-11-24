@@ -47,22 +47,12 @@ def test_typed_addresses_normalize_to_one_key():
     assert normalize(typed, ("address",), load_settings().standardize).nunique() == 1
 
 
-def test_a_u_sample_is_drawn_once_per_set_of_records(engine, records, monkeypatch):
+def test_a_u_sample_is_the_same_for_the_same_records_in_any_order(engine, records):
     import er.match as M
-    labels = records.set_index(UID)["entity"]
-    M.SCORED_U.clear()
-    fresh = train_fs(model("labels"), records, engine, UID, labels)
-    sampled, real = [], M.sample_u
-    monkeypatch.setattr(M, "sample_u", lambda m, comps, *a: sampled.extend(c.name for c in comps) or real(m, comps, *a))
-    assert model("em").u_keys() == model("labels").u_keys()
-    other = train_fs(model("em"), records, engine, UID, labels)  # another m method, the same comparisons and records
+    comps = model().comparisons
     engine.register("er_shuffled", records.sample(frac=1, random_state=0))  # the same records as a table, in another order
-    table = M.scored_sample(model(), "er_shuffled", engine, UID)
-    assert sampled == []
-    assert table == M.scored_sample(model(), records, engine, UID) == u_of(other) == u_of(fresh)
-    M.SCORED_U.clear()
-    again = train_fs(model("labels"), records, engine, UID, labels)
-    assert sampled == ["name", "phone"] and parameters(fresh).fillna(0).round(12).equals(parameters(again).fillna(0).round(12))
+    fitted = train_fs(model("em"), records, engine, UID)
+    assert M.sample_u(model(), comps, "er_shuffled", engine, UID) == M.sample_u(model(), comps, records, engine, UID) == u_of(fitted)
 
 
 def test_a_u_sample_counted_in_one_pass_gives_splink_s_u_to_the_last_bit(engine):
@@ -192,9 +182,9 @@ def test_shared_connection_gives_the_same_rules_and_clusters_as_a_fresh_one(engi
     a = pd.DataFrame({"uid": ["1", "2", "3"], "phone": ["11", "11", "22"], "name": ["サトウ", "サトオ", "スズキ"]}, dtype="string")
     b = pd.DataFrame({"uid": ["7", "8", "9"], "phone": ["33", "33", "33"], "name": ["タナカ", "タナカ", "イトウ"]}, dtype="string")
     base = lambda d: pd.DataFrame({UID: d[UID], "cluster_id": d[UID]})
-    first = rule_edges(spec, a, engine, UID)[0]
+    first = rule_edges(spec, a, engine, UID)
     clustered(engine, base(a), first, a[UID], UID)  # leaves whatever it caches on the shared connection
-    shared, fresh = rule_edges(spec, b, engine, UID)[0], rule_edges(spec, b, connect(), UID)[0]
+    shared, fresh = rule_edges(spec, b, engine, UID), rule_edges(spec, b, connect(), UID)
     assert shared.reset_index(drop=True).equals(fresh.reset_index(drop=True)) and len(shared) == 1
     assert clustered(engine, base(b), shared, b[UID], UID).equals(clustered(connect(), base(b), fresh, b[UID], UID))
 
@@ -238,7 +228,7 @@ def test_a_comparison_asked_of_duckdb_first_passes_the_pairs_the_python_function
     import random
     from er.config import Comparator
     from er.standardize import normalize
-    from er.engine.duckdb import connect, spent
+    from er.engine.duckdb import connect
     rnd = random.Random(1)
     kata, roman, digits, kanji = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲンガギグゲゴヴァィゥェォャュョッー・", "ABCDEFGHIJKLMNOPQRSTUVWXYZ abc", "0123456789", "東京大阪市区町村一二三丁目番地号"
     word = lambda letters: "".join(rnd.choice(letters) for _ in range(rnd.choice([1, 2, 3, 4, 6, 8, 12, 40, 90])))
@@ -265,13 +255,11 @@ def test_a_comparison_asked_of_duckdb_first_passes_the_pairs_the_python_function
         for t in thresholds:
             comp = Comparator(function=function, threshold=t)
             plain = f'coalesce(cl_{function}_cut("x_l", "x_r", {t}) {">=" if function.startswith("jaro") else "<="} {t}, FALSE)'
-            before = spent().get(function, (0, 0))[1]
             fast, slow = engine.row(f"SELECT list(coalesce({comp.sql('x', level=True)}, FALSE) ORDER BY i), list({plain} ORDER BY i) FROM pairs")
             assert fast == slow, (function, t, [(df.x_l[i], df.x_r[i]) for i, (p, q) in enumerate(zip(fast, slow)) if p != q][:3])
             settled = engine.value(f"SELECT list({comp.sql('x', level=True, settled=True)} ORDER BY i) FROM pairs")
             assert all(s is None or s == f for s, f in zip(settled, fast)), (function, t)  # what DuckDB settles is the test's answer
             assert function in ("damerau_levenshtein", "levenshtein") or sum(s is not None for s in settled) > len(df) / 2, (function, t)
-            assert function == "jaro" or spent()[function][1] - before < 1.5 * len(df), (function, t)  # the plain query's, and few of its: most pairs never reach Python
     rule = Comparator(function="jaro_winkler", threshold=0.8).sql("x")  # a rule's form: equal values pass too
     assert "jaro_winkler_similarity" in rule and rule.startswith('(l."x" = r."x" OR')
 
@@ -331,7 +319,7 @@ def test_pairs_that_cant_reach_0_left_out_as_the_keys_list_them_change_no_score_
     assert set(every.gated["decision"]) >= {"kept", "skipped: over capacity"}  # the capacity binds
     pd.testing.assert_frame_equal(gated(kept), gated(every))  # every block sampled, scored and decided alike
     facts = lambda run, step: next(x for x in run.steps if x["step"] == step)
-    for step, keys in (("candidates", ("candidates", "oversized_kept", "gate_pairs")), ("score", ("unscored", "bands"))):
+    for step, keys in (("candidates", ("candidates", "oversized_kept", "gate_pairs")), ("score", ("unscored",))):
         assert {k: facts(kept, step)[k] for k in keys} == {k: facts(every, step)[k] for k in keys}  # the counts people read
     pairs = lambda run: {x["name"]: x["pairs"] for x in facts(run, "candidates")["generators"]}
     assert pairs(kept) == pairs(every)  # each key's pairs, as listed
