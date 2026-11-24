@@ -1,4 +1,4 @@
-"""Stage 2, fit (nayose/sql/comparisons.sql, fit.sql, u.sql, nayose/em.py): the model nayose learns equals the one
+"""Stage 2, fit (nayose/sql/functions.sql, fit.sql, nayose/em.py): the model nayose learns equals the one
 er/ learns from the same records, to the last bit: λ, each level's m and u as fitted on the sample, and u measured
 again on the file."""
 import copy

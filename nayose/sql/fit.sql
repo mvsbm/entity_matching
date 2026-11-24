@@ -1,18 +1,17 @@
--- Stage 2, fit: what the model learns from, on a sample of a fixed size, so its cost doesn't grow with the file.
--- nayose.em learns the model from these counts (λ, then m by EM); u.sql measures u, on the sample and on the file.
--- O(n + P_prior + P_em·K) on the sample of n records.
+-- Stage 2, fit: the counts the model is learned from, on a sample of a fixed size (so its cost doesn't grow with the
+-- file), and u counted on the sample and on the file to be scored, each a scope. Counts only, every one an exact
+-- integer; nayose.em makes them the model (λ, m by EM, u), as er/fit.py and er/match.py do. The comparisons are
+-- functions.sql's. O(n + P_prior + P_em·K) on the sample of n records; O(N + max_pairs·K) for u on each scope.
 --
--- Reads: records. Values: @fit_rows. Writes: fit_sample (and the view u_records of it), fit_prior, em_patterns.
+-- Reads: records. Values: @fit_rows, @seed; for each scope, @draw_<scope> (whether to sample: the share is under 1)
+-- and @cut_<scope> (the hash's cut: share · 10⁹).
+-- Writes: fit_sample, fit_prior, em_patterns; by scope: u_outside, u_counted, u_near, u_sampled, u_filled.
 
 
 -- 1. The sample: whole postal areas by hash, so households stay together and a smaller sample is part of a bigger one
 CREATE OR REPLACE TABLE fit_sample AS
 SELECT records.* FROM records
 JOIN (SELECT id FROM records ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_rows) USING (id);
-
--- what u.sql measures: the sample first
-CREATE OR REPLACE VIEW u_records AS
-SELECT * FROM fit_sample;
 
 
 -- 2. λ, how likely two random records are one customer, from the pairs the near-certain rules find: each pair once,
@@ -41,33 +40,166 @@ SELECT
 -- 3. EM's pairs, a session a key: the sample's pairs sharing a phone, then an address, each pattern of levels with
 --    its count. A comparison the key chose its pairs by can't be learned from them: NULL in its session.
 CREATE OR REPLACE TABLE em_patterns AS
-SELECT
-  'phone' AS session,
-  gamma_name(l.person_name, r.person_name, l.person_name__kana_fold, r.person_name__kana_fold,
-             l.person_name__kana_fold_long_vowel, r.person_name__kana_fold_long_vowel, l.given_name__kana_fold, r.given_name__kana_fold,
-             l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte) AS name,
-  gamma_company(l.company_name, r.company_name, l.company_name__nfkc_strip_legal_form_kana_fold, r.company_name__nfkc_strip_legal_form_kana_fold,
-                l.company_name__nfkc_strip_legal_form_kana_fold_one_byte, r.company_name__nfkc_strip_legal_form_kana_fold_one_byte) AS company,
-  gamma_address(l.address_code, r.address_code, l.address, r.address, l.postal_code, r.postal_code, l.address__address, r.address__address,
-                l.address__address_one_byte_hash, r.address__address_one_byte_hash) AS address,
-  CAST(NULL AS INT64) AS phone,
-  gamma_cif(l.customer_id, r.customer_id) AS cif,
-  gamma_birth(l.birth_date, r.birth_date) AS birth,
-  COUNT(*) AS pairs
-FROM fit_sample AS l JOIN fit_sample AS r ON l.phone = r.phone AND l.id < r.id
-GROUP BY 1, 2, 3, 4, 5, 6, 7
-UNION ALL
-SELECT
-  'address',
-  gamma_name(l.person_name, r.person_name, l.person_name__kana_fold, r.person_name__kana_fold,
-             l.person_name__kana_fold_long_vowel, r.person_name__kana_fold_long_vowel, l.given_name__kana_fold, r.given_name__kana_fold,
-             l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte),
-  gamma_company(l.company_name, r.company_name, l.company_name__nfkc_strip_legal_form_kana_fold, r.company_name__nfkc_strip_legal_form_kana_fold,
-                l.company_name__nfkc_strip_legal_form_kana_fold_one_byte, r.company_name__nfkc_strip_legal_form_kana_fold_one_byte),
-  CAST(NULL AS INT64),
-  gamma_phone(l.phone, r.phone),
-  gamma_cif(l.customer_id, r.customer_id),
-  gamma_birth(l.birth_date, r.birth_date),
-  COUNT(*)
-FROM fit_sample AS l JOIN fit_sample AS r ON l.address__address = r.address__address AND l.id < r.id
+SELECT session, name, company, address, phone, cif, birth, COUNT(*) AS pairs
+FROM (
+  SELECT 'phone' AS session, gamma_name(l, r) AS name, gamma_company(l, r) AS company, gamma_address(l, r) AS address,
+         CAST(NULL AS INT64) AS phone, gamma_cif(l, r) AS cif, gamma_birth(l, r) AS birth
+  FROM fit_sample AS l JOIN fit_sample AS r ON l.phone = r.phone AND l.id < r.id
+  UNION ALL
+  SELECT 'address', gamma_name(l, r), gamma_company(l, r), CAST(NULL AS INT64), gamma_phone(l, r), gamma_cif(l, r), gamma_birth(l, r)
+  FROM fit_sample AS l JOIN fit_sample AS r ON l.address__address = r.address__address AND l.id < r.id
+)
 GROUP BY 1, 2, 3, 4, 5, 6, 7;
+
+
+-- 4. u: how often two different customers land in each level, on the sample (what the model is learned with) and on
+--    the file (what it scores with: in a bigger file, a field whose values grow with it agrees by chance less often).
+--    A level of equality (and a near level of one edit after its column's equality) is counted exactly from how many
+--    records hold each value, never pair by pair: a sample would miss an agreement rarer than one pair in a billion.
+--    The rest is Splink's random sample of about max_pairs pairs.
+CREATE OR REPLACE VIEW u_records AS
+SELECT 'sample' AS scope, * FROM fit_sample
+UNION ALL
+SELECT 'file', * FROM records;
+
+-- 4a. Each comparison's pairs outside its missing level: every pair, less those where each of its columns is empty on
+--     a side. A record's mask: which of the comparison's columns it fills; two masks sharing none make missing pairs.
+CREATE OR REPLACE TEMP TABLE u_masks AS
+SELECT scope, 'name' AS comparison, IF(person_name IS NOT NULL, 1, 0) AS mask, COUNT(*) AS n FROM u_records GROUP BY 1, 2, 3
+UNION ALL SELECT scope, 'company', IF(company_name IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3
+UNION ALL SELECT scope, 'address', IF(address_code IS NOT NULL, 1, 0) + IF(address IS NOT NULL, 2, 0) + IF(postal_code IS NOT NULL, 4, 0), COUNT(*)
+          FROM u_records GROUP BY 1, 2, 3
+UNION ALL SELECT scope, 'phone', IF(phone IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3
+UNION ALL SELECT scope, 'cif', IF(customer_id IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3
+UNION ALL SELECT scope, 'birth', IF(birth_date IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3;
+
+CREATE OR REPLACE TABLE u_outside AS
+WITH every AS (SELECT scope, DIV(COUNT(*) * (COUNT(*) - 1), 2) AS pairs FROM u_records GROUP BY scope),
+missing AS (
+  SELECT a.scope, a.comparison, SUM(IF(a.mask = b.mask, DIV(a.n * (a.n - 1), 2), a.n * b.n)) AS pairs
+  FROM u_masks AS a JOIN u_masks AS b ON a.scope = b.scope AND a.comparison = b.comparison AND a.mask <= b.mask AND (a.mask & b.mask) = 0
+  GROUP BY a.scope, a.comparison
+)
+SELECT c.scope, c.comparison, every.pairs - COALESCE(missing.pairs, 0) AS pairs
+FROM (SELECT DISTINCT scope, comparison FROM u_masks) AS c JOIN every USING (scope) LEFT JOIN missing USING (scope, comparison);
+
+-- 4b. The levels of equality, up to each comparison's first fuzzy level: the pairs equal on a set of columns (all
+--     filled) are Σ n(n−1)/2 over its values; a level that follows others counts the pairs equal on it and on none
+--     before it, by inclusion–exclusion (sign).
+CREATE OR REPLACE TABLE u_counted AS
+SELECT scope, comparison, label, SUM(sign * DIV(n * (n - 1), 2)) AS pairs
+FROM (
+  SELECT scope, 'name' AS comparison, 'exact' AS label, 1 AS sign, COUNT(*) AS n
+  FROM u_records WHERE person_name IS NOT NULL GROUP BY scope, person_name
+  UNION ALL SELECT scope, 'name', 'fold exact', 1, COUNT(*)
+  FROM u_records WHERE person_name__kana_fold IS NOT NULL GROUP BY scope, person_name__kana_fold
+  UNION ALL SELECT scope, 'name', 'fold exact', -1, COUNT(*)
+  FROM u_records WHERE person_name IS NOT NULL AND person_name__kana_fold IS NOT NULL GROUP BY scope, person_name, person_name__kana_fold
+  UNION ALL SELECT scope, 'name', 'same reading', 1, COUNT(*)
+  FROM u_records WHERE person_name__kana_fold_long_vowel IS NOT NULL GROUP BY scope, person_name__kana_fold_long_vowel
+  UNION ALL SELECT scope, 'name', 'same reading', -1, COUNT(*)
+  FROM u_records WHERE person_name IS NOT NULL AND person_name__kana_fold_long_vowel IS NOT NULL
+  GROUP BY scope, person_name, person_name__kana_fold_long_vowel
+  UNION ALL SELECT scope, 'name', 'same reading', -1, COUNT(*)
+  FROM u_records WHERE person_name__kana_fold IS NOT NULL AND person_name__kana_fold_long_vowel IS NOT NULL
+  GROUP BY scope, person_name__kana_fold, person_name__kana_fold_long_vowel
+  UNION ALL SELECT scope, 'name', 'same reading', 1, COUNT(*)
+  FROM u_records WHERE person_name IS NOT NULL AND person_name__kana_fold IS NOT NULL AND person_name__kana_fold_long_vowel IS NOT NULL
+  GROUP BY scope, person_name, person_name__kana_fold, person_name__kana_fold_long_vowel
+  UNION ALL SELECT scope, 'company', 'exact', 1, COUNT(*)
+  FROM u_records WHERE company_name__nfkc_strip_legal_form_kana_fold IS NOT NULL GROUP BY scope, company_name__nfkc_strip_legal_form_kana_fold
+  UNION ALL SELECT scope, 'address', 'same address', 1, COUNT(*) FROM u_records WHERE address_code IS NOT NULL GROUP BY scope, address_code
+  UNION ALL SELECT scope, 'address', 'same address', 1, COUNT(*) FROM u_records WHERE address__address IS NOT NULL GROUP BY scope, address__address
+  UNION ALL SELECT scope, 'address', 'same address', -1, COUNT(*)
+  FROM u_records WHERE address_code IS NOT NULL AND address__address IS NOT NULL GROUP BY scope, address_code, address__address
+  UNION ALL SELECT scope, 'phone', 'exact', 1, COUNT(*) FROM u_records WHERE phone IS NOT NULL GROUP BY scope, phone
+  UNION ALL SELECT scope, 'cif', 'exact', 1, COUNT(*) FROM u_records WHERE customer_id IS NOT NULL GROUP BY scope, customer_id
+  UNION ALL SELECT scope, 'birth', 'exact', 1, COUNT(*) FROM u_records WHERE birth_date IS NOT NULL GROUP BY scope, birth_date
+)
+GROUP BY scope, comparison, label;
+
+-- 4c. One edit after equality, by keys, never pair by pair: values of one length one substitution apart share exactly
+--     one key (the value without its i-th character, at i), two neighbours swapped apart exactly one (Damerau: the
+--     pair in order, at i), so a key's records pair (Σn)² − Σn² over 2 ways; a value one character longer is one
+--     deletion away (Hamming, which pads the shorter, its last character), joined on the shorter values.
+CREATE OR REPLACE TEMP TABLE u_values AS
+SELECT scope, 'phone' AS comparison, phone AS x, COUNT(*) AS n, LENGTH(phone) AS len FROM u_records WHERE phone IS NOT NULL GROUP BY scope, phone
+UNION ALL SELECT scope, 'cif', customer_id, COUNT(*), LENGTH(customer_id) FROM u_records WHERE customer_id IS NOT NULL GROUP BY scope, customer_id
+UNION ALL SELECT scope, 'birth', birth_date, COUNT(*), LENGTH(birth_date) FROM u_records WHERE birth_date IS NOT NULL GROUP BY scope, birth_date;
+
+CREATE OR REPLACE TEMP TABLE u_at AS
+SELECT v.scope, v.comparison, v.x, v.n, v.len, i FROM u_values AS v, UNNEST(GENERATE_ARRAY(1, v.len)) AS i;
+
+CREATE OR REPLACE TABLE u_near AS
+WITH substituted AS (
+  SELECT scope, comparison, SUM(DIV(s * s - ss, 2)) AS pairs
+  FROM (SELECT scope, comparison, SUM(n) AS s, SUM(n * n) AS ss FROM u_at GROUP BY scope, comparison, len, i, SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1))
+  GROUP BY scope, comparison
+),
+swapped AS (
+  SELECT scope, comparison, SUM(DIV(s * s - ss, 2)) AS pairs
+  FROM (SELECT scope, comparison, SUM(n) AS s, SUM(n * n) AS ss FROM u_at
+        WHERE comparison IN ('cif', 'birth') AND i < len AND SUBSTR(x, i, 1) <> SUBSTR(x, i + 1, 1)
+        GROUP BY scope, comparison, len, i,
+                 SUBSTR(x, 1, i - 1) || LEAST(SUBSTR(x, i, 1), SUBSTR(x, i + 1, 1)) || GREATEST(SUBSTR(x, i, 1), SUBSTR(x, i + 1, 1)) || SUBSTR(x, i + 2))
+  GROUP BY scope, comparison
+),
+shorter AS (  -- each value with a character deleted: Hamming its last; else each, a run of equal characters once
+  SELECT scope, comparison, x, n, len, SUBSTR(x, 1, len - 1) AS d FROM u_values WHERE comparison = 'phone'
+  UNION ALL
+  SELECT scope, comparison, x, n, len, SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1) FROM u_values, UNNEST(GENERATE_ARRAY(1, len + 1)) AS i
+  WHERE comparison <> 'phone' AND (i = 1 OR i > len OR SUBSTR(x, i - 1, 1) <> SUBSTR(x, i, 1))
+),
+longer AS (
+  SELECT scope, comparison, SUM(nn) AS pairs
+  FROM (SELECT DISTINCT a.scope, a.comparison, a.x AS ax, b.x AS bx, a.n * b.n AS nn FROM shorter AS a JOIN u_values AS b
+        ON b.scope = a.scope AND b.comparison = a.comparison AND b.x = a.d AND b.len = a.len - 1)
+  GROUP BY scope, comparison
+)
+SELECT c.scope, c.comparison, 'one digit off' AS label, COALESCE(s.pairs, 0) + COALESCE(w.pairs, 0) + COALESCE(l.pairs, 0) AS pairs
+FROM (SELECT DISTINCT scope, comparison FROM u_outside WHERE comparison IN ('phone', 'cif', 'birth')) AS c
+LEFT JOIN substituted AS s USING (scope, comparison)
+LEFT JOIN swapped AS w USING (scope, comparison)
+LEFT JOIN longer AS l USING (scope, comparison);
+
+-- 4d. The rest sampled, as Splink samples: the records whose hash of ID and seed falls under their scope's cut, every
+--     pair of them, each pair's level of each comparison, counted. A comparison counted to its else level (each of
+--     its levels counted, pairs left for its else level) isn't sampled.
+CREATE OR REPLACE TEMP TABLE u_plan AS
+SELECT
+  o.scope,
+  COALESCE(LOGICAL_OR(o.comparison = 'phone' AND NOT (c.pairs > 0 AND n.pairs > 0 AND c.pairs + n.pairs < o.pairs)), TRUE) AS phone,
+  COALESCE(LOGICAL_OR(o.comparison = 'cif' AND NOT (c.pairs > 0 AND n.pairs > 0 AND c.pairs + n.pairs < o.pairs)), TRUE) AS cif,
+  COALESCE(LOGICAL_OR(o.comparison = 'birth' AND NOT (c.pairs > 0 AND n.pairs > 0 AND c.pairs + n.pairs < o.pairs)), TRUE) AS birth
+FROM u_outside AS o
+JOIN u_counted AS c ON c.scope = o.scope AND c.comparison = o.comparison AND c.label = 'exact'
+JOIN u_near AS n ON n.scope = o.scope AND n.comparison = o.comparison
+GROUP BY o.scope;
+
+CREATE OR REPLACE TEMP TABLE u_drawn AS
+SELECT * FROM u_records
+WHERE IF(scope = 'sample', NOT @draw_sample OR MOD(er_hash(id || '_' || @seed), 1000000000) < @cut_sample,
+                           NOT @draw_file OR MOD(er_hash(id || '_' || @seed), 1000000000) < @cut_file);
+
+CREATE OR REPLACE TEMP TABLE u_pairs AS
+SELECT
+  l.scope, gamma_name(l, r) AS name, gamma_company(l, r) AS company, gamma_address(l, r) AS address,
+  IF(plan.phone, gamma_phone(l, r), NULL) AS phone, IF(plan.cif, gamma_cif(l, r), NULL) AS cif, IF(plan.birth, gamma_birth(l, r), NULL) AS birth
+FROM u_drawn AS l JOIN u_drawn AS r ON l.scope = r.scope AND l.id < r.id JOIN u_plan AS plan ON plan.scope = l.scope;
+
+CREATE OR REPLACE TABLE u_sampled AS
+SELECT scope, 'name' AS comparison, name AS gamma, COUNT(*) AS pairs FROM u_pairs GROUP BY scope, name
+UNION ALL SELECT scope, 'company', company, COUNT(*) FROM u_pairs GROUP BY scope, company
+UNION ALL SELECT scope, 'address', address, COUNT(*) FROM u_pairs GROUP BY scope, address
+UNION ALL SELECT scope, 'phone', phone, COUNT(*) FROM u_pairs WHERE phone IS NOT NULL GROUP BY scope, phone
+UNION ALL SELECT scope, 'cif', cif, COUNT(*) FROM u_pairs WHERE cif IS NOT NULL GROUP BY scope, cif
+UNION ALL SELECT scope, 'birth', birth, COUNT(*) FROM u_pairs WHERE birth IS NOT NULL GROUP BY scope, birth;
+
+-- 4e. The records, and how many fill the column a comparison is filled most by: what bounds a level no sampled pair
+--     reached
+CREATE OR REPLACE TABLE u_filled AS
+SELECT
+  scope, COUNT(*) AS records, COUNT(person_name) AS name, COUNT(company_name) AS company,
+  GREATEST(COUNT(address_code), COUNT(address), COUNT(postal_code)) AS address,
+  COUNT(phone) AS phone, COUNT(customer_id) AS cif, COUNT(birth_date) AS birth
+FROM u_records GROUP BY scope;

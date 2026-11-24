@@ -147,88 +147,41 @@ FROM same;
 -- 5. Placeholders: a value held by so many records that it can't be one entity's, or evidence, read as missing.
 --    A compared field's value is one if it is held by at least `at` records (min_block, or spread times the field's
 --    records per value if more) and by at least `crowd` customers, and its pairs outnumber those of every value held
---    by fewer. The customer ID's, if held by `at` records. Field by field, in this order: blanking one changes the
---    counts of the next. A field blanked blanks the fields built from the same columns (a name read into person_name,
---    full_name, given_name and any_name).
-
-CREATE OR REPLACE TEMP TABLE held_person_name AS
-WITH c AS (SELECT person_name AS v, COUNT(*) AS n, COUNT(DISTINCT COALESCE(customer_id, id)) AS who FROM sided WHERE person_name IS NOT NULL GROUP BY person_name),
-     s AS (SELECT SUM(n) AS filled, COUNT(*) AS values_, SUM(DIV(n * (n - 1), 2)) AS every FROM c),
-     t AS (SELECT GREATEST(@min_block, CAST(CEIL(@spread * filled / GREATEST(values_, 1)) AS INT64)) AS at_least FROM s),
-     held AS (SELECT v, n FROM c, t WHERE n >= at_least AND who >= @crowd)
-SELECT 'person_name' AS field, v AS value, n FROM held, s WHERE DIV(n * (n - 1), 2) > every - (SELECT COALESCE(SUM(DIV(n * (n - 1), 2)), 0) FROM held);
-
-UPDATE sided SET person_name = NULL, full_name = NULL, given_name = NULL, any_name = NULL
-WHERE person_name IN (SELECT value FROM held_person_name);
-
-CREATE OR REPLACE TEMP TABLE held_company_name AS
-WITH c AS (SELECT company_name AS v, COUNT(*) AS n, COUNT(DISTINCT COALESCE(customer_id, id)) AS who FROM sided WHERE company_name IS NOT NULL GROUP BY company_name),
-     s AS (SELECT SUM(n) AS filled, COUNT(*) AS values_, SUM(DIV(n * (n - 1), 2)) AS every FROM c),
-     t AS (SELECT GREATEST(@min_block, CAST(CEIL(@spread * filled / GREATEST(values_, 1)) AS INT64)) AS at_least FROM s),
-     held AS (SELECT v, n FROM c, t WHERE n >= at_least AND who >= @crowd)
-SELECT 'company_name' AS field, v AS value, n FROM held, s WHERE DIV(n * (n - 1), 2) > every - (SELECT COALESCE(SUM(DIV(n * (n - 1), 2)), 0) FROM held);
-
-UPDATE sided SET company_name = NULL, any_name = NULL
-WHERE company_name IN (SELECT value FROM held_company_name);
-
-CREATE OR REPLACE TEMP TABLE held_address_code AS
-WITH c AS (SELECT address_code AS v, COUNT(*) AS n, COUNT(DISTINCT COALESCE(customer_id, id)) AS who FROM sided WHERE address_code IS NOT NULL GROUP BY address_code),
-     s AS (SELECT SUM(n) AS filled, COUNT(*) AS values_, SUM(DIV(n * (n - 1), 2)) AS every FROM c),
-     t AS (SELECT GREATEST(@min_block, CAST(CEIL(@spread * filled / GREATEST(values_, 1)) AS INT64)) AS at_least FROM s),
-     held AS (SELECT v, n FROM c, t WHERE n >= at_least AND who >= @crowd)
-SELECT 'address_code' AS field, v AS value, n FROM held, s WHERE DIV(n * (n - 1), 2) > every - (SELECT COALESCE(SUM(DIV(n * (n - 1), 2)), 0) FROM held);
-
-UPDATE sided SET address_code = NULL
-WHERE address_code IN (SELECT value FROM held_address_code);
-
-CREATE OR REPLACE TEMP TABLE held_address AS
-WITH c AS (SELECT address AS v, COUNT(*) AS n, COUNT(DISTINCT COALESCE(customer_id, id)) AS who FROM sided WHERE address IS NOT NULL GROUP BY address),
-     s AS (SELECT SUM(n) AS filled, COUNT(*) AS values_, SUM(DIV(n * (n - 1), 2)) AS every FROM c),
-     t AS (SELECT GREATEST(@min_block, CAST(CEIL(@spread * filled / GREATEST(values_, 1)) AS INT64)) AS at_least FROM s),
-     held AS (SELECT v, n FROM c, t WHERE n >= at_least AND who >= @crowd)
-SELECT 'address' AS field, v AS value, n FROM held, s WHERE DIV(n * (n - 1), 2) > every - (SELECT COALESCE(SUM(DIV(n * (n - 1), 2)), 0) FROM held);
-
-UPDATE sided SET address = NULL
-WHERE address IN (SELECT value FROM held_address);
-
-CREATE OR REPLACE TEMP TABLE held_phone AS
-WITH c AS (SELECT phone AS v, COUNT(*) AS n, COUNT(DISTINCT COALESCE(customer_id, id)) AS who FROM sided WHERE phone IS NOT NULL GROUP BY phone),
-     s AS (SELECT SUM(n) AS filled, COUNT(*) AS values_, SUM(DIV(n * (n - 1), 2)) AS every FROM c),
-     t AS (SELECT GREATEST(@min_block, CAST(CEIL(@spread * filled / GREATEST(values_, 1)) AS INT64)) AS at_least FROM s),
-     held AS (SELECT v, n FROM c, t WHERE n >= at_least AND who >= @crowd)
-SELECT 'phone' AS field, v AS value, n FROM held, s WHERE DIV(n * (n - 1), 2) > every - (SELECT COALESCE(SUM(DIV(n * (n - 1), 2)), 0) FROM held);
-
-UPDATE sided SET phone = NULL
-WHERE phone IN (SELECT value FROM held_phone);
-
-CREATE OR REPLACE TEMP TABLE held_birth_date AS
-WITH c AS (SELECT birth_date AS v, COUNT(*) AS n, COUNT(DISTINCT COALESCE(customer_id, id)) AS who FROM sided WHERE birth_date IS NOT NULL GROUP BY birth_date),
-     s AS (SELECT SUM(n) AS filled, COUNT(*) AS values_, SUM(DIV(n * (n - 1), 2)) AS every FROM c),
-     t AS (SELECT GREATEST(@min_block, CAST(CEIL(@spread * filled / GREATEST(values_, 1)) AS INT64)) AS at_least FROM s),
-     held AS (SELECT v, n FROM c, t WHERE n >= at_least AND who >= @crowd)
-SELECT 'birth_date' AS field, v AS value, n FROM held, s WHERE DIV(n * (n - 1), 2) > every - (SELECT COALESCE(SUM(DIV(n * (n - 1), 2)), 0) FROM held);
-
-UPDATE sided SET birth_date = NULL
-WHERE birth_date IN (SELECT value FROM held_birth_date);
-
--- the customer ID last: one customer's records' copies still share it while the others are counted
-CREATE OR REPLACE TEMP TABLE held_customer_id AS
-WITH c AS (SELECT customer_id AS v, COUNT(*) AS n FROM sided WHERE customer_id IS NOT NULL GROUP BY customer_id),
-     s AS (SELECT SUM(n) AS filled, COUNT(*) AS values_ FROM c),
-     t AS (SELECT GREATEST(@min_block, CAST(CEIL(@spread * filled / GREATEST(values_, 1)) AS INT64)) AS at_least FROM s)
-SELECT 'customer_id' AS field, v AS value, n FROM c, t WHERE n >= at_least;
-
-UPDATE sided SET customer_id = NULL
-WHERE customer_id IN (SELECT value FROM held_customer_id);
-
+--    by fewer. The customer ID's, if held by `at` records. No field's blanking changes another's counts (a name blanked
+--    blanks only the fields built from its columns, and customers are counted by the customer ID, blanked as the
+--    others are read), so all are found at once, then blanked: a name in person_name with full_name, given_name and
+--    any_name, a company's name with any_name.
 CREATE OR REPLACE TABLE placeholders AS
-SELECT field, value, n FROM held_person_name
-UNION ALL SELECT field, value, n FROM held_company_name
-UNION ALL SELECT field, value, n FROM held_address_code
-UNION ALL SELECT field, value, n FROM held_address
-UNION ALL SELECT field, value, n FROM held_phone
-UNION ALL SELECT field, value, n FROM held_birth_date
-UNION ALL SELECT field, value, n FROM held_customer_id;
+WITH v AS (
+  SELECT 'person_name' AS field, person_name AS value, COALESCE(customer_id, id) AS who FROM sided
+  UNION ALL SELECT 'company_name', company_name, COALESCE(customer_id, id) FROM sided
+  UNION ALL SELECT 'address_code', address_code, COALESCE(customer_id, id) FROM sided
+  UNION ALL SELECT 'address', address, COALESCE(customer_id, id) FROM sided
+  UNION ALL SELECT 'phone', phone, COALESCE(customer_id, id) FROM sided
+  UNION ALL SELECT 'birth_date', birth_date, COALESCE(customer_id, id) FROM sided
+  UNION ALL SELECT 'customer_id', customer_id, NULL FROM sided
+),
+c AS (SELECT field, value, COUNT(*) AS n, COUNT(DISTINCT who) AS who FROM v WHERE value IS NOT NULL GROUP BY field, value),
+s AS (SELECT field, GREATEST(@min_block, CAST(CEIL(@spread * SUM(n) / GREATEST(COUNT(*), 1)) AS INT64)) AS at_least,
+             SUM(DIV(n * (n - 1), 2)) AS every FROM c GROUP BY field),
+held AS (SELECT c.field, c.value, c.n FROM c JOIN s USING (field) WHERE c.n >= s.at_least AND (c.field = 'customer_id' OR c.who >= @crowd)),
+held_pairs AS (SELECT field, SUM(DIV(n * (n - 1), 2)) AS pairs FROM held GROUP BY field)
+SELECT h.field, h.value, h.n FROM held AS h JOIN s USING (field) JOIN held_pairs AS p USING (field)
+WHERE h.field = 'customer_id' OR DIV(h.n * (h.n - 1), 2) > s.every - p.pairs;
+
+UPDATE sided SET
+  full_name = IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, full_name),
+  given_name = IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, given_name),
+  any_name = IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name')
+                OR company_name IN (SELECT value FROM placeholders WHERE field = 'company_name'), NULL, any_name),
+  person_name = IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, person_name),
+  company_name = IF(company_name IN (SELECT value FROM placeholders WHERE field = 'company_name'), NULL, company_name),
+  address_code = IF(address_code IN (SELECT value FROM placeholders WHERE field = 'address_code'), NULL, address_code),
+  address = IF(address IN (SELECT value FROM placeholders WHERE field = 'address'), NULL, address),
+  phone = IF(phone IN (SELECT value FROM placeholders WHERE field = 'phone'), NULL, phone),
+  birth_date = IF(birth_date IN (SELECT value FROM placeholders WHERE field = 'birth_date'), NULL, birth_date),
+  customer_id = IF(customer_id IN (SELECT value FROM placeholders WHERE field = 'customer_id'), NULL, customer_id)
+WHERE TRUE;
 
 
 -- 6. The copies the keys and comparisons read, each a chain of steps from a field, and the records.

@@ -4,9 +4,9 @@ The method is SQL, in BigQuery's dialect, one file per stage (nayose/sql/<stage>
 runs it as written; DuckDB, on a laptop or in CI, runs it after sqlglot translates it (nayose/engines.py). A run is
 a set of tables: a BigQuery dataset, or a DuckDB database file.
 
-    read(engine, files)             stage 1's intake: the input files as the table input, each value read (intake.sql)
+    read(engine, files)             stage 1's intake: the input files as the table input, each value read (functions.sql)
     records(engine, files)          stage 1: the input files read, mapped (mapping.sql) and made records (records.sql)
-    em.fit(engine)                  stage 2: the model learned on a sample (fit.sql, u.sql, nayose/em.py), u on the file
+    em.fit(engine)                  stage 2: the model learned on a sample (fit.sql, nayose/em.py), u on the file
     stage(engine, name, **values)   a stage's statements in order, each given the values it names (@name)
     statements(text)                a stage file's statements: each ends with a line that ends in ;
     fingerprint()                   what an increment needs unchanged since the full run: the SQL and the values
@@ -66,7 +66,7 @@ def as_text(name: str, kind: str) -> str:
 
 def read(engine, files: list, also: tuple[str, ...] = ()) -> None:
     """The intake on `engine`: the files as the table raw (engine.read_parquet: every column, each name its own), then
-    each value read by intake.sql's functions into the table input, and what was fixed counted in the table intake
+    each value read by functions.sql's intake into the table input, and what was fixed counted in the table intake
     (fixed, n). A column of numbers is told over all its values. The columns in `also` the files lack, missing.
     O(bytes)."""
     engine.read_parquet("raw", files)
@@ -74,7 +74,7 @@ def read(engine, files: list, also: tuple[str, ...] = ()) -> None:
     if bad := [n for n, _ in columns if "`" in n or "\\" in n]:
         raise ValueError(f"a column name nayose can't quote: {bad}")
     text = {n: as_text(n, kind) for n, kind in columns}
-    stage(engine, "intake")
+    stage(engine, "functions")
     told = engine.rows("SELECT " + ", ".join(f"2 * SUM(numberlike({e})) >= COUNT(numberlike({e})) AND COUNT(numberlike({e})) > 0" for e in text.values()) + " FROM raw")[0]
     numeric = {n: bool(x) for n, x in zip(text, told)}
     engine.run("CREATE OR REPLACE TEMP TABLE listed AS SELECT " + ", ".join(f"listed({e}) AS `{n}`" for n, e in text.items()) + " FROM raw")

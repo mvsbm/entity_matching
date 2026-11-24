@@ -73,8 +73,12 @@ def duckdb_sql(sql: str) -> str:
 def as_bigquery(node: exp.Expression) -> exp.Expression:
     """Where sqlglot's translation answers otherwise, the node as BigQuery answers it:
     - DIV(a, b): DuckDB's a // b, each side and the whole in brackets (sqlglot writes DIV(x - y, 2) as x - y // 2);
+    - a function's ANY TYPE parameter (a record's row, say): untyped, as a DuckDB macro's (sqlglot types it VARIANT);
     - REGEXP_EXTRACT: the group's match where the pattern has one (sqlglot reads groups with Python's re, which can't
       read RE2's \\x{3000} or \\p{Nd}), and NULL where it doesn't match (DuckDB's gives '')."""
+    if isinstance(node, exp.ColumnDef) and node.args.get("kind") is not None and node.args["kind"].this == exp.DataType.Type.VARIANT:
+        node.set("kind", None)
+        return node
     if isinstance(node, exp.IntDiv) and not node.args.get("bigquery"):
         node.set("bigquery", True)  # done: transform visits it again inside the brackets
         node.set("this", exp.Paren(this=node.this))

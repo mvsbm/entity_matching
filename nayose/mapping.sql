@@ -2,7 +2,7 @@
 -- columns). A deployment's own file has its own mapping in this form, kept out of the repository (Secret Manager).
 --
 -- Each field is built from its sources in order: the first whose columns are all filled, joined. The values are as
--- the intake read them (sql/intake.sql: spaces alone, placeholders, missing); records.sql normalizes them.
+-- the intake read them (sql/functions.sql: spaces alone, placeholders, missing); records.sql normalizes them.
 -- config.toml [input] columns lists every column read here; one the file lacks is read as missing.
 
 -- every input row as the file gave it, its ID named as records.sql reads it: the rows set aside are kept so
