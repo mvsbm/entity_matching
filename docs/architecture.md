@@ -41,7 +41,7 @@ candidates and matches, as counts alone.
 | File | Holds |
 |---|---|
 | `nayose/__main__.py` | the jobs as a machine runs them here: the arguments, the run's folder, its lock, the JSON printed, the exit code |
-| `nayose/__init__.py` | one function per stage and job (`records`, `fit`, `score`, `decide`, `match`, `lookup`, `build`, `update`), `values` (what each stage reads from `config.toml`), `stage` (a file's statements in order) and `report_text` |
+| `nayose/__init__.py` | one function per stage and job (`records`, `fit`, `score`, `decide`, `match`, `lookup`, `build`, `update`), `values_of` (what each stage reads from `config.toml`), `stage` (a file's statements in order) and `report_text` |
 | `nayose/engines.py` | `DuckDB` and `BigQuery`, which answer the same verbs (`run`, `rows`, `value`, `frame`, `put`, `read_parquet`); the translation (`duckdb_sql`, `AVOID`); the deploy's statements (`functions`, `procedures`) |
 | `nayose/sql/*.sql` | the method. Each header says what the stage does, its cost, and the tables it reads and writes |
 | `nayose/em.py`, `nayose/entities.py` | `fit_model`, `resampled` and `entities_of`: pure functions, JSON in and JSON out |

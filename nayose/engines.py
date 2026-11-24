@@ -295,8 +295,6 @@ RUN_TABLES = ("records", "placeholders", "this_batch", "set_aside", "fit_sample"
               "u_near", "u_sampled", "u_filled", "model", "fit", "rule_keys", "every_key", "rule_pairs", "cands", "gated", "scored", "gold")  # a build starts without them; decisions stay
 
 
-
-
 def in_dataset(sql: str, dataset: str) -> str:
     """A view's statement, each table it names (a WITH's aside) the dataset's: BigQuery reads a view's body without
     a default dataset."""
@@ -470,5 +468,3 @@ def names(header: list[str]) -> list[str]:
         out.append(name)
         seen.add(name.casefold())
     return out
-
-
