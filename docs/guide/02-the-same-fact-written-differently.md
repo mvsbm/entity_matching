@@ -275,7 +275,7 @@ The gap is not cosmetic. Our model treats Jaro–Winkler at or above 0.95 as "ve
 - `nayose/mapping.sql`: each field from its source columns, every column read through `read_value` (`functions.sql`, 1. The intake: damaged values, lists, placeholders and blanks read as missing)
 - `nayose/sql/records.sql`: 2. Each field standardized (NFKC, katakana, spaces and separators gone); 6. The copies the keys and comparisons read (`person_name__kana_fold`, `address__address`, `company_name__nfkc_strip_legal_form_kana_fold`, the reading `person_name__kana_fold_long_vowel`, the one-byte copies)
 - `nayose/config.toml` `[records]`: `kana_fold_from` and `kana_fold_to` (the folding table), `legal_forms`, `legal_front`, `legal_end`, `prefectures`; `nayose/__init__.py`: `legal_pattern`, the legal forms where banks write them
-- `nayose/sql/functions.sql`: 2. The comparisons (`gamma_name`, `gamma_company`, `gamma_address`, `gamma_phone`, `gamma_cif`, `gamma_birth`); 3. The rules' fuzzy tests (`near_name`, `near_company`, `near_address`, `near_phone`)
+- `nayose/sql/functions.sql`: 2. The comparisons (`name_score` and `name_level` (`gamma_name` the gate's), `gamma_company`, `gamma_address`, `gamma_phone`, `gamma_cif`, `gamma_birth`); 3. The rules' fuzzy tests (`near_name`, `near_company`, `near_address`, `near_phone`)
 - the `cl_*` functions: `nayose/strings.js` (BigQuery), `nayose/engines.py` (DuckDB: `FUNCTIONS`, `compare`, `native`; `avoided`, the forms refused)
 - `tests/test_functions.py`: the JavaScript, the twins and DuckDB's own functions score alike; `tests/test_records.py`: the intake, and the address key
 

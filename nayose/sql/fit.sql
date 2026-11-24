@@ -7,12 +7,16 @@
 -- An update (@refit false) keeps the model the run's build fitted: no sample, no EM; u is measured again on the
 -- run's records, a sampled comparison only once it has gone stale (fit_model with the stored fit).
 --
--- Reads: records, fit (an update's). Values: config.toml [fit]: @fit_rows, @seed, @fit_u_max_pairs and @u_max_pairs
+-- Reads: records, levels (functions.sql), fit (an update's). Values: config.toml [fit]: @fit_rows, @seed, @fit_u_max_pairs and @u_max_pairs
 -- (about how many pairs u samples on the sample and on the file), @settings (all of it, as JSON, for fit_model);
 -- @refit (a build: the model learned again).
--- Writes: fit_sample, model (each level's m and u as fitted, file_m and file_u on the file, and bits: log2(file_m /
--- file_u), what a score adds), fit (λ, the sample's size, the file's, prior_bits: λ's at its size, the notes the report reads,
--- and fitted: fit_model's answer whole, what an update starts from).
+-- Writes: compared (a view: the columns the fit and the scores read of a record), fit_sample, fit_prior (the
+-- near-certain rules' pairs in it), em_patterns (EM's patterns of levels, a session a key), u_records (a view: each
+-- scope's records), u_outside, u_counted, u_near and u_filled (u's exact counts, and what bounds a level no sampled
+-- pair reached), u_sampled (the sampled pairs' patterns: an update samples a comparison again only once it has gone
+-- stale), model (each level's m and u as fitted, file_m and file_u on the file, and bits: log2(file_m / file_u), what
+-- a score adds), fit (λ, the sample's size, the file's, prior_bits: λ's at its size, the notes the report reads, and
+-- fitted: fit_model's answer whole, what an update starts from).
 
 CREATE TABLE IF NOT EXISTS fit (probability FLOAT64, fit_rows INT64, records INT64, prior_bits FLOAT64, notes STRING, fitted STRING);
 
@@ -32,7 +36,7 @@ FROM records;
 -- when: @refit
 CREATE OR REPLACE TABLE fit_sample AS
 SELECT compared.* FROM compared
-JOIN (SELECT id FROM records WHERE @refit ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_rows) USING (id);
+JOIN (SELECT id FROM records ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_rows) USING (id);
 
 -- when: NOT @refit
 CREATE OR REPLACE TABLE fit_sample AS SELECT * FROM compared WHERE FALSE;  -- an update learns nothing: no sample

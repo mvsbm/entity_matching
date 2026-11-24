@@ -54,7 +54,8 @@ candidates and matches, as counts alone.
 ![A run: records.sql makes the records from the input, fit.sql the model, score.sql the scored pairs, decide.sql the entities, report.sql the report's numbers; the match job's table goes to people, whose decisions decide reads back](diagrams/run.svg)
 
 Every job runs `functions.sql` first. It holds the functions the other files call: the intake's `read_value`, the
-comparisons (`gamma_*`, one level per pair) and the rules' fuzzy tests (`near_*`). A stage passes its tables to the
+comparisons (`gamma_*`, and the name's `name_score` then `name_level`; one level per pair) and the rules' fuzzy tests
+(`near_*`). A stage passes its tables to the
 next by name, and each file's header lists them. The costs below use these symbols: N records in the run, Δ in the
 batch, L a value's length, n the fit's sample, K the comparisons (6), b the pairs a record's keys list, C the
 candidates scored, P the pairs kept, F the fields, D the decisions and G the keys a record has.
@@ -80,13 +81,14 @@ because in a bigger file a field agrees by chance less often. The `model` table 
 
 1. The rules, in order, give the certain pairs (`rule_pairs`). A rule ignores a key value held by `oversized` records
    or more.
-2. The 22 key generators list the pairs worth comparing. Some match a value exactly, some a value with one character
-   deleted, and some a name's reading.
-3. The gate handles blocks of `oversized` records or more. Such a block is joined only if a sample of its pairs holds
+2. The 22 key generators list the pairs worth comparing (`every_key`). Some match a value exactly, some a value with
+   one character deleted, and some a name's reading.
+3. The model's bits (`weights`), and an exact upper bound on each pair's weight from its equalities and lengths alone
+   (`bound_of`). The costly fuzzy comparisons run only on the pairs that could reach `keep_from`.
+4. The gate handles blocks of `oversized` records or more. Such a block is joined only if a sample of its pairs holds
    one at `search_floor` bits or more (`gated`), because a placeholder's block holds no true match.
-4. An exact upper bound on each pair's weight comes from its equalities alone (`bound_of`). The costly fuzzy
-   comparisons run only on the pairs that could reach `keep_from`.
-5. The scores: each kept pair gets its level of each comparison and its weight (`weight_of`). `scored` keeps every
+5. The candidates: the pairs the keys list, and every pair of a kept block that touches the batch (`cands`).
+6. The scores: each kept pair gets its level of each comparison and its weight (`weight_of`). `scored` keeps every
    pair from `keep_from` bits up, and every rule pair.
 
 Making every record's keys again is the `O(N·L)` term. Nothing merges here.
