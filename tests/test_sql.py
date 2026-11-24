@@ -125,3 +125,18 @@ def test_a_statement_s_empty_twin_makes_the_same_columns():  # a `-- when: NOT â
                 made.setdefault(m.group(3), []).append([e.alias_or_name for e in tree.expression.selects])
         for name, lists in made.items():
             assert all(x == lists[0] or x == ["*"] for x in lists), (f.name, name, lists)
+
+
+def test_a_row_a_function_reads_is_of_a_narrow_table():  # BigQuery may bill a row passed whole as every column of its table
+    import sqlglot
+    from sqlglot import exp
+    from nayose import SQL, statements
+    from nayose.engines import TEMP_FUNCTION
+    for f in SQL.glob("*.sql"):
+        for s in statements(f.read_text(encoding="utf-8")):
+            if TEMP_FUNCTION.match(s):
+                continue
+            tree = sqlglot.parse_one(s, read="bigquery")
+            wide = {t.alias for t in tree.find_all(exp.Table) if t.alias and t.name == "records"}  # records: every column of a record
+            passed = {a.name for c in tree.find_all(exp.Anonymous) for a in c.expressions if isinstance(a, exp.Column) and not a.table}
+            assert not wide & passed, (f.name, s.strip()[:80], wide & passed)

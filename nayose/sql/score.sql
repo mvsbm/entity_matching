@@ -71,7 +71,7 @@ CREATE OR REPLACE TEMP TABLE batch_rule_pairs AS
 WITH found AS (
   SELECT a.i, LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r
   FROM rule_keys AS a JOIN rule_keys AS b ON a.i = b.i AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
-  JOIN records AS x ON x.id = a.id JOIN records AS y ON y.id = b.id
+  JOIN compared AS x ON x.id = a.id JOIN compared AS y ON y.id = b.id  -- a row a function reads: the columns compared, not the record's all
   WHERE a.new AND a.n < @oversized
     AND CASE a.i WHEN 5 THEN near_name(x, y) WHEN 6 THEN near_name(x, y) AND near_address(x, y) WHEN 7 THEN near_name(x, y)
                  WHEN 8 THEN near_phone(x, y) WHEN 9 THEN near_company(x, y) WHEN 10 THEN near_company(x, y) ELSE TRUE END

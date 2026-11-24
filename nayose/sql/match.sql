@@ -28,6 +28,11 @@ SELECT comparison, gamma, label, ROUND(bits, 2) AS bits FROM model
 UNION ALL SELECT DISTINCT comparison, -1, 'missing', CAST(0 AS FLOAT64) FROM model;
 
 CREATE OR REPLACE TABLE matched AS
+WITH pair_records AS (  -- the columns the table shows and household reads: a row a function reads is billed whole
+  SELECT id, person_name, given_name, company_name, address_code, address, postal_code, phone, customer_id, birth_date,
+         address__address, given_name__kana_fold, person_name__kana_fold_long_vowel_last3
+  FROM records
+)
 SELECT
   CAST(NULL AS STRING) AS decision, s.id_l, s.id_r, s.match_weight, s.match_probability, s.rule, s.named,
   household(x, y) AS household, s.sources,
@@ -39,7 +44,7 @@ SELECT
   n.label AS name, n.bits AS name_bits, c.label AS company, c.bits AS company_bits, a.label AS address, a.bits AS address_bits,
   p.label AS phone, p.bits AS phone_bits, i.label AS cif, i.bits AS cif_bits, b.label AS birth, b.bits AS birth_bits
 FROM scored AS s
-JOIN records AS x ON x.id = s.id_l JOIN records AS y ON y.id = s.id_r
+JOIN pair_records AS x ON x.id = s.id_l JOIN pair_records AS y ON y.id = s.id_r
 JOIN shown AS n ON n.comparison = 'name' AND n.gamma = s.gamma_name
 JOIN shown AS c ON c.comparison = 'company' AND c.gamma = s.gamma_company
 JOIN shown AS a ON a.comparison = 'address' AND a.gamma = s.gamma_address
