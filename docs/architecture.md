@@ -31,7 +31,8 @@ costs is in [performance](performance.md).
 
 Design time never runs in prod: `scripts/generate.py` (synthetic records with known answers),
 `scripts/benchmark.py` (quality and cost on them), `scripts/train_name_model.py` (`config/kind_names.npz`) and
-`design/`. A run only loads the name model.
+`design/`. A run only loads the name model. `scripts/key_quality.py` reads a run, a real one too: each key's
+candidates and matches, as counts alone.
 
 ## 2 · Components
 
