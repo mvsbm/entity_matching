@@ -1,4 +1,4 @@
-# Creates .venv with the pinned dependencies on Windows, as setup_venv.sh does on macOS and Linux. In PowerShell:
+# Creates .venv with the pinned dependencies on Windows, as the README's three commands do on macOS and Linux. In PowerShell:
 #   powershell -ExecutionPolicy Bypass -File setup_venv.ps1
 # Then .venv\Scripts\python -m nayose --help.
 $ErrorActionPreference = "Stop"

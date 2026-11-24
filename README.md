@@ -21,7 +21,10 @@ flowchart LR
 ## Setup
 
 ```bash
-./setup_venv.sh        # Windows, in PowerShell: powershell -ExecutionPolicy Bypass -File setup_venv.ps1
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
+# Windows, in PowerShell: powershell -ExecutionPolicy Bypass -File setup_venv.ps1
 ```
 
 This needs Python 3.12 or later. On Windows, write `.venv\Scripts\python` in place of `.venv/bin/python`.

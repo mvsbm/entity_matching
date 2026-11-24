@@ -1,4 +1,4 @@
-[README](../../README.md) · **Guide:** **1 Task** · [2 Variants](02-the-same-fact-written-differently.md) · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · [7 Kinds](07-person-or-company.md)
+[README](../../README.md) · **Guide:** **1 Task** · [2 Variants](02-the-same-fact-written-differently.md) · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · [6 Kinds](06-person-or-company.md)
 
 # 1. Entity matching, entity resolution, and our task
 
@@ -128,7 +128,7 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 - 60,000 Japanese personas from NVIDIA's Nemotron-Personas-Japan, with kana readings
 - 31,596 companies from Wikidata
 - about 46,000 towns in all 47 prefectures, with postal codes, from geolonia's address data and yubinbango
-- 60,000 corporations' kana readings from the National Tax Agency's corporate-number registry, for telling persons from companies ([chapter 7](07-person-or-company.md))
+- 60,000 corporations' kana readings from the National Tax Agency's corporate-number registry, for telling persons from companies ([chapter 6](06-person-or-company.md))
 
 **Synthetic behaviour.** The generator then decides who has duplicates and how the records go wrong:
 

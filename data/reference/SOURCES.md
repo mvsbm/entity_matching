@@ -1,6 +1,6 @@
 # Reference data: sources, transformations, licences
 
-These four files are **frozen snapshots**, each built once from public sources: `individual.json`, `companies.json` and `addresses.json` on 2026-10-28, `registry.json` on 2026-11-06. The downloads and the throwaway build environments were deleted afterwards; the steps below record exactly how each file was made. Each file is a JSON array with one record per line. The synthetic-data generator reads them (`er.generate.load_reference`, `load_registry`), for `scripts/generate.py`, `scripts/benchmark.py`, `scripts/choose_kind.py`, the demo and the tests. Every run reads two of them, `individual.json` and `registry.json`: they train the name model that tells persons from companies (`er.kind.name_model`), on one half of them (`er.generate.name_model_split`), and the cached model is checked against them.
+These four files are **frozen snapshots**, each built once from public sources: `individual.json`, `companies.json` and `addresses.json` on 2026-10-28, `registry.json` on 2026-11-06. The downloads and the throwaway build environments were deleted afterwards; the steps below record exactly how each file was made. Each file is a JSON array with one record per line. The synthetic-data generator reads them (`design.generate.load_reference`, `load_registry`), for `scripts/generate.py`, `scripts/benchmark.py`, the staging smoke test and the tests. Two of them, `individual.json` and `registry.json`, also train the name model that tells persons from companies (`scripts/train_name_model.py`), on one half of them (`design.generate.name_model_split`). A run reads only the trained model, `config/kind_names.npz`.
 
 ## individual.json: 60,000 persons
 
@@ -50,6 +50,6 @@ These four files are **frozen snapshots**, each built once from public sources: 
 - **Transformation:**
   1. Of 5,850,621 rows, those with a reading (フリガナ) are kept, government bodies (法人種別 101 and 201) dropped, and rows de-duplicated on (reading, prefecture): 2,851,033.
   2. Each name's legal form is found in the name (longest first, so 医療法人社団 before 医療法人), with whether it leads the name (株式会社〇〇) or ends it (〇〇株式会社). The reading never holds 株式会社, 有限会社 or 合同会社; a leading legal form's reading is removed where one does (some 特定非営利活動法人).
-  3. Readings that are not 2 or more katakana are dropped. 35,000 corporations of Miyagi (04) and Okayama (33) and 25,000 of Fukuoka (40) are sampled (seed 0); `scripts/choose_kind.py` trains on the first two prefectures and tests on the third.
+  3. Readings that are not 2 or more katakana are dropped. 35,000 corporations of Miyagi (04) and Okayama (33) and 25,000 of Fukuoka (40) are sampled (seed 0); the name model trains on the first two prefectures, and the third is held out (`design.generate.NAME_MODEL_PREFECTURES`).
   4. Each row gets its legal form's reading and its bank abbreviation (the Zengin list: 株式会社 カ, 有限会社 ユ, 医療法人 イ, …); none for a name without a legal form.
 - **Fields:** `reading, legal, abbreviation, front, prefecture`.
