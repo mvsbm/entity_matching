@@ -1,4 +1,4 @@
-"""Stage 1 (nayose/sql/intake.sql, nayose/mapping.sql, nayose/sql/records.sql): each value read as er/'s intake reads
+"""Stage 1 (nayose/sql/functions.sql, nayose/mapping.sql, nayose/sql/records.sql): each value read as er/'s intake reads
 it, what was fixed counted alike; the same records as er/'s load step makes from the same file, field by field, the kind
 and the copies too; kind_p and name_p to 9 decimals (BigQuery's SUM has no order, so their last bit may move)."""
 import math

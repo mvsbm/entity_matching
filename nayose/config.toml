@@ -40,14 +40,14 @@ min_block = 64  # records a block holds before it is oversized; the fewest a pla
 spread = 10  # a placeholder is held by this many times the field's records per value, or more
 crowd = 64  # the fewest customers a compared field's placeholder is held by
 
-[input]  # sql/intake.sql and mapping.sql
+[input]  # sql/functions.sql's intake, and mapping.sql
 nulls = ["NULL", "null", "Null", "\\N", "NaN", "nan", "None", "none", "N/A", "n/a", "#N/A", "-", "－"]  # a value written as one of these is missing
 # every column mapping.sql reads; one a file lacks is read as missing
 columns = ["CONT_ID", "FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA", "NYS_CNV_P_NAME_KANA",
            "STD_ADDRESS", "ORIGINAL_ADDRESS", "SOURCE_ADDR_CD", "POST_CD", "POST_CD_KANA", "ADDRESS_ONE", "ADDR_CD", "ADDRESS_TWO",
            "PHONE_NUM_4", "CIF_ID", "BIRTH_DATE", "PERSON_ORG_CODE"]
 
-[fit]  # sql/fit.sql, sql/u.sql, nayose/em.py
+[fit]  # sql/fit.sql, nayose/em.py
 fit_rows = 100000             # the sample the model is learned on: whole postal areas by hash
 prior_recall = 0.0217         # the share of all matches the near-certain rules are thought to find (λ)
 fit_u_max_pairs = 1000000     # u sampled on the fit's sample: about this many pairs

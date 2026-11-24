@@ -1,9 +1,9 @@
-"""Stage 2, fit: the model learned from the counts fit.sql and u.sql leave, as er/fit.py and er/match.py learn it
+"""Stage 2, fit: the model learned from the counts fit.sql leaves, as er/fit.py and er/match.py learn it
 (Fellegi–Sunter as Splink 5.0 fits it), the same numbers to the last bit.
 
     λ   how likely two random records are one customer: the pairs the near-certain rules find (fit_prior), over the
         share of all matches they find (prior_recall), over every pair of the sample
-    u   how often two different customers land in a level: counted exactly where u.sql counts it, else sampled, else
+    u   how often two different customers land in a level: counted exactly where fit.sql counts it, else sampled, else
         (no sampled pair reached it) a bound
     m   how often one customer's two records land in a level: EM sessions on the sample's pairs sharing a key
         (em_patterns), each starting from what those before it learned; a level's m is the median of the sessions'
@@ -32,17 +32,21 @@ PRIOR_RULES = {"cif_name": "customer_id + full_name", "cif_company": "customer_i
 
 
 def fit(engine) -> None:
-    """Stage 2 on `engine`, after records: the sample and its counts (comparisons.sql, fit.sql, u.sql), the model
-    learned (learn), u measured again on the file (u.sql on records, assemble), the tables written."""
+    """Stage 2 on `engine`, after records: fit.sql's counts, on the sample and on the file (functions.sql's
+    comparisons), the model learned on the sample (learn), its u measured on the file (assemble), the tables written.
+    Each scope's u sampled from about its max_pairs pairs: the share of its records whose hash falls under the cut."""
     c = nayose.config()["fit"]
-    nayose.stage(engine, "comparisons")
+    nayose.stage(engine, "functions")
     levels = [dict(zip(("position", "comparison", "gamma", "label", "kind"), r))
               for r in engine.rows("SELECT position, comparison, gamma, label, kind FROM levels ORDER BY position, gamma DESC")]
-    nayose.stage(engine, "fit", fit_rows=int(c["fit_rows"]))
-    sample = measured(engine, float(c["fit_u_max_pairs"]), c["seed"])
-    model = learn(engine, levels, sample, c)
-    engine.run("CREATE OR REPLACE VIEW u_records AS SELECT * FROM records")
-    scoring = assemble(model, measured(engine, float(c["u_max_pairs"]), c["seed"]))
+    n = engine.value("SELECT COUNT(*) FROM records")
+    sizes = {"sample": (min(int(c["fit_rows"]), n), float(c["fit_u_max_pairs"])), "file": (n, float(c["u_max_pairs"]))}
+    share = {scope: 0.5 * ((8 * pairs + 1) ** 0.5 + 1) / max(records, 1) for scope, (records, pairs) in sizes.items()}
+    nayose.stage(engine, "fit", fit_rows=int(c["fit_rows"]), seed=str(c["seed"]), **{f"draw_{s}": x < 1 for s, x in share.items()},
+                 **{f"cut_{s}": max(1, round(x * 1_000_000_000)) for s, x in share.items()})
+    got = measured(engine, {scope: pairs for scope, (_, pairs) in sizes.items()})
+    model = learn(engine, levels, got["sample"], c)
+    scoring = assemble(model, got["file"])
     for name, m in (("model", model), ("scoring", scoring)):
         engine.put(name, pd.DataFrame([dict(position=lv["position"], comparison=lv["comparison"], gamma=lv["gamma"], label=lv["label"],
                                             kind=lv["kind"], m=lv["m"], u=lv["u"]) for lv in m["levels"]]))
@@ -53,18 +57,19 @@ def fit(engine) -> None:
 
 # ---------- u: the counts made shares ----------
 
-def measured(engine, max_pairs: float, seed) -> dict:
-    """u.sql on u_records, about max_pairs pairs sampled: its counts, as read back. O(N + max_pairs · K)."""
-    n = engine.value("SELECT COUNT(*) FROM u_records")
-    share = 0.5 * ((8 * max_pairs + 1) ** 0.5 + 1) / max(n, 1)
-    nayose.stage(engine, "u", draw=share < 1, cut=max(1, round(share * 1_000_000_000)), seed=str(seed))
-    filled = dict(zip(("records", "name", "company", "address", "phone", "cif", "birth"), engine.rows("SELECT * FROM u_filled")[0]))
-    plan = dict(zip(("phone", "cif", "birth"), engine.rows("SELECT phone, cif, birth FROM u_plan")[0]))
-    return dict(n=n, max_pairs=max_pairs, filled=filled, plan=plan,
-                outside={c: p for c, p in engine.rows("SELECT comparison, pairs FROM u_outside")},
-                counted={(c, label): p for c, label, p in engine.rows("SELECT comparison, label, pairs FROM u_counted")},
-                near={(c, label): p for c, label, p in engine.rows("SELECT comparison, label, pairs FROM u_near")},
-                sampled={(c, g): p for c, g, p in engine.rows("SELECT comparison, gamma, pairs FROM u_sampled")})
+def measured(engine, max_pairs: dict[str, float]) -> dict[str, dict]:
+    """fit.sql's u counts, read back by scope (sample, file); each scope's max_pairs, what its sample drew from."""
+    out = {}
+    for scope, pairs in max_pairs.items():
+        rows = lambda table, cols: engine.rows(f"SELECT {cols} FROM {table} WHERE scope = @scope", {"scope": scope})
+        filled = dict(zip(("records", "name", "company", "address", "phone", "cif", "birth"), rows("u_filled", "records, name, company, address, phone, cif, birth")[0]))
+        plan = dict(zip(("phone", "cif", "birth"), (rows("u_plan", "phone, cif, birth") or [(True, True, True)])[0]))
+        out[scope] = dict(n=filled["records"], max_pairs=pairs, filled=filled, plan=plan,
+                          outside=dict(rows("u_outside", "comparison, pairs")),
+                          counted={(c, label): p for c, label, p in rows("u_counted", "comparison, label, pairs")},
+                          near={(c, label): p for c, label, p in rows("u_near", "comparison, label, pairs")},
+                          sampled={(c, g): p for c, g, p in rows("u_sampled", "comparison, gamma, pairs")})
+    return out
 
 
 def exact_u(levels: list[dict], got: dict) -> dict[str, dict[str, float]]:
@@ -92,7 +97,7 @@ def sampled_u(levels: list[dict], got: dict, names: list[str]) -> dict[str, dict
     for name in names:
         mine = [lv for lv in levels if lv["comparison"] == name]
         if got["plan"].get(name) is False:
-            raise RuntimeError(f"u.sql counted {name} to its else level and sampled none of its pairs, where nayose.em samples it")
+            raise RuntimeError(f"fit.sql counted {name} to its else level and sampled none of its pairs, where nayose.em samples it")
         filled = sum(got["sampled"].get((name, lv["gamma"]), 0) for lv in mine)
         out[name] = {lv["label"]: got["sampled"][name, lv["gamma"]] / filled for lv in mine if got["sampled"].get((name, lv["gamma"]))}
     return out
