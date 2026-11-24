@@ -9,10 +9,9 @@ in both bytes billed and work, from `scripts/estimate_cost.py`.
 ## 1 · Score's cost
 
 On 1M generated records, `scripts/estimate_cost.py` puts a build at about 8.4 GB billed and `scripts/benchmark.py`
-at about 30 s. `score.sql` accounts for about 4.6 GB of that, and its 23 million comparison calls are most of a
-build's: the bound (`bound_of`) passes almost every candidate, so the costly comparisons run on nearly all of them,
-and a name's Jaro–Winkler is called once for each of its two thresholds. The plan: call it once a pair, and tighten
-the bound so that fewer pairs reach the fuzzy comparisons. records.sql's 2.5 GB and 9.8 s come next: a batch's records
+at about 30 s. `score.sql` accounts for about 4.6 GB of that and 6.5 million of its 17.7 million comparison calls,
+the fit for 11.2 million: the bound (`bound_of`) passes almost every candidate, so the comparisons run on nearly all
+of them. The plan: tighten the bound so that fewer pairs reach them. records.sql's 2.5 GB and 9.8 s come next: a batch's records
 are written to a table and read again to be added.
 
 ## 2 · A key index that persists

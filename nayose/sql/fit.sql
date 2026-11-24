@@ -59,14 +59,17 @@ SELECT
 -- 3. EM's pairs, a session a key: the sample's pairs sharing a phone, then an address, each pattern of levels with
 --    its count. A comparison the key chose its pairs by can't be learned from them: NULL in its session.
 CREATE OR REPLACE TABLE em_patterns AS
+WITH paired AS (  -- each session's pairs, the two records whole, their names' Jaro–Winkler once (name_score)
+  SELECT 'phone' AS session, l, r, name_score(l, r) AS s_name FROM fit_sample AS l JOIN fit_sample AS r ON l.phone = r.phone AND l.id < r.id
+  UNION ALL
+  SELECT 'address', l, r, name_score(l, r) FROM fit_sample AS l JOIN fit_sample AS r ON l.address__address = r.address__address AND l.id < r.id
+)
 SELECT session, name, company, address, phone, cif, birth, COUNT(*) AS pairs
 FROM (
-  SELECT 'phone' AS session, gamma_name(l, r) AS name, gamma_company(l, r) AS company, gamma_address(l, r) AS address,
-         CAST(NULL AS INT64) AS phone, gamma_cif(l, r) AS cif, gamma_birth(l, r) AS birth
-  FROM fit_sample AS l JOIN fit_sample AS r ON l.phone = r.phone AND l.id < r.id
-  UNION ALL
-  SELECT 'address', gamma_name(l, r), gamma_company(l, r), CAST(NULL AS INT64), gamma_phone(l, r), gamma_cif(l, r), gamma_birth(l, r)
-  FROM fit_sample AS l JOIN fit_sample AS r ON l.address__address = r.address__address AND l.id < r.id
+  SELECT session, name_level(l, r, s_name) AS name, gamma_company(l, r) AS company,
+         IF(session = 'address', CAST(NULL AS INT64), gamma_address(l, r)) AS address,
+         IF(session = 'phone', CAST(NULL AS INT64), gamma_phone(l, r)) AS phone, gamma_cif(l, r) AS cif, gamma_birth(l, r) AS birth
+  FROM paired
 )
 GROUP BY 1, 2, 3, 4, 5, 6, 7;
 
@@ -203,11 +206,14 @@ SELECT u_records.* FROM u_records JOIN share USING (scope)
 WHERE share >= 1 OR MOD(er_hash(id || '_' || @seed), 1000000000) < GREATEST(1, ROUND(share * 1000000000));
 
 CREATE OR REPLACE TEMP TABLE u_patterns AS  -- the pairs' patterns of levels, counted as they are made: none is stored
+WITH paired AS (  -- the drawn pairs, the two records whole, their names' Jaro–Winkler once (name_score)
+  SELECT l.scope, l, r, name_score(l, r) AS s_name FROM u_drawn AS l JOIN u_drawn AS r ON l.scope = r.scope AND l.id < r.id
+)
 SELECT
-  l.scope, gamma_name(l, r) AS name, gamma_company(l, r) AS company, gamma_address(l, r) AS address,
-  IF(plan.phone, gamma_phone(l, r), NULL) AS phone, IF(plan.cif, gamma_cif(l, r), NULL) AS cif, IF(plan.birth, gamma_birth(l, r), NULL) AS birth,
+  p.scope, name_level(p.l, p.r, p.s_name) AS name, gamma_company(p.l, p.r) AS company, gamma_address(p.l, p.r) AS address,
+  IF(plan.phone, gamma_phone(p.l, p.r), NULL) AS phone, IF(plan.cif, gamma_cif(p.l, p.r), NULL) AS cif, IF(plan.birth, gamma_birth(p.l, p.r), NULL) AS birth,
   COUNT(*) AS pairs
-FROM u_drawn AS l JOIN u_drawn AS r ON l.scope = r.scope AND l.id < r.id JOIN u_plan AS plan ON plan.scope = l.scope
+FROM paired AS p JOIN u_plan AS plan ON plan.scope = p.scope
 GROUP BY 1, 2, 3, 4, 5, 6, 7;
 
 CREATE OR REPLACE TABLE u_sampled AS

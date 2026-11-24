@@ -63,14 +63,14 @@ Billed, rows and calls: `scripts/estimate_cost.py` on 1M generated records. Wall
 | Stage | Billed | Rows | Comparison calls | Wall clock |
 |---|---|---|---|---|
 | records | 2,487 MB | 280M | 0 | 9.8 s |
-| fit | 1,105 MB | 483M | 19.2M | 6.0 s |
-| score | 4,631 MB | 644M | 23.2M | 14.8 s |
+| fit | 1,109 MB | 517M | 11.2M | 6.0 s |
+| score | 4,648 MB | 654M | 6.5M | 14.8 s |
 | decide (the build's) | 161 MB | 15M | 0 | 0.18 s |
-| **build** | **8,384 MB** | **1,422M** | **42.3M** | **30.9 s** |
+| **build** | **8,405 MB** | **1,466M** | **17.7M** | **30.9 s** |
 | match at `keep_from` | 199 MB | 4.1M | 205k | 0.6 s, as its own job |
 
 ```
-dollars(build) = 8,384 × 10⁶ B / 2⁴⁰ × $6.25 = 0.0076 TiB × $6.25 ≈ $0.05
+dollars(build) = 8,405 × 10⁶ B / 2⁴⁰ × $6.25 = 0.0076 TiB × $6.25 ≈ $0.05
 dollars(match) =    199 × 10⁶ B / 2⁴⁰ × $6.25 = 0.0002 TiB × $6.25 ≈ $0.001
 ```
 

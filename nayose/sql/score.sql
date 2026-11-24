@@ -239,12 +239,15 @@ CREATE OR REPLACE TEMP TABLE batch_pairs AS  -- the batch's candidates and rule 
 SELECT l, r, c.sources, p.rule FROM cands AS c FULL JOIN batch_rule_pairs AS p USING (l, r);
 
 CREATE OR REPLACE TEMP TABLE batch_scored AS
-WITH pairs AS (SELECT * FROM batch_pairs),
-levelled AS (
-  SELECT p.l, p.r, p.sources, p.rule, gamma_name(x, y) AS gamma_name, gamma_company(x, y) AS gamma_company,
-         gamma_address(x, y) AS gamma_address, gamma_phone(x, y) AS gamma_phone, gamma_cif(x, y) AS gamma_cif, gamma_birth(x, y) AS gamma_birth
-  FROM pairs AS p JOIN compared AS x ON x.id = p.l JOIN compared AS y ON y.id = p.r CROSS JOIN weights AS w
+WITH kept AS (  -- each pair the bound keeps, its two records whole, and its names' Jaro–Winkler, once
+  SELECT p.l, p.r, p.sources, p.rule, x, y, name_score(x, y) AS s_name
+  FROM batch_pairs AS p JOIN compared AS x ON x.id = p.l JOIN compared AS y ON y.id = p.r CROSS JOIN weights AS w
   WHERE p.rule IS NOT NULL OR bound_of(x, y, w) >= @keep_from - CAST(0.000000001 AS FLOAT64)
+),
+levelled AS (
+  SELECT l, r, sources, rule, name_level(x, y, s_name) AS gamma_name, gamma_company(x, y) AS gamma_company,
+         gamma_address(x, y) AS gamma_address, gamma_phone(x, y) AS gamma_phone, gamma_cif(x, y) AS gamma_cif, gamma_birth(x, y) AS gamma_birth
+  FROM kept
 ),
 weighed AS (
   SELECT x.*, weight_of(gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth, w) AS match_weight
