@@ -1,23 +1,46 @@
--- Stage 1, records: the input's records, set aside where they can't be resolved, each field standardized, each
--- record's kind told, placeholders read as missing, and the copies the keys and comparisons read. O(N·L).
+-- Stage 1, records: a batch of input records added to the run's, set aside where they can't be resolved, each field
+-- standardized, each record's kind told, placeholders read as missing, and the copies the keys and comparisons read.
+-- A build is a run's first batch. O(Δ·L) for a batch of Δ, plus O(N) to count placeholders over all the run's records.
 --
--- Reads: input_rows and mapped (mapping.sql), name_weights (the name model, config/kind_names.npz).
--- Writes: set_aside (the rows set aside, with the reason), placeholders (each field's values read as missing),
--- records (a record a row: its fields, its kind, the copies).
+-- Reads: input_rows and mapped (mapping.sql: the batch), name_weights (the name model, config/kind_names.npz), the
+-- run's records and placeholders (none before its first batch).
+-- Writes: this_batch (its number), set_aside (the batch's rows set aside, with the reason), placeholders (each
+-- field's values read as missing: the run's, and those the batch's records bring past the line), records (a record a
+-- row: its fields, its kind, the copies, its batch). @lookup: the batch is records asked about, prepared as the run
+-- prepares its own, and nothing it holds is a placeholder of the run's (lookup.sql; the job rolls it all back).
 -- Values: config.toml [records], and the patterns nayose builds from its lists (legal_pattern, prefecture_pattern).
 
 
+-- 0. The run's records and placeholders: none before its first batch. This batch's number: one past the last.
+CREATE TABLE IF NOT EXISTS records (
+  id STRING, given_name STRING, any_name STRING, address STRING, address_code STRING, postal_code STRING, prefecture STRING,
+  town_code STRING, city STRING, phone STRING, customer_id STRING, birth_date STRING, kind_flag STRING, kind_name STRING,
+  kind INT64, kind_p FLOAT64, kind_by STRING, name_p FLOAT64, kind_flagged BOOL, full_name STRING, person_name STRING,
+  company_name STRING, person_name__kana_fold STRING, company_name__nfkc_strip_legal_form_kana_fold STRING,
+  address__address STRING, postal_code__first3 STRING, any_name__initial STRING, given_name__kana_fold STRING,
+  address__address_first3 STRING, person_name__kana_fold_long_vowel STRING, person_name__kana_fold_one_byte STRING,
+  company_name__nfkc_strip_legal_form_kana_fold_one_byte STRING, address__address_one_byte_hash STRING,
+  person_name__kana_fold_long_vowel_last3 STRING, batch INT64
+);
+
+CREATE TABLE IF NOT EXISTS placeholders (field STRING, value STRING, n INT64);
+
+CREATE OR REPLACE TABLE this_batch AS SELECT COALESCE(MAX(batch) + 1, 0) AS batch FROM records;
+
+
 -- 1. Set aside what can't be resolved. Rows identical in every column are kept once (mapping.sql's input_rows). A
---    record without an ID (blank: whitespace alone, as Python counts it), and every record of an ID holding different
---    content, are set aside.
+--    record without an ID (blank: whitespace alone, as Python counts it), a record already in the run (a batch given
+--    twice adds nothing twice), and every record of an ID holding different content, are set aside.
 
 CREATE OR REPLACE TABLE set_aside AS
 SELECT * EXCEPT (nayose_id),
-  CASE WHEN nayose_id IS NULL OR REGEXP_CONTAINS(nayose_id, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
-       THEN 'no ID' ELSE 'the same ID with different content' END AS reason
+  CASE WHEN nayose_id IS NULL OR REGEXP_CONTAINS(nayose_id, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$') THEN 'no ID'
+       WHEN nayose_id IN (SELECT id FROM records) THEN 'already in the run'
+       ELSE 'the same ID with different content' END AS reason
 FROM input_rows
 WHERE nayose_id IS NULL
    OR REGEXP_CONTAINS(nayose_id, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
+   OR nayose_id IN (SELECT id FROM records)
    OR nayose_id IN (SELECT nayose_id FROM input_rows GROUP BY nayose_id HAVING COUNT(*) > 1);
 
 CREATE OR REPLACE TEMP TABLE kept AS
@@ -25,6 +48,7 @@ SELECT DISTINCT m.*
 FROM mapped AS m
 WHERE m.id IS NOT NULL
   AND NOT REGEXP_CONTAINS(m.id, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
+  AND m.id NOT IN (SELECT id FROM records)
   AND m.id NOT IN (SELECT nayose_id FROM input_rows GROUP BY nayose_id HAVING COUNT(*) > 1);
 
 
@@ -147,16 +171,32 @@ FROM same;
 --    records per value if more) and by at least `crowd` customers, and its pairs outnumber those of every value held
 --    by fewer. The customer ID's, if held by `at` records. No field's blanking changes another's counts (a name blanked
 --    blanks only the fields built from its columns, and customers are counted by the customer ID, blanked as the
---    others are read), so all are found at once, and blanked as the records are written (6).
-CREATE OR REPLACE TABLE placeholders AS
-WITH v AS (
-  SELECT 'person_name' AS field, person_name AS value, COALESCE(customer_id, id) AS who FROM sided
-  UNION ALL SELECT 'company_name', company_name, COALESCE(customer_id, id) FROM sided
-  UNION ALL SELECT 'address_code', address_code, COALESCE(customer_id, id) FROM sided
-  UNION ALL SELECT 'address', address, COALESCE(customer_id, id) FROM sided
-  UNION ALL SELECT 'phone', phone, COALESCE(customer_id, id) FROM sided
-  UNION ALL SELECT 'birth_date', birth_date, COALESCE(customer_id, id) FROM sided
-  UNION ALL SELECT 'customer_id', customer_id, NULL FROM sided
+--    others are read), so all are found at once, and blanked as the records are written (6). The run's placeholders
+--    stay, read as missing in the batch first; the counts are of the run's records and the batch's together.
+CREATE OR REPLACE TEMP TABLE known AS SELECT * FROM placeholders;
+
+CREATE OR REPLACE TEMP TABLE found AS
+WITH every AS (
+  SELECT id, person_name, company_name, address_code, address, phone, birth_date, customer_id FROM records WHERE NOT @lookup
+  UNION ALL
+  SELECT id,
+    IF(person_name IN (SELECT value FROM known WHERE field = 'person_name'), NULL, person_name),
+    IF(company_name IN (SELECT value FROM known WHERE field = 'company_name'), NULL, company_name),
+    IF(address_code IN (SELECT value FROM known WHERE field = 'address_code'), NULL, address_code),
+    IF(address IN (SELECT value FROM known WHERE field = 'address'), NULL, address),
+    IF(phone IN (SELECT value FROM known WHERE field = 'phone'), NULL, phone),
+    IF(birth_date IN (SELECT value FROM known WHERE field = 'birth_date'), NULL, birth_date),
+    IF(customer_id IN (SELECT value FROM known WHERE field = 'customer_id'), NULL, customer_id)
+  FROM sided
+),
+v AS (
+  SELECT 'person_name' AS field, person_name AS value, COALESCE(customer_id, id) AS who FROM every
+  UNION ALL SELECT 'company_name', company_name, COALESCE(customer_id, id) FROM every
+  UNION ALL SELECT 'address_code', address_code, COALESCE(customer_id, id) FROM every
+  UNION ALL SELECT 'address', address, COALESCE(customer_id, id) FROM every
+  UNION ALL SELECT 'phone', phone, COALESCE(customer_id, id) FROM every
+  UNION ALL SELECT 'birth_date', birth_date, COALESCE(customer_id, id) FROM every
+  UNION ALL SELECT 'customer_id', customer_id, NULL FROM every
 ),
 c AS (SELECT field, value, COUNT(*) AS n, COUNT(DISTINCT who) AS who FROM v WHERE value IS NOT NULL GROUP BY field, value),
 s AS (SELECT field, GREATEST(@min_block, CAST(CEIL(@spread * SUM(n) / GREATEST(COUNT(*), 1)) AS INT64)) AS at_least,
@@ -164,15 +204,39 @@ s AS (SELECT field, GREATEST(@min_block, CAST(CEIL(@spread * SUM(n) / GREATEST(C
 held AS (SELECT c.field, c.value, c.n FROM c JOIN s USING (field) WHERE c.n >= s.at_least AND (c.field = 'customer_id' OR c.who >= @crowd)),
 held_pairs AS (SELECT field, SUM(DIV(n * (n - 1), 2)) AS pairs FROM held GROUP BY field)
 SELECT h.field, h.value, h.n FROM held AS h JOIN s USING (field) JOIN held_pairs AS p USING (field)
-WHERE h.field = 'customer_id' OR DIV(h.n * (h.n - 1), 2) > s.every - p.pairs;
+WHERE NOT @lookup AND (h.field = 'customer_id' OR DIV(h.n * (h.n - 1), 2) > s.every - p.pairs);
 
--- 6. The copies the keys and comparisons read, each a chain of steps from a field, and the records.
+CREATE OR REPLACE TABLE placeholders AS
+SELECT * FROM known UNION ALL SELECT * FROM found;
+
+-- 6. The copies the keys and comparisons read, each a chain of steps from a field, and the records: the run's, and the
+--    batch's. A run's record holding a placeholder the batch found is made again with it read as missing, its copies too.
 --    address: NFKC; 丁目, 番地 and 号 as dashes; the building and room after the first space past the street number
 --    gone, then every space; the address's own prefecture off its start. first3, initial, last3: a key's start or
 --    end. long_vowel: a long vowel written either way (サトウ, サトオ, サトー) as one reading.
 
-CREATE OR REPLACE TABLE records AS
-WITH blanked AS (  -- the placeholders read as missing: a name in person_name with full_name, given_name and any_name
+CREATE OR REPLACE TEMP TABLE redone AS  -- the run's records a placeholder the batch found is held by
+SELECT id FROM records
+WHERE person_name IN (SELECT value FROM found WHERE field = 'person_name')
+   OR company_name IN (SELECT value FROM found WHERE field = 'company_name')
+   OR address_code IN (SELECT value FROM found WHERE field = 'address_code')
+   OR address IN (SELECT value FROM found WHERE field = 'address')
+   OR phone IN (SELECT value FROM found WHERE field = 'phone')
+   OR birth_date IN (SELECT value FROM found WHERE field = 'birth_date')
+   OR customer_id IN (SELECT value FROM found WHERE field = 'customer_id');
+
+CREATE OR REPLACE TEMP TABLE made_again AS
+WITH made AS (  -- the batch's records, and the run's made again: their fields, before the copies
+  SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
+         birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name, company_name,
+         (SELECT batch FROM this_batch) AS batch
+  FROM sided
+  UNION ALL
+  SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
+         birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name, company_name, batch
+  FROM records WHERE id IN (SELECT id FROM redone)
+),
+blanked AS (  -- the placeholders read as missing: a name in person_name with full_name, given_name and any_name
   SELECT * REPLACE (
     IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, full_name) AS full_name,
     IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, given_name) AS given_name,
@@ -185,7 +249,7 @@ WITH blanked AS (  -- the placeholders read as missing: a name in person_name wi
     IF(phone IN (SELECT value FROM placeholders WHERE field = 'phone'), NULL, phone) AS phone,
     IF(birth_date IN (SELECT value FROM placeholders WHERE field = 'birth_date'), NULL, birth_date) AS birth_date,
     IF(customer_id IN (SELECT value FROM placeholders WHERE field = 'customer_id'), NULL, customer_id) AS customer_id)
-  FROM sided
+  FROM made
 ),
 copies AS (
   SELECT
@@ -223,6 +287,14 @@ readings AS (
   FROM copies
 )
 SELECT
-  * EXCEPT (side),
-  NULLIF(SUBSTR(person_name__kana_fold_long_vowel, -3), '') AS person_name__kana_fold_long_vowel_last3
+  id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id, birth_date,
+  kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name, company_name, person_name__kana_fold,
+  company_name__nfkc_strip_legal_form_kana_fold, address__address, postal_code__first3, any_name__initial, given_name__kana_fold,
+  address__address_first3, person_name__kana_fold_long_vowel, person_name__kana_fold_one_byte,
+  company_name__nfkc_strip_legal_form_kana_fold_one_byte, address__address_one_byte_hash,
+  NULLIF(SUBSTR(person_name__kana_fold_long_vowel, -3), '') AS person_name__kana_fold_long_vowel_last3, batch
 FROM readings;
+
+DELETE FROM records WHERE id IN (SELECT id FROM redone);
+
+INSERT INTO records SELECT * FROM made_again;

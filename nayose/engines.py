@@ -92,7 +92,8 @@ def as_bigquery(node: exp.Expression) -> exp.Expression:
         for unnest in (u for u in node.find_all(exp.Unnest) if isinstance(u.args.get("offset"), exp.Identifier) and u.parent_select is node):
             name = unnest.args["offset"].name
             for col in [c for c in node.find_all(exp.Column) if c.name == name and not c.table and c.parent_select is node]:
-                col.replace(exp.Paren(this=exp.Sub(this=col.copy(), expression=exp.Literal.number(1))))
+                shifted = exp.Paren(this=exp.Sub(this=col.copy(), expression=exp.Literal.number(1)))
+                col.replace(exp.alias_(shifted, name) if col.parent is node else shifted)  # a column selected keeps its name
         return node
     if isinstance(node, exp.IntDiv) and not node.args.get("bigquery"):
         node.set("bigquery", True)  # done: transform visits it again inside the brackets
@@ -191,7 +192,7 @@ class DuckDB:
             self.con.execute(f"CREATE OR REPLACE MACRO cl_{name}_cut(a, b, t) AS {native(name, f'twin_{name}_cut(a, b, t)')}")
         self.con.create_function("nfkc", nfkc, ["VARCHAR"], "VARCHAR", type="arrow")
         self.con.create_function("one_byte_hash", one_byte_hash, ["VARCHAR"], "VARCHAR", type="arrow")
-        self.con.create_function("fit_model", em.fit, ["VARCHAR", "VARCHAR"], "VARCHAR")  # EM: a Python function, as on BigQuery
+        self.con.create_function("fit_model", em.fit, ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR", null_handling="special")  # EM: Python, as on BigQuery
         self.con.create_function("entities_of", entities.of, ["VARCHAR"], "VARCHAR")  # decide's components: the same
 
     def run(self, sql: str, values: dict | None = None) -> None:
@@ -248,7 +249,7 @@ def functions(dataset: str) -> list[str]:
     out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.nfkc(x STRING) AS (NORMALIZE(x, NFKC))")
     out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.one_byte_hash(x STRING) AS "
                "(CODE_POINTS_TO_STRING(ARRAY(SELECT 33 + MOD(c, 94) FROM UNNEST(TO_CODE_POINTS(x)) AS c WITH OFFSET AS i ORDER BY i)))")
-    for module, name, args, entry in ((em, "fit_model", "counts STRING, settings STRING", "fit"), (entities, "entities_of", "pairs STRING", "of")):
+    for module, name, args, entry in ((em, "fit_model", "counts STRING, settings STRING, stored STRING", "fit"), (entities, "entities_of", "pairs STRING", "of")):
         source = Path(module.__file__).read_text(encoding="utf-8")  # BigQuery's Python UDF: python-3.11, standard library only
         assert "'''" not in source, f"{module.__name__}: no triple single quotes, which end BigQuery's raw string"
         out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.{name}({args}) RETURNS STRING LANGUAGE python "
