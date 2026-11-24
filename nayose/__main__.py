@@ -78,7 +78,7 @@ def reading(out: Path, copy: bool = True):  # the run in `out` to read: a match'
     # a lookup's statements write temporary tables alone: the run itself, read-only, as a writer's os.replace leaves an
     # open file as it was (Windows can't, so a copy there)
     in_place = not copy and os.name != "nt"
-    with tempfile.TemporaryDirectory(prefix="nayose-") as tmp:
+    with contextlib.nullcontext() if in_place else tempfile.TemporaryDirectory(prefix="nayose-") as tmp:
         if not in_place:
             shutil.copyfile(out / RUN, Path(tmp) / RUN)
         engine = DuckDB(out / RUN if in_place else Path(tmp) / RUN, read_only=in_place)
