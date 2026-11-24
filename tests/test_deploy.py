@@ -30,6 +30,14 @@ def test_the_image_installs_the_engine_at_the_pins_the_tests_run_with():
     assert set(image) - shared == {"google-cloud-bigquery", "google-cloud-bigquery-storage", "google-cloud-storage"}  # the image's alone
 
 
+def test_the_image_s_lock_pins_every_package_at_its_requirement_and_with_its_hashes():
+    lock, wanted = (DEPLOY / "requirements.lock").read_text(encoding="utf-8"), pins(DEPLOY / "requirements.txt")
+    locked = pins(DEPLOY / "requirements.lock")
+    assert {p: v for p, v in wanted.items() if locked.get(p) != v} == {}  # made again since requirements.txt changed?
+    entries = re.split(r"\n(?=[A-Za-z0-9])", lock.strip())
+    assert len(entries) == len(locked) and all("--hash=sha256:" in e for e in entries)  # pip install --require-hashes takes it
+
+
 @pytest.mark.parametrize("job", sorted(p.stem for p in (DEPLOY / "jobs").glob("*.yaml")))
 def test_each_job_runs_a_job_the_runner_takes_on_a_run_in_the_bucket(job):
     from er.__main__ import parser

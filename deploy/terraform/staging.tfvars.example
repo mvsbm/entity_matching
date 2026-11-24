@@ -1,0 +1,6 @@
+# Copied to staging.tfvars and filled in by the DevOps team (docs/operations.md).
+project              = "PROJECT-staging"
+environment          = "staging"
+jenkins_oidc_issuer  = "" # e.g. https://jenkins.example.com/oidc
+jenkins_oidc_subject = ""
+alert_emails         = []
