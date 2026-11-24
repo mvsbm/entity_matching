@@ -9,10 +9,11 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["er*", "design*"]  # every subpackage (er.engine, er.steps, er.jobs); design: local only, never run by a production job
+include = ["er*", "design*", "nayose*"]  # every subpackage (er.engine, er.steps, er.jobs); design: local only, never run by a production job
 
 [tool.setuptools.package-data]
 "er.engine" = ["udfs/*.js"]  # the comparison functions BigQuery's deploy creates (er.engine.bigquery.functions)
+"nayose" = ["*.js", "*.toml", "*.sql", "sql/*.sql"]  # the method (sql/), its values and mapping, the comparison functions in JavaScript
 
 [tool.ruff.lint]
 select = ["F", "B904", "UP017", "TID251"]  # names unused or never defined; an error re-raised without its cause; datetime.UTC; the calls banned below
