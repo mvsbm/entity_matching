@@ -111,7 +111,7 @@ The SQL text never changes between runs. What changes is given to it:
 
 - **`nayose/config.toml`** holds the values, one section per stage file: thresholds, seeds, lists (legal forms,
   prefectures, kana folding) and sizes. `[score]` names the key generators and rules that a run uses (`keys`,
-  `rules`). Each one is written once in `score.sql`, and leaving one out of the list runs without it. `nayose.values`
+  `rules`). Each one is written once in `score.sql`, and leaving one out of the list runs without it. `nayose.values_of`
   turns a section into the `@name` parameters a stage reads, together with the patterns built from the lists.
   `run_file` gives each statement only the values it names, because BigQuery refuses a parameter that a statement
   does not read.

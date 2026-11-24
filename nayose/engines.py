@@ -284,7 +284,7 @@ def functions(dataset: str) -> list[str]:
     return out
 
 
-JOBS = {  # each job BigQuery runs as a procedure of the run's dataset: its stages in order, and what values() is told
+JOBS = {  # each job BigQuery runs as a procedure of the run's dataset: its stages in order, and what values_of() is told
     "build": [("functions", {}), ("mapping", {}), ("records", {}), ("fit", {"refit": True}), ("score", {}), ("decide", {}), ("report", {})],
     "update": [("functions", {}), ("mapping", {}), ("records", {}), ("fit", {"refit": False}), ("score", {}), ("decide", {}), ("report", {})],
     "decide": [("functions", {}), ("decide", {})],
@@ -312,7 +312,7 @@ def in_dataset(sql: str, dataset: str) -> str:
 def procedures(dataset: str, functions: str, mapping: Path | None = None) -> list[str]:
     """The statements the deploy runs in `dataset` (project.dataset), after functions(): the method's own SQL functions
     (each file's CREATE TEMP FUNCTION), the dataset's; then one procedure a job (JOBS), its stages' statements in order
-    (mapping: the deployment's mapping.sql), the values they read (@name: nayose.values, config.toml's) declared at
+    (mapping: the deployment's mapping.sql), the values they read (@name: nayose.values_of, config.toml's) declared at
     its top as v_name, the dataset the one whose tables they name. Every call of a method's function names its
     dataset: `functions`' for the JavaScript and Python ones, `dataset`'s for the SQL ones."""
     path = lambda stage: (mapping or nayose.HERE / "mapping.sql") if stage == "mapping" else nayose.SQL / f"{stage}.sql"
@@ -320,7 +320,7 @@ def procedures(dataset: str, functions: str, mapping: Path | None = None) -> lis
     for job, stages in JOBS.items():
         body, declared = [], {}
         for stage, told in stages:
-            declared |= nayose.values(stage, **told)
+            declared |= nayose.values_of(stage, **told)
             for sql in nayose.statements(path(stage).read_text(encoding="utf-8")):
                 if m := TEMP_FUNCTION.match(sql):
                     made.setdefault(m[2], TEMP_FUNCTION.sub(lambda x: f"{x[1]}CREATE OR REPLACE FUNCTION `{dataset}`.{x[2]}", sql, count=1))
@@ -360,7 +360,7 @@ def qualified(sql: str, own: re.Pattern, dataset: str, functions: str) -> str:
     return own.sub(lambda m: f"`{dataset}`.{m[1]}(", BigQuery.CALLS.sub(lambda m: f"`{functions}`.{m[1]}(", sql))
 
 
-def bigquery_type(v: object) -> str:  # a value's BigQuery type, as values() gives it
+def bigquery_type(v: object) -> str:  # a value's BigQuery type, as values_of() gives it
     if isinstance(v, bool):
         return "BOOL"
     if isinstance(v, list):
