@@ -81,14 +81,58 @@ class DuckDB:
     def cursor(self) -> "DuckDB":  # the same database on a cursor of its own, for another thread
         return DuckDB(self.con.cursor())
 
+    # Where a step's tables and files are, and what the engine is: asked of the engine, not written into a step's SQL,
+    # so that SQL holds no part only DuckDB has (er.engine.bigquery translates the rest). Each answers on the connection
+    # itself: what a step sends is only its SQL.
+
+    def columns(self, x: str) -> list[tuple[str, str]]:  # a table's, a view's or a query's columns, in order: (name, DuckDB's type)
+        return [(r[0], r[1]) for r in self.con.execute(f"DESCRIBE SELECT * FROM {x}").fetchall()]
+
+    def exists(self, table: str) -> bool:  # whether this connection holds the table
+        return bool(self.con.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name = ?", [table]).fetchall()[0][0])
+
+    def read(self, files: str | Path | list, *, by_name: bool = False, filename: bool = False, row_numbers: bool = False) -> str:
+        """Parquet files as a relation SQL reads: one file, a glob, or a list (`by_name`: their columns matched by name;
+        `filename`: each row's file, in filename; `row_numbers`: its row in the file, in file_row_number)."""
+        from er.config import lit  # here: er.config reads this module's functions
+        given = f"[{', '.join(lit(f) for f in files)}]" if isinstance(files, list) else lit(files)
+        options = "".join(f", {o} = true" for o, on in (("union_by_name", by_name), ("filename", filename), ("file_row_number", row_numbers)) if on)
+        return f"read_parquet({given}{options})"
+
+    def write(self, sql: str, dest: str | Path, compression: str | None = None) -> None:  # the rows of `sql` as a Parquet file
+        from er.config import lit
+        self.con.execute(f"COPY ({sql}) TO {lit(dest)} (FORMAT parquet{f', COMPRESSION {compression}' if compression else ''})")
+
+    def threads(self) -> int:  # the threads a query runs on
+        return int(self.con.execute("SELECT current_setting('threads')").fetchall()[0][0])
+
+    def memory(self) -> str:  # the memory limit, as DuckDB says it
+        return self.con.execute("SELECT current_setting('memory_limit')").fetchall()[0][0]
+
+    def slices(self, table: str, size: int, n: int | None = None) -> list[str]:
+        """Conditions that each hold one slice of `table`'s rows (`n` of them, counted when not given), `size` rows
+        each, in the order they were made: a step holds one slice at a time; at least one, for none. DuckDB's rowid
+        ranges: the table is made fresh, its rowids dense."""
+        n = self.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0] if n is None else n
+        return [f"rowid >= {start} AND rowid < {start + size}" for start in range(0, max(n, 1), size)]
+
+    def attach(self, alias: str, path: str | Path, read_only: bool = False, row_group_size: int | None = None) -> None:
+        """A database file (an index's) whose tables SQL reads as alias.table, until detach(alias)."""
+        from er.config import lit
+        options = ", ".join(([] if not read_only else ["READ_ONLY"]) + ([] if row_group_size is None else [f"ROW_GROUP_SIZE {row_group_size}"]))
+        self.con.execute(f"ATTACH {lit(path)} AS {alias}{f' ({options})' if options else ''}")
+
+    def detach(self, alias: str) -> None:
+        self.con.execute(f"DETACH {alias}")
+
     def room(self) -> float:
         """The bytes a step's tables may take: DuckDB's memory limit plus the room it may spill to (spill_room)."""
-        return size_bytes(self.value("SELECT current_setting('memory_limit')")) + self.spill_room()
+        return size_bytes(self.memory()) + self.spill_room()
 
     def spill_room(self) -> float:
         """The bytes DuckDB may spill: its temp directory's free space, capped as DuckDB caps it (max_temp_directory_size:
         by default 90% of that space)."""
-        temp, cap = self.row("SELECT current_setting('temp_directory'), current_setting('max_temp_directory_size')")
+        temp, cap = self.con.execute("SELECT current_setting('temp_directory'), current_setting('max_temp_directory_size')").fetchall()[0]
         free = shutil.disk_usage(temp if temp and os.path.isdir(temp) else ".").free
         return 0.9 * free if "%" in cap else min(free, size_bytes(cap))
 
@@ -172,7 +216,7 @@ def connect(compute: dict | None = None) -> "DuckDB":
     no job sets, or one DuckDB refuses, is an InputError."""
     from er.config import InputError, lit  # here, not above: er.config reads this module's functions
     con = DuckDB(duckdb.connect())
-    con.run("SET enable_progress_bar = false")  # a long query's bar would land in stdout, between the JSON lines
+    con.con.execute("SET enable_progress_bar = false")  # a long query's bar would land in stdout, between the JSON lines
     limits = {k: v for k, v in (compute or {}).items() if v not in ("", None)}
     if "temp_directory" not in limits:  # a folder of each person's, only theirs: spilled records stay private, and no one else's blocks it
         try:
@@ -189,7 +233,7 @@ def connect(compute: dict | None = None) -> "DuckDB":
         if key not in COMPUTE:
             raise InputError(f"{key}: not a limit a job sets ({where})", fix=f"one of {', '.join(COMPUTE)}, as KEY=VALUE")
         try:
-            con.run(f"SET {key} = {lit(value)}")
+            con.con.execute(f"SET {key} = {lit(value)}")
         except duckdb.Error as e:
             raise InputError(f"{key}={value} ({where}): {str(e).splitlines()[0]}", fix="e.g. memory_limit=8GB threads=4 temp_directory=/a/folder/with/room") from None
     for name, info in FUNCTIONS.items():
@@ -197,6 +241,6 @@ def connect(compute: dict | None = None) -> "DuckDB":
             con.con.create_function(f"cl_{name}", udf(name), ["VARCHAR", "VARCHAR"], "DOUBLE", type="arrow")
             con.con.create_function(f"cl_{name}_cut", udf(name, cut=True), ["VARCHAR", "VARCHAR", "DOUBLE"], "DOUBLE", type="arrow")
     # self-check: character-level (the byte-level built-in gives 0.897 here) and NULL-safe
-    assert con.rows("select round(cl_jaro_winkler('サトウヒロシ', 'サトウタカシ'), 3), "
-                   "cl_levenshtein('サトウ', NULL) is null") == [(0.844, True)]
+    assert con.con.execute("select round(cl_jaro_winkler('サトウヒロシ', 'サトウタカシ'), 3), "
+                           "cl_levenshtein('サトウ', NULL) is null").fetchall() == [(0.844, True)]
     return con

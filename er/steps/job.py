@@ -82,7 +82,7 @@ class Job:
         return self.engine.value(f"SELECT count(*) FROM {sql}")
 
     def columns(self, table: str = "records") -> set[str]:
-        return {c[0] for c in self.engine.rows(f"DESCRIBE {table}")}
+        return {c for c, _ in self.engine.columns(table)}
 
 
 def start(settings: Settings, pipeline: Pipeline, echo: Callable[[dict], None] | None = None, told: Callable[..., None] | None = None) -> Job:

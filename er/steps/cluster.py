@@ -7,7 +7,7 @@ from pathlib import Path
 
 from er import folder
 from er.cluster import merge
-from er.config import bits, lit, q
+from er.config import bits, q
 from er.steps.job import Job
 from er.steps.score import scored_sql
 
@@ -23,7 +23,7 @@ def load_decisions(job: Job, out: Path | None) -> None:
     er_decisions."""
     u, l, r, parts = q(job.uid), q(job.l), q(job.r), out / folder.DECISIONS if out else None
     if parts and any(parts.glob("part-*.parquet")):
-        job.engine.run(f"""CREATE OR REPLACE TABLE er_decisions AS SELECT * FROM {folder.latest_decisions(out, job.uid)}
+        job.engine.run(f"""CREATE OR REPLACE TABLE er_decisions AS SELECT * FROM {folder.latest_decisions(job.engine, out, job.uid)}
             WHERE {l} IN (SELECT {u} FROM records) AND {r} IN (SELECT {u} FROM records)""")
 
 
@@ -33,7 +33,7 @@ def cluster(job: Job, n: int, old: Path | None = None) -> Clustered:
     t, engine, u = time.perf_counter(), job.engine, q(job.uid)
     accept(job)
     if old:  # the stored entities, whose answers stand, and each new record alone
-        engine.run(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(old)})")
+        engine.run(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM {engine.read(old)}")
         engine.run(f"CREATE OR REPLACE TABLE er_single AS SELECT {u}, cluster_id FROM gold_old UNION ALL SELECT {u}, {u} FROM new_ids")
     else:
         engine.run(f"CREATE OR REPLACE TABLE er_single AS SELECT {u}, {u} AS cluster_id FROM records")

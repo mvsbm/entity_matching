@@ -1,11 +1,12 @@
 """The BigQuery engine, checked where no BigQuery is: its comparison functions (JavaScript, run in V8 by mini-racer)
 against rapidfuzz's scores, its translation of every statement a run issues, its verbs on a client that records what it
-was sent. The parity check (the same records through both engines, by digest) waits for the parts the translation
-test finds refused, and for a sandbox dataset."""
+was sent. The parity check (the same records through both engines, by digest) waits for the engine's store (a
+dataset's tables for the run's files) and a sandbox dataset."""
 import json
 import random
 from collections import Counter
 
+import pandas as pd
 import pytest
 
 from er.engine.bigquery import FUNCTIONS, UDFS, BigQuery, NotPortable, functions, translate
@@ -74,32 +75,52 @@ def test_a_statement_translates_into_the_session_and_the_dataset_s_functions():
             translate(duckdb_only, DATASET)
 
 
-def test_every_statement_of_a_run_translates_or_is_refused_by_name(tmp_path, population, monkeypatch):
-    """A full run of the tests' population, every statement it sends its engine translated: each comes out as SQL
-    BigQuery's parser reads, or is refused naming the part only DuckDB has (DUCKDB_ONLY, or sqlglot's own). What is
-    refused is the BigQuery engine's work still to do; the scoring of pairs, the rules' joins, the counts of u and EM
-    translate whole."""
+def test_every_statement_a_job_sends_translates_into_sql_bigquery_reads(tmp_path, population, monkeypatch):
+    """A full run of the tests' population with its reports, an increment, people's decisions, the index kept up to
+    date, lookups by ID and by values, and a batch's would-be entities: every statement each sends its engine translates
+    (none refused: DUCKDB_ONLY, or sqlglot's own) into SQL BigQuery's parser reads. The name model's own, which runs on
+    the job's own DuckDB in its process whatever the engine (er.kind), aside."""
+    import traceback
     import sqlglot
     from er.engine.duckdb import DuckDB
+    from er.jobs import index
     from er.jobs.build import build
+    from er.jobs.decide import decide
+    from er.jobs.update import update, would_join
     sent = []
-    real = DuckDB.run, DuckDB.rows, DuckDB.value, DuckDB.row, DuckDB.frame
-    for verb, f in zip(("run", "rows", "value", "row", "frame"), real):
-        monkeypatch.setattr(DuckDB, verb, lambda self, sql, params=None, f=f: (sent.append(sql), f(self, sql, params))[1])
+    for verb in ("run", "value", "row", "first", "rows", "frame", "numpy", "arrow", "batches"):
+        def said(self, sql, *a, real=getattr(DuckDB, verb), **k):
+            if not any(f.filename.endswith("er/kind.py") for f in traceback.extract_stack()):
+                sent.append(sql)
+            return real(self, sql, *a, **k)
+        monkeypatch.setattr(DuckDB, verb, said)
+    view, read, slices, answered = DuckDB.view, DuckDB.read, DuckDB.slices, {}  # what DuckDB's engine answered → what BigQuery's does
+    monkeypatch.setattr(DuckDB, "view", lambda self, name, sql: (sent.append(sql), view(self, name, sql))[1])
+    monkeypatch.setattr(DuckDB, "read", lambda self, *a, **k: (answered.setdefault(x := read(self, *a, **k), f"er_files_{len(answered)}"), x)[1])  # a table
+    monkeypatch.setattr(DuckDB, "slices", lambda self, *a, **k: [(answered.setdefault(x, "TRUE"), x)[1] for x in slices(self, *a, **k)])  # one slice: all
     s, p, g = population
-    g.df.to_parquet(tmp_path / "in.parquet", index=False)
-    build(tmp_path / "in.parquet", tmp_path / "run", s, p)
-    refused, made = Counter(), 0
+    method, n = s.root / "config" / "pipeline.toml", int(len(g.df) * 0.9)
+    g.df.iloc[:n].to_parquet(tmp_path / "base.parquet", index=False)
+    g.df.iloc[n:].to_parquet(tmp_path / "batch.parquet", index=False)
+    run = tmp_path / "run"
+    build(tmp_path / "base.parquet", run, s, p, pipeline_file=method)
+    update(tmp_path / "batch.parquet", run, s, p, pipeline_file=method)
+    pd.read_parquet(run / "review.parquet").head(1).assign(decision="match").to_parquet(tmp_path / "decided.parquet")
+    decide(tmp_path / "decided.parquet", run, s, p)
+    one = g.df.iloc[0]
+    index.look_up(run, s, p, record=str(one[s.data.unique_id]))
+    index.look_up(run, s, p, values={c: str(one[c]) for c in ("FULL_NAME_KANA", "PHONE_NUM_4") if pd.notna(one[c])})
+    would_join(tmp_path / "batch.parquet", run, s, p)
+    refused = Counter()
     for sql in sent:
+        for x in sorted(answered, key=len, reverse=True):
+            sql = sql.replace(x, answered[x])
         try:
-            for part in sqlglot.parse(translate(sql, DATASET), read="bigquery"):
-                assert part is not None
-            made += 1
-        except NotPortable as e:
-            refused[str(e).split(":")[0]] += 1
-    scoring = [x for x in sent if "match_probability" in x and "POWER" in x]
-    assert scoring and all(translate(x, DATASET) for x in scoring)  # every pair's score, as the run scores it
-    assert made > len(sent) / 2, (made, len(sent), refused.most_common())
+            assert all(part is not None for part in sqlglot.parse(translate(sql, DATASET), read="bigquery"))
+        except (NotPortable, sqlglot.errors.SqlglotError) as e:
+            refused[f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"] += 1
+    assert len(sent) > 1000 and not refused, refused.most_common(10)
+    assert any("match_probability" in x and "POWER" in x for x in sent)  # every pair's score among them
 
 
 class Recorded:

@@ -36,6 +36,13 @@ def hashed(*exprs: str) -> str:
     return f"er_hash({exprs[0] if len(exprs) == 1 else f' || {sep} || '.join(f'coalesce(CAST({e} AS VARCHAR), {lit(chr(39) * 0)})' for e in exprs)})"
 
 
+def unpivoted(src: str, columns: list[str], name: str, value: str) -> str:
+    """SQL: the rows of `src` (a table, or a query in parentheses), one per column of `columns` that holds a value, as
+    (name: the column's, value): the standard UNPIVOT, which DuckDB and BigQuery both read."""
+    cols = ", ".join(q(c) for c in columns)
+    return f"(SELECT {name}, {value} FROM (SELECT {cols} FROM {src}) UNPIVOT ({value} FOR {name} IN ({cols})))"
+
+
 def lit(value: object) -> str:  # a value, a path or text, as an SQL string literal
     return "'" + str(value).replace("'", "''") + "'"
 

@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from er.engine.engine import Engine
-from er.config import GIVEN, hashed, InputError, Key, lit, Pipeline, q, sources_text
+from er.config import GIVEN, hashed, InputError, Key, lit, Pipeline, q, sources_text, unpivoted
 from er import folder
 from er.io import code_version, read_parquet
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
@@ -42,8 +42,8 @@ def fill_rates(run: "Ran", fields: list[str] | None = None, sample: int = 10_000
     pattern = {f: run.settings.detect[f] for f in fs if f in run.settings.detect}
     looks = dict(zip(pattern, run.engine.row("SELECT " + ", ".join(f"avg(regexp_matches({q(f)}, {lit(p)})::INT)" for f, p in pattern.items())
                                               + " FROM er_fill_sample"))) if pattern else {}
-    top = dict(run.engine.rows("""SELECT field, max(n) / sum(n) FROM (SELECT field, v, count(*) AS n FROM
-        (UNPIVOT er_fill_sample ON COLUMNS(*) INTO NAME field VALUE v) GROUP BY ALL) GROUP BY field"""))
+    top = dict(run.engine.rows(f"""SELECT field, max(n) / sum(n) FROM (SELECT field, v, count(*) AS n FROM
+        {unpivoted('er_fill_sample', list(fs), 'field', 'v')} GROUP BY ALL) GROUP BY field"""))
     shape = run.engine.row("SELECT " + ", ".join(f"avg((NOT regexp_matches({q(f)}, '[\\pL\\pN]'))::INT), avg(length({q(f)})), max(length({q(f)}))" for f in fs)
                             + " FROM er_fill_sample")
     return pd.DataFrame(dict(field=fs, filled=filled, looks_right=[looks.get(f) for f in fs], top_value=[top.get(f) for f in fs],
@@ -60,7 +60,7 @@ def unmapped_columns(engine: Engine, table: str, columns: list[str], fields: lis
     v = filled("v")
     n = max(1, engine.value(f"SELECT count(*) FROM {table}"))
     shape = {c: (k / n, d / max(1, k)) for c, k, d in engine.rows(f"""SELECT c, count(*) FILTER (WHERE {v}), count(DISTINCT v) FILTER (WHERE {v})
-        FROM (UNPIVOT (SELECT {', '.join(q(c) for c in columns)} FROM {table}) ON COLUMNS(*) INTO NAME c VALUE v) GROUP BY c""")}
+        FROM {unpivoted(table, columns, 'c', 'v')} GROUP BY c""")}
     fits = fit(engine, table, columns, [f for f in fields if f != "id"], patterns)  # id: any column of unique values fits it; distinct says that
     best = {c: max(((f, s[c]) for f, s in fits.items()), key=lambda x: x[1], default=("", 0.0)) for c in columns}
     return pd.DataFrame([dict(column=c, filled=shape.get(c, (0.0, 0.0))[0], distinct=shape.get(c, (0.0, 0.0))[1],
@@ -113,7 +113,7 @@ def qa(run: "Ran", fields: list[str] | None = None, review: int = 50, previous: 
         count(*) FILTER (WHERE resolved_stage = 'review') FROM gold JOIN (SELECT cluster_id, count(*) AS n FROM gold GROUP BY 1) USING (cluster_id)""")
     linked = next(x for x in reversed(run.steps) if x["step"] == "cluster")
     kinds, mixed, kind_rows = pd.DataFrame(), pd.DataFrame(), []
-    if "kind" in engine.frame("DESCRIBE gold")["column_name"].tolist():
+    if "kind" in {c for c, _ in engine.columns("gold")}:
         kinds = engine.frame("""SELECT 'records' AS of, kind, count(*) AS how_many FROM gold GROUP BY ALL
                            UNION ALL SELECT 'customers', customer_kind, count(DISTINCT cluster_id) FROM gold GROUP BY ALL ORDER BY ALL""")
         mixed = engine.frame("""SELECT cluster_id, count(*) AS records, count(*) FILTER (WHERE kind = 2) AS companies,
@@ -176,7 +176,7 @@ def diagnosis(run: "Ran", tables: dict[str, pd.DataFrame], lo: float) -> list[di
     sessions of under THIN pairs. No record's value:
     field, column and level names, counts and shares. O(C) over the scores."""
     engine, model, m, fs = run.engine, run.scoring, run.scoring["er"], run.pipeline.fs
-    gammas = {c for c, *_ in engine.rows("DESCRIBE scores") if c.startswith("gamma_")}
+    gammas = {c for c, _ in engine.columns("scores") if c.startswith("gamma_")}
     below = f"match_weight >= 0 AND match_weight < {lo}"
     count = lambda where: engine.value(f"SELECT count(*) FROM scores WHERE {where}")
     n_below, expected = engine.row(f"SELECT count(*), coalesce(sum(match_probability), 0) FROM scores WHERE {below}")
@@ -211,10 +211,11 @@ def diagnosis(run: "Ran", tables: dict[str, pd.DataFrame], lo: float) -> list[di
         if f"gamma_{c.name}" in gammas:
             exact = [gamma[c.name][lv.label] for lv in c.levels if all(x.function == "exact" for _, x in lv.any_of) and GIVEN not in {col for col, _ in lv.any_of}]
             given = [gamma[c.name][lv.label] for lv in c.levels if GIVEN in {col for col, _ in lv.any_of}]
-            agree += [f"CASE WHEN {q('gamma_' + c.name)} IN ({', '.join(map(str, gs))}) THEN '{what}' END" for what, gs in ((c.name, exact), ("given name", given)) if gs]
+            agree += [(what, f"CASE WHEN {q('gamma_' + c.name)} IN ({', '.join(map(str, gs))}) THEN '{what}' END") for what, gs in ((c.name, exact), ("given name", given)) if gs]
     if len(agree) > 1 and n_below:
-        got = engine.rows(f"""SELECT p, count(*) AS n FROM (SELECT concat_ws(' + ', {', '.join(agree)}) AS p FROM scores WHERE {below})
-            WHERE p LIKE '% + %' AND list_has_any(string_split(p, ' + '), {named!r}) GROUP BY 1 ORDER BY n DESC, p""")
+        either_named = " OR ".join(f"{a} IS NOT NULL" for what, a in agree if what in named) or "FALSE"  # one of the fields that agree is a name
+        got = engine.rows(f"""SELECT p, count(*) AS n FROM (SELECT concat_ws(' + ', {', '.join(a for _, a in agree)}) AS p, {either_named} AS named FROM scores WHERE {below})
+            WHERE p LIKE '% + %' AND named GROUP BY 1 ORDER BY n DESC, p""")
         if total := sum(n for _, n in got):
             out.append((total, f"{total:,} pairs below review agree exactly on a name and another field ({', '.join(f'{p} {n:,}' for p, n in got[:3])}); "
                                f"the model expects {expected:,.0f} true pairs among the {n_below:,} below review"))
@@ -269,7 +270,7 @@ def report_text(run: "Ran", tables: dict[str, pd.DataFrame], pipeline: Path, ite
         return "—" if x is None or pd.isna(x) else f"{x:.1%}"
 
     code = code_version(run.settings.root)
-    threads, memory = engine.row("SELECT current_setting('threads'), current_setting('memory_limit')")
+    threads, memory = engine.threads(), engine.memory()
     kind = "full run" if run.added is None else f"increment of {run.added:,} new records"
     out = [f"RUN REPORT · {datetime.now():%Y-%m-%d %H:%M} · {kind} · no record's value in it",
            f"code {code} · pipeline {pipeline.name}",
@@ -307,7 +308,7 @@ def report_text(run: "Ran", tables: dict[str, pd.DataFrame], pipeline: Path, ite
         [dict(bits=label(i), candidates=f"{scored[i]:,}", accepted=f"{accepted.get(i, (0, 0))[0]:,}", expected_false=f"{accepted.get(i, (0, 0))[1]:.2f}")
          for i in sorted(scored)])), ""]
 
-    gammas = [c for c, *_ in engine.rows("DESCRIBE scores") if c.startswith("gamma_")]
+    gammas = [c for c, _ in engine.columns("scores") if c.startswith("gamma_")]
     if gammas:  # each band's most common patterns among the keys' pairs scored/ keeps, one level per comparison as MODEL names it
         named = levels(run.scoring)
         got = engine.rows(f"""WITH p AS (SELECT match_weight >= {lo} AS up, {', '.join(q(g) for g in gammas)}, count(*) AS n, avg(match_weight) AS w
@@ -395,7 +396,7 @@ def carry_over(run: "Ran", previous: pd.DataFrame, sheet: pd.DataFrame, out: Pat
 def households(engine: Engine, records: str, pairs: str, uid: str, p: Pipeline) -> set[tuple[str, str]]:
     """The pairs of `pairs` (SQL: uid_l, uid_r) labelled maybe one household ([household]), read on `records` (SQL, the
     run's standardized records). O(pairs)."""
-    have = {c for c, *_ in engine.rows(f"DESCRIBE SELECT * FROM {records}")}
+    have = {c for c, _ in engine.columns(records)}
     if (cond := p.household.sql(have)) == "FALSE":
         return set()
     u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")

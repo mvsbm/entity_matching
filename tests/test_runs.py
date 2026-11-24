@@ -216,7 +216,6 @@ def test_a_full_run_keeps_the_decisions_people_wrote_in_the_sheet_and_have_not_g
 
 def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_decisions(tmp_path, population, monkeypatch):
     import os
-    import er.folder
     from er.folder import finish_writes
     from er.jobs.build import build
     from er.jobs.decide import decide
@@ -228,12 +227,13 @@ def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_decisions(tmp_pat
     pd.DataFrame({f"{uid}_l": [a], f"{uid}_r": [b], "decision": ["match"]}).to_parquet(tmp_path / "decided.parquet")
     decide(tmp_path / "decided.parquet", tmp_path / "run", s, p)
     before = pd.read_parquet(tmp_path / "run" / "gold.parquet")
-    lit = er.folder.lit
-    def full_disk(path):  # the new gold can't be written
-        if "gold" in str(path):
+    from er.engine.duckdb import DuckDB
+    write = DuckDB.write
+    def full_disk(self, sql, dest, compression=None):  # the new gold can't be written
+        if "gold" in str(dest):
             raise OSError("No space left on device")
-        return lit(path)
-    monkeypatch.setattr(er.folder, "lit", full_disk)
+        return write(self, sql, dest, compression)
+    monkeypatch.setattr(DuckDB, "write", full_disk)
     with pytest.raises(OSError):
         build(tmp_path / "all.parquet", tmp_path / "run", s, p, overwrite=True)
     monkeypatch.undo()

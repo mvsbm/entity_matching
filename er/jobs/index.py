@@ -120,15 +120,16 @@ def _rows(x: object, table: str, uid: str) -> str:  # the rows a table of keys h
     u = q(uid)
     if isinstance(x, DeletionKeys):
         within = ", ".join(q(w.name) for w in x.within)
+        at_each, key, once = deletions_sql(q(x.key.name))
         return (f"SELECT {_hashed(x)} AS h, {u} AS uid FROM (SELECT {u}{', ' + within if within else ''}, "
-                f"unnest({deletions_sql(q(x.key.name))}) AS __dk FROM {table} WHERE {_filled(_keys(x))})")
+                f"{key} AS __dk FROM {table}, {at_each} WHERE {_filled(_keys(x))} AND {once})")
     return f"SELECT {_hashed(x)} AS h, {u} AS uid FROM {table} WHERE {_filled(_keys(x))}"
 
 
-def _entities(ws: Path, uid: str) -> str:  # each record's entity, and whether the rules joined it to another, as the run holds them now
+def _entities(engine: Engine, ws: Path, uid: str) -> str:  # each record's entity, and whether the rules joined it to another, as the run holds them now
     u = q(uid)
-    return (f"(SELECT g.{u}, g.cluster_id AS entity, coalesce(c.n >= 2, FALSE) AS resolved FROM read_parquet({lit(ws / 'gold.parquet')}) g LEFT JOIN "
-            f"(SELECT {u}, count(*) OVER (PARTITION BY cluster_id) AS n FROM read_parquet({lit(ws / 'state' / 'rule_clusters.parquet')})) c USING ({u}))")
+    return (f"(SELECT g.{u}, g.cluster_id AS entity, coalesce(c.n >= 2, FALSE) AS resolved FROM {engine.read(ws / 'gold.parquet')} g LEFT JOIN "
+            f"(SELECT {u}, count(*) OVER (PARTITION BY cluster_id) AS n FROM {engine.read(ws / 'state' / 'rule_clusters.parquet')}) c USING ({u}))")
 
 
 def _write(engine: Engine, into: str, src: str, p: Pipeline, ws: Path, uid: str, records: str | None = None) -> dict[str, list]:
@@ -136,7 +137,7 @@ def _write(engine: Engine, into: str, src: str, p: Pipeline, ws: Path, uid: str,
     the rules joined it; in the database `records`, else `into`), each key's (hash, uid), each sorted by hash. Each table's [rows, seconds]."""
     u, jobs, records = q(uid), {}, records or into
     jobs["records"] = [f"CREATE TABLE {records}.records AS SELECT {hashed(f's.{u}')} AS h, s.*, e.entity, coalesce(e.resolved, FALSE) AS resolved "
-                       f"FROM {src} s LEFT JOIN {_entities(ws, uid)} e USING ({u}) ORDER BY h"]
+                       f"FROM {src} s LEFT JOIN {_entities(engine, ws, uid)} e USING ({u}) ORDER BY h"]
     for name, x in _tables(p):
         jobs[name] = [f"CREATE TABLE {into}.{name} AS {_rows(x, src, uid)} ORDER BY h"]
 
@@ -186,25 +187,24 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
     parts = sorted((ws / "state" / "records").glob("part-*.parquet"))
     if not parts or not (ws / "gold.parquet").exists():
         raise InputError(f"{ws} holds no run to index", fix=f"build it first: python -m er build FILE --out {ws}")
-    src = f"read_parquet([{', '.join(lit(x) for x in parts)}], union_by_name = true)"
     have = list(dict.fromkeys(c for f in parts for c in pq.read_schema(f).names))  # as union_by_name orders them
     fitted, model = _pipeline(ws, s, p, have), run_model(ws)
     tables = _tables(fitted)
     reads = {uid, *read_by(model), *(c for _, x in tables for c in _keys(x)), *(c for c in SHOWN if c in have), *(c for c in ALIKE if c in have),
              *(c for _, x in tables if isinstance(x, tuple) for c in _rule_reads(x, have))}
     engine = connect(s.compute)
-    tmp, key = _scratch(ws), secrets.token_hex(6)
+    src, tmp, key = engine.read(parts, by_name=True), _scratch(ws), secrets.token_hex(6)
     try:
-        engine.run(f"ATTACH {lit(tmp / f'{key}.duckdb')} AS ix")
-        engine.run(f"ATTACH {lit(tmp / f'{key}.records.duckdb')} AS ixr (ROW_GROUP_SIZE {ROWS})")
-        engine.run(f"ATTACH {lit(tmp / f'{key}-0.duckdb')} AS dx (ROW_GROUP_SIZE {ROWS})")
+        engine.attach("ix", tmp / f"{key}.duckdb")
+        engine.attach("ixr", tmp / f"{key}.records.duckdb", row_group_size=ROWS)
+        engine.attach("dx", tmp / f"{key}-0.duckdb", row_group_size=ROWS)
         t = time.perf_counter()
         engine.run(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) for c in have if c in reads)} FROM {src}")  # read once: every table reads it
         made = {"read": [None, round(time.perf_counter() - t, 3)], **_write(engine, "ix", "src", fitted, ws, uid, records="ixr")}
         _write(engine, "dx", "(SELECT * FROM src LIMIT 0)", fitted, ws, uid)  # what changed since: nothing yet
         engine.run(f"CREATE TABLE dx.moved AS SELECT {q(uid)}, entity, resolved FROM ixr.records LIMIT 0")
         for db in ("ix", "ixr", "dx"):
-            engine.run(f"DETACH {db}")
+            engine.detach(db)
         kind = bool(fitted.kind and fitted.kind.name_field in present_fields(s, have))  # the records hold a kind: a record looked up is told one too
         of = {n: f"rule {x[1].name}" if isinstance(x, tuple) else x.name for n, x in tables}
         m = dict(id=key, built_at=time.strftime("%Y-%m-%dT%H:%M:%S"), records=made["records"][0], added=0, moved=0, columns=have,
@@ -240,12 +240,12 @@ def update(ws: Path, s: Settings, p: Pipeline) -> dict:
         engine = connect(s.compute)
         tmp, delta = _scratch(ws), f"{m['id']}-{n}.duckdb"
         try:
-            engine.run(f"ATTACH {lit(ws / INDEX / m['files']['keys'])} AS ix (READ_ONLY)")
-            engine.run(f"ATTACH {lit(ws / INDEX / m['files']['records'])} AS ixr (READ_ONLY)")
-            engine.run(f"ATTACH {lit(tmp / delta)} AS dx (ROW_GROUP_SIZE {ROWS})")
-            stored = {c: t for c, t, *_ in engine.rows("DESCRIBE ixr.records") if c not in ("h", "entity", "resolved")}
-            src = f"read_parquet([{', '.join(lit(x) for x in new)}], union_by_name = true)"
-            there = {c: t for c, t, *_ in engine.rows(f"DESCRIBE SELECT * FROM {src}")} if new else {}
+            engine.attach("ix", ws / INDEX / m["files"]["keys"], read_only=True)
+            engine.attach("ixr", ws / INDEX / m["files"]["records"], read_only=True)
+            engine.attach("dx", tmp / delta, row_group_size=ROWS)
+            stored = {c: t for c, t in engine.columns("ixr.records") if c not in ("h", "entity", "resolved")}
+            src = engine.read(new, by_name=True) if new else None
+            there = dict(engine.columns(src)) if new else {}
             if retyped := sorted(c for c, t in there.items() if c in stored and t != stored[c]):  # a key hashed as another type meets none of the index's
                 why = f"{', '.join(retyped[:3])} read as another type"
             else:
@@ -254,13 +254,13 @@ def update(ws: Path, s: Settings, p: Pipeline) -> dict:
                 _write(engine, "dx", "src", fitted, ws, uid)
                 u = q(uid)
                 engine.run(f"""CREATE TABLE dx.moved AS SELECT b.{u}, e.entity, coalesce(e.resolved, FALSE) AS resolved FROM ixr.records b
-                    LEFT JOIN {_entities(ws, uid)} e USING ({u}) WHERE e.entity IS DISTINCT FROM b.entity OR coalesce(e.resolved, FALSE) <> b.resolved""")
+                    LEFT JOIN {_entities(engine, ws, uid)} e USING ({u}) WHERE e.entity IS DISTINCT FROM b.entity OR coalesce(e.resolved, FALSE) <> b.resolved""")
                 added, moved = (engine.value(f"SELECT count(*) FROM dx.{t}") for t in ("records", "moved"))
                 if added + moved >= REBUILD * m["records"]:  # every read joins what moved: kept small
                     why = f"the records added or moved since reach {REBUILD:.0%} of it"
                 else:
                     for db in ("ix", "ixr", "dx"):
-                        engine.run(f"DETACH {db}")
+                        engine.detach(db)
                     _publish(ws, tmp, {**m, "stamp": now, "added": added, "moved": moved, "files": {**m["files"], "delta": delta}, "updates": n,
                                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         finally:
@@ -310,7 +310,7 @@ def stale(ws: Path, m: dict | None = None) -> str | None:
 
 def _attach(engine: Engine, ws: Path, m: dict) -> None:  # the index the manifest names: its keys as ix, its records as ixr, what changed since as dx
     for db, f in (("ix", "keys"), ("ixr", "records"), ("dx", "delta")):
-        engine.run(f"ATTACH {lit(Path(ws) / INDEX / m['files'][f])} AS {db} (READ_ONLY)")
+        engine.attach(db, Path(ws) / INDEX / m["files"][f], read_only=True)
 
 
 def _classifier(ws: Path, s: Settings, p: Pipeline, m: dict) -> Classifier | None:  # the run's: its rule, as config/pipeline.toml [kind] sets it
@@ -492,7 +492,7 @@ def _query(engine: Engine, s: Settings, p: Pipeline, values: dict | None, record
     file's column names, read as the reader reads a value and prepared with the run's classifier `kind`."""
     uid = s.data.unique_id
     if record is not None:
-        row = engine.frame(f"SELECT * EXCLUDE (h, entity, resolved) FROM {_both('records', f'h = {hashed(lit(record) + "::VARCHAR")} AND {q(uid)} = {lit(record)}')}")
+        row = engine.frame(f"SELECT * EXCLUDE (h, entity, resolved) FROM {_both('records', f'h = {hashed(f"CAST({lit(record)} AS VARCHAR)")} AND {q(uid)} = {lit(record)}')}")
         if row.empty:
             raise InputError(f"{record}: no record of the run has that ID", fix="give a record ID the run holds, or the record's values")
         return row.astype("string")
@@ -552,7 +552,7 @@ def _gate(engine: Engine, p: Pipeline, model: dict, uid: str, me: str, found: di
     those reaches the search floor. O(sampled + b) a block."""
     m, floor, added = p.fs.budget.min_oversized(), search_floor(p), {}
     names = {x.name: name for name, x in _tables(p) if not isinstance(x, tuple)}
-    mine = engine.value(f"SELECT {hashed('?::VARCHAR')}", [me])
+    mine = engine.value(f"SELECT {hashed('CAST(? AS VARCHAR)')}", [me])
     for c in checked:
         for b in c.get("big", ()):
             block = _both(names[c["key"]], f"h = {b['h']}", "uid")
@@ -607,12 +607,13 @@ def _scored(engine: Engine, model: dict, uid: str, me: str, ids: list[str], n: i
     if not ids:
         return pd.DataFrame(columns=["uid", "entity", "weight", "compared", "shown"])
     cols, u = sorted(read_by(model)), q(uid)
-    hashes = [h for (h,) in engine.rows(f"SELECT {hashed('x')} FROM unnest(?::VARCHAR[]) t(x)", [ids])]
+    hashes = [h for (h,) in engine.rows(f"SELECT {hashed('x')} FROM unnest(CAST(? AS VARCHAR[])) AS t(x)", [ids])]
     engine.run(f"CREATE OR REPLACE TEMP TABLE er_c AS SELECT * EXCLUDE (h) FROM {_records(f'h IN ({', '.join(map(str, hashes))})', uid)}")
     side = lambda c, a, b: f"CASE WHEN q.{u} < c.{u} THEN {a}.{q(c)} ELSE {b}.{q(c)} END"
     pairs = ", ".join(f'{side(c, "q", "c")} AS {q(c + "_l")}, {side(c, "c", "q")} AS {q(c + "_r")}' for c in cols)
     by, gammas = levels(model), _gammas(model)  # each level and its points as the run's scores have them
-    shown = ", ".join(f"c.{q(x)} AS {q('shown_' + x)}" for x in SHOWN if x in {c for c, *_ in engine.rows("DESCRIBE er_c")})
+    have = {c for c, _ in engine.columns("er_c")}
+    shown = ", ".join(f"c.{q(x)} AS {q('shown_' + x)}" for x in SHOWN if x in have)
     frame = engine.frame(f"""SELECT x.*, {', '.join(gammas)} FROM (SELECT c.{u} AS uid, c.entity, {pairs}{', ' + shown if shown else ''}
         FROM qry q, er_c c WHERE c.{u} <> q.{u}) x""")
     names = [c["output_column_name"] for c in model["comparisons"]]
