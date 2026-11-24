@@ -93,6 +93,14 @@ A lookup reads the key index by its keys, and the records it touches by ID. Of a
 
 The run's tables are DuckDB's. Past `memory_limit` (`--compute memory_limit=8GB`), DuckDB spills to `temp_directory`. Python holds only small results: the fit's counts, the model and report.txt's numbers. Peak memory and `run.duckdb`'s size at 1M: 6.4 GB and 1.28 GB at 1,039,995 records, 0.75 GB of it the key index (`every_key`, `rule_keys`: 43.5M rows; about 1.7 TB at 1B in BigQuery's bytes). For files of growing size, `scripts/benchmark.py` builds each one in a process of its own and writes `reports/benchmark.md`: [reports/benchmark.md](../reports/benchmark.md): a build grows like N^0.35 between 13,019 and 1,039,995 records, 5.1 s to 24.1 s, 1.29 GB to 6.4 GB at peak. A small file's build is mostly the fit's u sample, about ten million pairs at any size.
 
+## Each key's worth
+
+`python scripts/key_quality.py RUN [--truth TRUTH.parquet]` counts, for each key of a run, the pairs it lists
+(candidates), the matches among them (6 points or more with a name compared, or a rule's), and the matches it alone
+finds, which no other key or rule does. It then names the keys that can go together losing no match, and what they
+cost: their index rows and the candidates only they list. Counts alone, so a run on real records can be read anywhere.
+On 1M generated records, 9 of the 22 keys can go together: 19% of the index's rows and 25% of the candidates.
+
 ## What keeps the cost down
 
 Every speed-up keeps every table the same: `tests/test_parity.py` holds each job's tables to recorded digests (`tests/fixtures/`).

@@ -4,6 +4,7 @@ another job is writing); a rebuild keeping people's decisions; report.txt; and p
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -91,3 +92,28 @@ def test_an_update_is_refused_once_the_method_its_values_or_the_mapping_changed_
     monkeypatch.setattr(nayose, "fingerprint", lambda *a, **k: "another")
     with pytest.raises(nayose.InputError, match="changed since the run was built"):
         nayose.update(engine, [tmp_path / "in.parquet"])
+
+
+def test_each_key_s_candidates_and_matches_are_counted_and_the_keys_that_can_go_lose_none(tmp_path, population):
+    import importlib.util
+    import duckdb
+    import nayose
+    from nayose.engines import DuckDB
+    spec = importlib.util.spec_from_file_location("key_quality", Path(__file__).resolve().parents[1] / "scripts" / "key_quality.py")
+    kq = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kq)
+    population.df.to_parquet(tmp_path / "in.parquet", index=False)
+    population.truth.to_parquet(tmp_path / "truth.parquet", index=False)
+    engine = DuckDB(tmp_path / "run.duckdb")
+    nayose.build(engine, [tmp_path / "in.parquet"])
+    engine.close()
+    got = kq.measure(tmp_path, tmp_path / "truth.parquet", 6.0)
+    used = set(nayose.config()["score"]["keys"])
+    assert {r["key"] for r in got["keys"]} <= used and got["matches"] >= got["true"] > 0
+    assert all(r["only"] == 0 for r in got["keys"] if r["key"] in got["drop"])
+    con = duckdb.connect(str(tmp_path / "run.duckdb"), read_only=True)
+    lost = con.execute("SELECT COUNT(*) FROM scored WHERE rule IS NULL AND match_weight >= 6 AND named AND sources IS NOT NULL "
+                       "AND list_has_all(?, string_split(sources, '+'))", [got["drop"]]).fetchone()[0]
+    text = kq.report(got, truth=True)
+    names = [n for n in population.df["FULL_NAME_KANA"].dropna().unique() if len(n) > 3][:200]
+    assert lost == 0 and not [n for n in names if n in text]  # none lost; no record's value shown
