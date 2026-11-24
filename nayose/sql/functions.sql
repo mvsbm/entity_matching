@@ -106,6 +106,28 @@ CREATE OR REPLACE TEMP FUNCTION gamma_name(l ANY TYPE, r ANY TYPE) AS (
   END
 );
 
+-- the same levels from a name's Jaro–Winkler already computed once (name_score: the folded names' score from 0.75 up,
+-- else 0; NULL where an equality settles the level): one call a pair, where gamma_name may make two
+CREATE OR REPLACE TEMP FUNCTION name_score(l ANY TYPE, r ANY TYPE) AS (
+  IF(l.person_name IS NULL OR r.person_name IS NULL OR l.person_name = r.person_name
+     OR l.person_name__kana_fold = r.person_name__kana_fold OR l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel,
+     NULL, jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold, l.person_name__kana_fold_one_byte,
+                           r.person_name__kana_fold_one_byte, CAST(0.75 AS FLOAT64)))
+);
+
+CREATE OR REPLACE TEMP FUNCTION name_level(l ANY TYPE, r ANY TYPE, s FLOAT64) AS (
+  CASE
+    WHEN l.person_name IS NULL OR r.person_name IS NULL THEN -1
+    WHEN l.person_name = r.person_name THEN 6
+    WHEN l.person_name__kana_fold = r.person_name__kana_fold THEN 5
+    WHEN l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel THEN 4
+    WHEN s >= CAST(0.95 AS FLOAT64) THEN 3
+    WHEN l.given_name__kana_fold = r.given_name__kana_fold THEN 2
+    WHEN s >= CAST(0.75 AS FLOAT64) THEN 1
+    ELSE 0
+  END
+);
+
 -- company: the company's name, its legal form gone and folded (company_name__nfkc_strip_legal_form_kana_fold)
 CREATE OR REPLACE TEMP FUNCTION gamma_company(l ANY TYPE, r ANY TYPE) AS (
   CASE
@@ -124,22 +146,33 @@ CREATE OR REPLACE TEMP FUNCTION gamma_address(l ANY TYPE, r ANY TYPE) AS (
     WHEN (l.address_code IS NULL OR r.address_code IS NULL) AND (l.address IS NULL OR r.address IS NULL)
       AND (l.postal_code IS NULL OR r.postal_code IS NULL) THEN -1
     WHEN l.address_code = r.address_code OR l.address__address = r.address__address THEN 3          -- same address
-    WHEN ABS(LENGTH(l.address__address) - LENGTH(r.address__address)) <= 2
-      AND (l.address__address_one_byte_hash IS NULL OR r.address__address_one_byte_hash IS NULL
-           OR cl_levenshtein_cut(l.address__address_one_byte_hash, r.address__address_one_byte_hash, 2) <= 2)
-      AND cl_levenshtein_cut(l.address__address, r.address__address, 2) <= 2 THEN 2                -- address close
+    WHEN CASE  -- address close: the tests in order, the costliest last
+           WHEN l.address__address IS NULL OR r.address__address IS NULL OR ABS(LENGTH(l.address__address) - LENGTH(r.address__address)) > 2 THEN FALSE
+           WHEN l.address__address_one_byte_hash IS NULL OR r.address__address_one_byte_hash IS NULL
+             THEN cl_levenshtein_cut(l.address__address, r.address__address, 2) <= 2
+           WHEN cl_levenshtein_cut(l.address__address_one_byte_hash, r.address__address_one_byte_hash, 2) > 2 THEN FALSE
+           ELSE cl_levenshtein_cut(l.address__address, r.address__address, 2) <= 2 END THEN 2
     WHEN l.postal_code = r.postal_code THEN 1                                                        -- same postal
     ELSE 0
   END
 );
 
+-- Two values one edit apart (a character changed, added, dropped, or two neighbours swapped) share their first or
+-- their last h characters, h = ⌊(the shorter's length − 1)/2⌋: the edit leaves one side of it whole. A test of string
+-- equalities alone, so an edit distance is called only on a pair that passes it (two 13-digit IDs at random rarely do).
+CREATE OR REPLACE TEMP FUNCTION one_edit_may(a STRING, b STRING) AS (
+  LEFT(a, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2)) = LEFT(b, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2))
+  OR RIGHT(a, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2)) = RIGHT(b, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2))
+);
+
 -- phone, cif, birth: equal, or one digit off (Hamming pads the shorter value at its end; Damerau–Levenshtein also
--- counts two neighbours swapped as one edit)
+-- counts two neighbours swapped as one edit). Each test a CASE's own branch: a CASE tries them in order, on both engines.
 CREATE OR REPLACE TEMP FUNCTION gamma_phone(l ANY TYPE, r ANY TYPE) AS (
   CASE
     WHEN l.phone IS NULL OR r.phone IS NULL THEN -1
     WHEN l.phone = r.phone THEN 2                                                                      -- exact
-    WHEN ABS(LENGTH(l.phone) - LENGTH(r.phone)) <= 1 AND cl_hamming_cut(l.phone, r.phone, 1) <= 1 THEN 1  -- one digit off
+    WHEN ABS(LENGTH(l.phone) - LENGTH(r.phone)) > 1 OR NOT one_edit_may(l.phone, r.phone) THEN 0
+    WHEN cl_hamming_cut(l.phone, r.phone, 1) <= 1 THEN 1                                               -- one digit off
     ELSE 0
   END
 );
@@ -148,8 +181,8 @@ CREATE OR REPLACE TEMP FUNCTION gamma_cif(l ANY TYPE, r ANY TYPE) AS (
   CASE
     WHEN l.customer_id IS NULL OR r.customer_id IS NULL THEN -1
     WHEN l.customer_id = r.customer_id THEN 2                                                          -- exact
-    WHEN ABS(LENGTH(l.customer_id) - LENGTH(r.customer_id)) <= 1
-      AND cl_damerau_levenshtein_cut(l.customer_id, r.customer_id, 1) <= 1 THEN 1                     -- one digit off
+    WHEN ABS(LENGTH(l.customer_id) - LENGTH(r.customer_id)) > 1 OR NOT one_edit_may(l.customer_id, r.customer_id) THEN 0
+    WHEN cl_damerau_levenshtein_cut(l.customer_id, r.customer_id, 1) <= 1 THEN 1                      -- one digit off
     ELSE 0
   END
 );
@@ -158,8 +191,8 @@ CREATE OR REPLACE TEMP FUNCTION gamma_birth(l ANY TYPE, r ANY TYPE) AS (
   CASE
     WHEN l.birth_date IS NULL OR r.birth_date IS NULL THEN -1
     WHEN l.birth_date = r.birth_date THEN 2                                                            -- exact
-    WHEN ABS(LENGTH(l.birth_date) - LENGTH(r.birth_date)) <= 1
-      AND cl_damerau_levenshtein_cut(l.birth_date, r.birth_date, 1) <= 1 THEN 1                       -- one digit off
+    WHEN ABS(LENGTH(l.birth_date) - LENGTH(r.birth_date)) > 1 OR NOT one_edit_may(l.birth_date, r.birth_date) THEN 0
+    WHEN cl_damerau_levenshtein_cut(l.birth_date, r.birth_date, 1) <= 1 THEN 1                        -- one digit off
     ELSE 0
   END
 );
@@ -169,30 +202,44 @@ CREATE OR REPLACE TEMP FUNCTION gamma_birth(l ANY TYPE, r ANY TYPE) AS (
 
 -- a person's folded name within two edits (Damerau–Levenshtein), a company's within one (Levenshtein), an address close
 -- (Jaro–Winkler 0.9), a phone one digit off (Hamming): each an equality first, then its length, then the function, on
--- one-byte copies where both have one
+-- one-byte copies where both have one; each test a CASE branch, so the function is called only where they pass
 CREATE OR REPLACE TEMP FUNCTION near_name(l ANY TYPE, r ANY TYPE) AS (
-  l.person_name__kana_fold = r.person_name__kana_fold
-  OR (ABS(LENGTH(l.person_name__kana_fold) - LENGTH(r.person_name__kana_fold)) <= 2
-      AND IF(l.person_name__kana_fold_one_byte IS NOT NULL AND r.person_name__kana_fold_one_byte IS NOT NULL,
-             cl_damerau_levenshtein_cut(l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte, 2),
-             cl_damerau_levenshtein_cut(l.person_name__kana_fold, r.person_name__kana_fold, 2)) <= 2)
+  CASE
+    WHEN l.person_name__kana_fold IS NULL OR r.person_name__kana_fold IS NULL THEN FALSE
+    WHEN l.person_name__kana_fold = r.person_name__kana_fold THEN TRUE
+    WHEN ABS(LENGTH(l.person_name__kana_fold) - LENGTH(r.person_name__kana_fold)) > 2 THEN FALSE
+    ELSE IF(l.person_name__kana_fold_one_byte IS NOT NULL AND r.person_name__kana_fold_one_byte IS NOT NULL,
+            cl_damerau_levenshtein_cut(l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte, 2),
+            cl_damerau_levenshtein_cut(l.person_name__kana_fold, r.person_name__kana_fold, 2)) <= 2
+  END
 );
 
 CREATE OR REPLACE TEMP FUNCTION near_company(l ANY TYPE, r ANY TYPE) AS (
-  l.company_name__nfkc_strip_legal_form_kana_fold = r.company_name__nfkc_strip_legal_form_kana_fold
-  OR (ABS(LENGTH(l.company_name__nfkc_strip_legal_form_kana_fold) - LENGTH(r.company_name__nfkc_strip_legal_form_kana_fold)) <= 1
-      AND IF(l.company_name__nfkc_strip_legal_form_kana_fold_one_byte IS NOT NULL AND r.company_name__nfkc_strip_legal_form_kana_fold_one_byte IS NOT NULL,
+  CASE
+    WHEN l.company_name__nfkc_strip_legal_form_kana_fold IS NULL OR r.company_name__nfkc_strip_legal_form_kana_fold IS NULL THEN FALSE
+    WHEN l.company_name__nfkc_strip_legal_form_kana_fold = r.company_name__nfkc_strip_legal_form_kana_fold THEN TRUE
+    WHEN ABS(LENGTH(l.company_name__nfkc_strip_legal_form_kana_fold) - LENGTH(r.company_name__nfkc_strip_legal_form_kana_fold)) > 1 THEN FALSE
+    ELSE IF(l.company_name__nfkc_strip_legal_form_kana_fold_one_byte IS NOT NULL AND r.company_name__nfkc_strip_legal_form_kana_fold_one_byte IS NOT NULL,
              cl_levenshtein_cut(l.company_name__nfkc_strip_legal_form_kana_fold_one_byte, r.company_name__nfkc_strip_legal_form_kana_fold_one_byte, 1),
-             cl_levenshtein_cut(l.company_name__nfkc_strip_legal_form_kana_fold, r.company_name__nfkc_strip_legal_form_kana_fold, 1)) <= 1)
+            cl_levenshtein_cut(l.company_name__nfkc_strip_legal_form_kana_fold, r.company_name__nfkc_strip_legal_form_kana_fold, 1)) <= 1
+  END
 );
 
 CREATE OR REPLACE TEMP FUNCTION near_address(l ANY TYPE, r ANY TYPE) AS (
-  l.address__address = r.address__address
-  OR cl_jaro_winkler_cut(l.address__address, r.address__address, CAST(0.9 AS FLOAT64)) >= CAST(0.9 AS FLOAT64)
+  CASE
+    WHEN l.address__address IS NULL OR r.address__address IS NULL THEN FALSE
+    WHEN l.address__address = r.address__address THEN TRUE
+    ELSE cl_jaro_winkler_cut(l.address__address, r.address__address, CAST(0.9 AS FLOAT64)) >= CAST(0.9 AS FLOAT64)
+  END
 );
 
 CREATE OR REPLACE TEMP FUNCTION near_phone(l ANY TYPE, r ANY TYPE) AS (
-  l.phone = r.phone OR (ABS(LENGTH(l.phone) - LENGTH(r.phone)) <= 1 AND cl_hamming_cut(l.phone, r.phone, 1) <= 1)
+  CASE
+    WHEN l.phone IS NULL OR r.phone IS NULL THEN FALSE
+    WHEN l.phone = r.phone THEN TRUE
+    WHEN ABS(LENGTH(l.phone) - LENGTH(r.phone)) > 1 OR NOT one_edit_may(l.phone, r.phone) THEN FALSE
+    ELSE cl_hamming_cut(l.phone, r.phone, 1) <= 1
+  END
 );
 
 
