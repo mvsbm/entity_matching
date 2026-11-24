@@ -22,10 +22,10 @@ None of these rates is known for a given file. So the choice must hold across th
 ## Solution: a legal form, a name model, and the flag where neither is sure
 
 1. **A legal form says company.** Written where banks write one (the readings, and the bank abbreviations at the front or the end), a legal form makes a company near certain.
-2. **The name says where a record leans.** A logistic regression on the name's character 1–3-grams, legal forms and spaces removed, trained once on public data: the registry's real company readings and the personas' names. It needs no label from the file. It learns what company stems look like: …ショウテン, …クリニック, …コウギョウ.
-3. **Correct first: sure, or the flag.** The engine calls 2 company where a legal form is written, and 2 company or 1 person where the name model is at least `[kind] name_line` (99%) sure, but never 1 person against a company flag: a company's records under its representative's name read as a person's; otherwise the file's flag decides, and with no flag the record is 0, not sure. `[kind] trust_flag = true` takes the flag as it is.
-4. **Disagreements are flagged, not held.** Where the engine is sure and the flag says the other kind, the record is flagged and matched as the engine says. Each name goes to the side of its kind, and a pair of a person and a company has no name compared, and a match run's table says so (`named`, from `[model] needs`, [chapter 5](05-uncertain-evidence-fellegi-sunter.md#challenge-where-to-draw-the-line)).
-5. **The flag's owners see where it is likely wrong.** `gold.parquet` marks each flagged record (`kind_flagged`), and `report.txt` counts them.
+2. **The name says where a record leans.** A logistic regression on the name's character 1–3-grams, legal forms and spaces removed and kana folded, trained once on public data: the registry's real company readings and the personas' names. It needs no label from the file. It learns what company stems look like: …ショウテン, …クリニック, …コウギョウ.
+3. **Correct first: sure, or the flag.** The engine calls 2 company where a legal form is written, and 2 company or 1 person where the name model is at least `[records] name_line` (99%) sure, but never 1 person against a company flag: a company's records under its representative's name read as a person's; otherwise the file's flag decides, and with no flag the record is 0, not sure. `[records] trust_flag = true` takes the flag as it is.
+4. **Disagreements are flagged, not held.** Where the engine is sure and the flag says the other kind, the record is flagged and matched as the engine says. Each name goes to the side of its kind, and a pair of a person and a company has no name compared, and a match run's table says so (`named`, [chapter 5](05-uncertain-evidence-fellegi-sunter.md#challenge-where-to-draw-the-line)).
+5. **The flag's owners see where it is likely wrong.** The run's `gold` table marks each flagged record (`kind_flagged`), and `report.txt` counts them.
 
 A customer's kind follows from its records: 2 if any record is a company, 1 if none leans company and one is a person, else 0.
 
@@ -48,13 +48,13 @@ The ideas are measured at design time on test populations of 20,000 customers fr
 | a dictionary of known surnames and given names | 67.6% with it, 67.3% without |
 | training also on the file's own legal-form records | 67.6% (66.8% on public data only) |
 
-The name model judged is the run's own: trained on `design.generate.kind_training_names`, as `scripts/train_name_model.py` trains it. The pipeline's combination, the run's name model (public training only, so it is trained once) under the study's trees of depth 2, comes 25th of 48 at 65.5%, 2.1 points below the best, which also trains on the file's own legal-form records and adds the dictionary of names. On the company side it decides 74.0% of companies on average and 70.5% in the worst scenario. On the person side, 57.0% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (15–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
+The name model judged is the run's own: trained on `design.generate.kind_training_names`, as `scripts/train_name_model.py` trains it. The method's combination, the run's name model (public training only, so it is trained once) under the study's trees of depth 2, comes 25th of 48 at 65.5%, 2.1 points below the best, which also trains on the file's own legal-form records and adds the dictionary of names. On the company side it decides 74.0% of companies on average and 70.5% in the worst scenario. On the person side, 57.0% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (15–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
 
 **Sole traders.** Counted as individuals, the person side decides 57.0% of persons; counted as businesses on their trade-name records, 7.8%; on every record, 0.1%. A sole trader is legally a person, which is also what the flag means.
 
 ## On a whole run
 
-`scripts/benchmark.py` runs the whole pipeline on generated populations of 20,000 customers with all of the above, one name column for both kinds, and a flag good (wrong on 1% of records at random, on 20% of the representative-named ones), medium (3%, 50%) or poor (10%, 80%). The company names come from the registry's companies held out of the name model's training; the persons come from every persona, half of them in its training. Each population is resolved three ways: names routed by the truth, by the flag alone, and by the kind step ([reports/benchmark.md](../../reports/benchmark.md)):
+`scripts/benchmark.py` runs whole builds on generated populations of 20,000 customers with all of the above, one name column for both kinds, and a flag good (wrong on 1% of records at random, on 20% of the representative-named ones), medium (3%, 50%) or poor (10%, 80%). The company names come from the registry's companies held out of the name model's training; the persons come from every persona, half of them in its training. Each population is resolved three ways: names routed by the truth, by the flag alone, and by the kind step ([reports/benchmark.md](../../reports/benchmark.md)):
 
 | Flag | Routed by | Recall | False merges | Person–company clusters | Persons called 2 | Companies called 1 | Persons called 1 |
 |---|---|---|---|---|---|---|---|
@@ -78,10 +78,11 @@ The name model judged is the run's own: trained on `design.generate.kind_trainin
 
 ## In the code
 
-- `er/kind.py`: `legal`, `text`, `NameModel` (scored in DuckDB), `name_model` (loads `config/kind_names.npz`, trained by `scripts/train_name_model.py`), `Classifier.classify`, `classifier`
-- `er/standardize.py`: `legal_pattern`, and `prepare`, which scores each chunk and routes the name fields
-- `er/steps/load.py`: `steps.load.load` (the classifier); `er/steps/cluster.py`: `steps.cluster.gold_sql`, `steps.cluster.customer_kinds` (a customer's kind); `er/report.py`: `qa` (the summary's kind lines)
-- `er/settings.py`: `shared_name`, the settings for one name column
+- `nayose/sql/records.sql`: 3. Each record's kind (`name_sums`, the name model's sum over each distinct name's n-grams; `told`: the legal form, the name model, the flag, and `kind`, `kind_p`, `kind_by`, `kind_flagged`); 4. One name, two fields (`sided`: each name on its kind's side)
+- `nayose/config.toml` `[records]`: `legal_forms`, `legal_front`, `legal_end`, `flag_company`, `name_line`, `ngram`, `trust_flag`, `shared_name_column`
+- `nayose/__init__.py`: `legal_pattern` (the legal forms where banks write them), `name_weights` (the name model, `config/kind_names.npz`, trained by `scripts/train_name_model.py`)
+- `nayose/sql/decide.sql`, 3. The entities: `customer_kind` (a customer's kind); `nayose/__init__.py`: `report_text` (the summary's kind lines)
+- `design/shared_name_mapping.sql`: a mapping with one name column for both kinds
 - `design/generate.py`: `name_model_split`, `kind_problems`, `bank_name`, `kind_training_names`
 - `scripts/benchmark.py`: `kinds`, the whole run
 

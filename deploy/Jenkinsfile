@@ -28,7 +28,7 @@ pipeline {
           python3 -m venv .venv
           .venv/bin/python -m pip install --quiet -r requirements.txt
           .venv/bin/ruff check .
-          .venv/bin/python -m pytest -n auto -q -m "not slow"
+          .venv/bin/python -m pytest -n auto -q
         '''
       }
     }
@@ -80,7 +80,7 @@ pipeline {
       }
     }
     stage('Run') {
-      when { expression { params.JOB != 'none' } }
+      when { allOf { branch 'main'; expression { params.JOB != 'none' } } }  // prod's jobs from main alone, one at a time (disableConcurrentBuilds)
       agent any
       steps {
         withCredentials([file(credentialsId: 'nayose-prod-runtime', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {

@@ -52,7 +52,7 @@ The CIF ID is a special case. In our synthetic data, it is never shared by two e
 
 **Fuzzy rules** allow one or two fields to be *close* instead of equal, using the similarity functions from [chapter 2](02-the-same-fact-written-differently.md). For example, rule F1 needs *the name close, plus the same address code and the same phone*. There are seven, including one for a surname change after marriage: same given name, address code and phone.
 
-The close-enough tests are chosen by the decision rule ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)), and are in `config/pipeline.toml`:
+The close-enough tests are chosen by the decision rule ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)), and are in `functions.sql` (`near_name`, `near_company`, `near_address`, `near_phone`):
 
 | Field | Counts as close when |
 |---|---|
@@ -61,14 +61,14 @@ The close-enough tests are chosen by the decision rule ([chapter 1](01-entity-re
 | address | normalized addresses have Jaro–Winkler ≥ 0.9 |
 | phone | at most one digit wrong (Hamming ≤ 1) |
 
-**How a rule runs.** Each rule is one plain SQL join on its exact fields. Its fuzzy conditions are then checked only on the pairs that join, and two equal values pass without calling the string function at all. Rule F2 (name and address close, same phone) also joins on the first three characters of the normalized address, where the city starts, so it does not pair everyone who shares four phone digits. A pair found by several rules belongs to the first in order. In a run, a rule also leaves out any key value held by 64 records or more: one customer ID on thousands of records is not one customer's.
+**How a rule runs.** Each rule is a plain SQL join on its exact fields: `score.sql` writes each record's key for every rule into one table, and joins it once. Its fuzzy conditions are then checked only on the pairs that join, and two equal values pass without calling the string function at all. Rule F2 (name and address close, same phone) also joins on the first three characters of the normalized address, where the city starts, so it does not pair everyone who shares four phone digits. A pair found by several rules belongs to the first in order. A rule also leaves out any key value held by 64 records or more (`[score] oversized`): one customer ID on thousands of records is not one customer's.
 
-The stages run in order, exact rules first, and the first rule to find a pair names it, so a pair keeps the name of the strictest rule that finds it. No rule pair merges by itself: each waits in `scored/`, with its rule, for people's decisions, so none hides another pair. The probabilistic stage scores every pair the keys list, the rules' too.
+The exact rules come first in that order, and the first rule to find a pair names it, so a pair keeps the name of the strictest rule that finds it. No rule pair merges by itself: each is kept in the run's `scored` table with its rule, whatever its score, for a match run to offer people, so none hides another pair. The probabilistic stage scores every pair the keys list, the rules' too.
 
 ### Why this solution
 
 - **Rules are cheap.** Each rule is one database join on its exact fields, then a fuzzy check on the few pairs that join. On train, the 12 chosen rules look at 4,090 pairs in total, out of 488 million.
-- **Rules are easy to audit.** Every rule pair carries the name of the rule that found it (`rule`, in `scored/` and in a match run's table).
+- **Rules are easy to audit.** Every rule pair carries the name of the rule that found it (`rule`, in the run's `scored` table and in a match run's table).
 - **On our data, rules make no mistakes.** That makes them the safe first tier ([chapter 1](01-entity-resolution-and-our-task.md#how-is-it-done-in-practice)).
 
 ## On our data
@@ -79,7 +79,7 @@ The stages run in order, exact rules first, and the first rule to find a pair na
 | val | 11.9% (exact rules alone: 3.6%) | 10.7–13.2% | 0 | 1.01% |
 | **test** | **9.6%** | 8.5–10.9% | **0** | 1.32% |
 
-The exact rules find 4% of the true pairs. The fuzzy rules lift that to 10–12%. No split has a single false merge. A few pairs join two people of one household (18 on train, 5 on val, 5 on test), counted apart, neither true nor false ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)). The numbers are low by design: the synthetic duplicates rarely agree exactly, as real ones don't ([data](../data.md#how-hard-it-is)).
+The exact rules find 3–4% of the true pairs. The fuzzy rules lift that to 10–12%. No split has a single false merge. A few pairs join two people of one household (18 on train, 5 on val, 5 on test), counted apart, neither true nor false ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)). The numbers are low by design: the synthetic duplicates rarely agree exactly, as real ones don't ([data](../data.md#how-hard-it-is)).
 
 **Variants measured at design time.** Each is compared with the rules as written, on the same validation pairs:
 
@@ -111,14 +111,14 @@ Most true pairs are like this: on train, the rules miss 6,355 of them, about nin
 
 ## In the code
 
-- `config/pipeline.toml` `[rules]`: the rules, in logical fields
-- `er/config.py`: `Rule`, `Stage` (`Stage.sql`: a fuzzy condition lets equal values through without the string function), `RulesSpec`, `Comparator`
-- `er/match.py`: `rule_edges` (one SQL join per rule, the first rule wins a pair; for full runs and increments alike)
-- `er/steps/rules.py`: `steps.rules.rules` (every rule's pairs, each scored by the model too)
+- `nayose/sql/score.sql`: the rules by name, in order (`rules`: each one's rank and stage, exact or fuzzy); 1. The rules (`rule_keys`, each rule's key of each record and how many records hold it; `batch_rule_pairs`, the join, the fuzzy tests and the first rule in order naming each pair; `rule_pairs`, every batch's). A batch's records are joined against all the run's, so a build and an update run them alike
+- `nayose/sql/functions.sql`, 3. The rules' fuzzy tests: `near_name`, `near_company`, `near_address`, `near_phone`, each an equality first
+- `nayose/config.toml` `[score]`: `rules` (the rules a run uses, by name), `oversized` (a value this common is left out)
+- `nayose/sql/score.sql`, 6. The scores: every rule pair scored by the model too, and kept whatever its score
 
 ## Further reading
 
 - P. Christen, *Data Matching*, Springer, 2012: chapter 6 (classification), on rule-based matching.
-- [Splink documentation](https://moj-analytical-services.github.io/splink/): `deterministic_link` would give the same pairs, but joins every column of both records back first; a plain join is 1.35× faster at a million records.
+- [Splink documentation](https://moj-analytical-services.github.io/splink/): `deterministic_link` gives the same pairs, but joins every column of both records back first; score.sql's rule join reads only the rules' keys.
 
 **Next:** [5. Uncertain evidence: Fellegi–Sunter →](05-uncertain-evidence-fellegi-sunter.md)

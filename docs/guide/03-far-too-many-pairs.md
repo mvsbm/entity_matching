@@ -23,9 +23,9 @@ The standard answer is **blocking**: compare two records only if they already sh
 
 $$P = \sum_{\text{blocks}} \binom{k}{2}$$
 
-A key can combine fields, such as the phone and the prefecture. The configuration offers 21 keys, built from the phone, the address, the address code, the CIF ID, the folded names and their readings, the postal code, the prefecture and the birth date.
+A key can combine fields, such as the phone and the prefecture. `score.sql` writes 18 keys, built from the phone, the address, the address code, the CIF ID, the folded names and their readings, the postal code, the prefecture and the birth date.
 
-**One-deletion keys.** Each record also emits its value with each single character deleted, so two values one edit apart always share a key ([below](#keeping-every-potential-match)).
+**One-deletion keys.** Each record also emits its value with each single character deleted, so two values one edit apart always share a key ([below](#keeping-every-potential-match)). `score.sql` writes four. Keys and one-deletion keys are the 22 **candidate generators**, each written once and chosen by name in `config.toml` `[score] keys`.
 
 **Two more, measured at design time and left out.** A **sorted neighbourhood** sorts all records by a key, such as the folded name, and compares each record with the next three (a window of 4): a typo near the end of a name keeps the record close in the sorted order. Its reach shrinks as the file grows ([below](#keeping-every-potential-match)). **TF-IDF neighbours** cut each name into overlapping pieces of 2–3 characters, give rare pieces more weight, and compare each record with its 5 most similar names (a cosine similarity of at least 0.5): this finds typos anywhere in a name, even in the first character. It compares every record with every other ([below](#scaling-to-a-million-records)).
 
@@ -35,7 +35,7 @@ A key can combine fields, such as the phone and the prefecture. The configuratio
 
 - **Keys cost almost nothing.** A database hash join finds all pairs in a block in about O(N + P) time. One-deletion keys cost O(N·L + P), for values of L characters.
 - **The kinds catch different typos.** Keys need an exact agreement. One-deletion keys survive one typo anywhere.
-- **Every key is measured before use.** Before any join, a run counts P for every key. A block of 64 or more records sharing one value is checked on a sample of about 2,000 of its pairs first. The sample is scored as the candidates will be, with the model and the u measured on the file, and the block is joined in full only if a sampled pair reaches 0 bits, the search floor: below the 4 bits people review, so a pair a better model would lift is already found. A big block holds few true matches, and a placeholder's block (a dummy phone) holds none. At design time every key of the method is also projected to a million records, which keeps out keys that grow by many normal blocks ([below](#how-the-configuration-keeps-it-that-way)).
+- **Every key is measured before use.** Before any join, a run counts the records of every block its batch reaches. A block of 64 or more records sharing one value (`[score] oversized`) is checked on a sample of its pairs first: 64 of its new records against 64 of all its records, chosen by hash, about 2,000 pairs in a build. The sample is scored as the candidates will be, with the model and the u measured on the file, and the block is joined in full only if a sampled pair reaches 0 bits, the search floor (`[score] search_floor`): below the 4 bits people review, so a pair a better model would lift is already found. A big block holds few true matches, and a placeholder's block (a dummy phone) holds none. At design time every key of the method is also projected to a million records, which keeps out keys that grow by many normal blocks ([below](#how-the-configuration-keeps-it-that-way)).
 
 ## How do we know a candidate list is good?
 
@@ -55,7 +55,7 @@ Measured at design time on train, for the 6,355 true pairs the rules missed. Eac
 | + TF-IDF (person, company) | 33,126 | 86.1% |
 | + the scalable generators, the name's reading and last sounds, and the birth date (below) | 96,672 | 89.2% |
 
-The folded names find the most for the pairs they make; the sorted windows make the most pairs. The method (`config/pipeline.toml`) lists pairs by 22 of these 30 generators, all of them keys. It leaves out the phone, the address and the address code alone, which grow with the square of the file, TF-IDF, which compares every name with every other, and the sorted windows, whose reach shrinks as the file grows (next sections). On validation it lists **2,568 candidates holding 79.6% of the 2,198 true pairs the rules missed**, while skipping 99.995% of all pairs. On train, every true pair that could reach the threshold shares one of its keys, at train's size and at a million records ([below](#keeping-every-potential-match)), so the pairs it leaves out lack the evidence to reach the threshold.
+The folded names find the most for the pairs they make; the sorted windows make the most pairs. The method lists pairs by 22 of these 30 generators, all of them keys. It leaves out the phone, the address and the address code alone, which grow with the square of the file, TF-IDF, which compares every name with every other, and the sorted windows, whose reach shrinks as the file grows (next sections). On validation it lists **2,869 candidates holding 79.6% of the 2,198 true pairs the rules missed**, while skipping 99.995% of all pairs. On train, every true pair that could reach the threshold shares one of its keys, at train's size and at a million records ([below](#keeping-every-potential-match)), so the pairs it leaves out lack the evidence to reach the threshold.
 
 **In short:** a few cheap keys find most duplicates; the extra generators buy the last few points.
 
@@ -65,7 +65,7 @@ The phone key is useful but dangerous. The last four digits have only 10,000 pos
 
 $$P \approx \frac{N^2}{2 \times 10{,}000}$$
 
-On train (31,226 records) that gives about 48,800 chance pairs, and the count finds 49,342 pairs of different entities sharing a phone. Another 2,359 are true duplicates: 33.2% of train's 7,102 true pairs share a phone. Together they make the 51,701 pairs that `estimate` counts in the phone blocks.
+On train (31,226 records) that gives about 48,800 chance pairs, and the count finds 49,342 pairs of different entities sharing a phone. Another 2,359 are true duplicates: 33.2% of train's 7,102 true pairs share a phone. Together they make the 51,701 pairs in the phone's blocks.
 
 At a million records, the same formula gives **50 million** chance pairs from the phone key alone. That's why every key is projected to the target size before it is used.
 
@@ -75,27 +75,27 @@ At a million records, the same formula gives **50 million** chance pairs from th
 
 ## Scaling to a million records
 
-The labelled files hold 10,000 to 30,000 records, and the pipeline must run on files of a million records and more. So every step is priced by its time complexity, and every key by how its pairs grow with the file.
+The labelled files hold 10,000 to 30,000 records, and the method must run on files of a million records and more. So every step is priced by its time complexity, and every key by how its pairs grow with the file.
 
 ### Where the work grows faster than the file
 
-Each key's pairs on train split into pairs of one entity, which grow like N, and chance pairs between two entities, which grow like N². Both projected to a million records give a **growth exponent** α, with work ∝ N^α. At α = 1 the work is linear: ten times the records, ten times the work. At α = 2 it is quadratic: ten times the records, a hundred times the work. The times are from a whole run on 1,039,995 records ([below](#measured-a-whole-run-up-to-a-million-records)).
+Each key's pairs on train split into pairs of one entity, P_same, which grow like N, and chance pairs between two entities, P_chance, which grow like N². Their mix gives a **growth exponent** at train's size, α = (P_same + 2·P_chance) / (P_same + P_chance), with work ∝ N^α. At α = 1 the work is linear: ten times the records, ten times the work. At α = 2 it is quadratic: ten times the records, a hundred times the work. A run has four stages, each a SQL file; the rules, the keys and the scores are parts of the third. The times are from a whole build on 1,039,995 records ([below](#measured-a-whole-run-up-to-a-million-records)).
 
 | Step | Cost | Grows like | At a million records |
 |---|---|---|---|
-| load and standardize, persons and companies | O(N·L) | N | 5.30 s |
-| fit | O(n + S·K + P_em·K) + O(N + S·K) | a fixed sample, plus O(N) counts | 4.33 s |
-| rules | O(N + ΣP_r·L²) + O(E·log E + N) | N^1.0 to N^1.21 per rule | ≤ 0.18 million pairs per rule; 2.11 s |
-| **rule F2, joined on the phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, the phone key's blocks |
-| key: **phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, nearly all by chance |
-| keys: **address alone, address code alone** | O(N + P) | **N^1.85, N^1.74** | **5.8 and 5.7 pairs per record**, over the budget of 5 |
-| the chosen keys and one-deletion keys | O(N + P), O(N·L + P) | N^1.0 to N^1.83 | ≤ 2.1 million pairs each |
-| **TF-IDF neighbours** | O(N·L + U·N·q) | **N^2.0** | **10¹² similarities** |
-| candidates | O(N·L + ΣP_g) | as ΣP_g | 10.74 s |
-| score | O(C·K·L²) | as C | 0.25 s |
-| cluster | O(D + N) | N | 0.14 s |
+| `records.sql`: read, standardize, persons and companies | O(N·L) | N | 9.83 s |
+| `fit.sql`: the model on its sample, then u on the file | O(n + S·K + P_em·K) + O(N + S·K) | a fixed sample, plus O(N) counts | 6.03 s |
+| `score.sql`, whole: the rules, the keys, the gate and the scores | O(N·L + ΣP_r·L² + ΣP_g + C·K·L²) | as ΣP_g and C | 14.83 s |
+| · the rules | O(N + ΣP_r·L²) | N^1.0 to N^1.21 per rule | ≤ 0.18 million pairs per rule |
+| · **rule F2, joined on the phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, the phone key's blocks |
+| · key: **phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, nearly all by chance |
+| · keys: **address alone, address code alone** | O(N + P) | **N^1.85, N^1.74** | **5.8 and 5.7 pairs per record**, over the budget of 5 |
+| · the chosen keys and one-deletion keys | O(N + P), O(N·L + P) | N^1.0 to N^1.83 | ≤ 2.1 million pairs each |
+| · **TF-IDF neighbours** | O(N·L + U·N·q) | **N^2.0** | **10¹² similarities** |
+| · the scores | O(C·K·L²) | as C | |
+| `decide.sql`: the entities people's decisions make | O(D + N) | N | 0.18 s |
 
-*N records · n = 100,000 records in the fit's sample · S = 10⁷ pairs sampled for u · K comparisons (6) · P_em pairs in EM's blocks · L characters in a value · P_r, P_g pairs in a rule's or a generator's blocks · U records queried, q n-grams per name · C candidates · E the rules' pairs · D people's decisions · d the largest cluster's diameter. Every symbol and step: [performance](../performance.md#end-to-end-the-cost-of-every-step).*
+*N records · n = 100,000 records in the fit's sample · S = 10⁷ pairs sampled for u · K comparisons (6) · P_em pairs in EM's blocks · L characters in a value · P_r, P_g pairs in a rule's or a generator's blocks · U records queried, q n-grams per name · C candidates · D people's decisions. The rows in bold are left out of the method. Every symbol and step: [performance](../performance.md#end-to-end-the-cost-of-every-step).*
 
 Everything is near-linear except two kinds of step:
 
@@ -133,7 +133,7 @@ An exact address would defeat F2's purpose, which is address typos. The first th
 - **Counted** for a one-edit level right after them on the same column: the CIF ID, the phone and the birth date "one digit off". The distinct values are joined on their one-deletion keys, so these three comparisons need no sample at all.
 - **Sampled** for the other levels of the name, the company and the address, from 10⁷ random pairs, every one of them used.
 
-The gate on oversized blocks and the scores both use these u. The fit costs O(n + S·K + P_em·K) and u on the file O(N + S·K): fixed, apart from the O(N) counts. A run fits on the file it resolves, then scores the whole file, with λ rescaled to the file's size ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)). An increment keeps the stored model and refreshes u before its rules: the counted levels are counted again, and a sampled comparison is sampled again only once its drift outgrows its sampling error.
+The gate on oversized blocks and the scores both use these u. The fit costs O(n + S·K + P_em·K) and u on the file O(N + S·K): fixed, apart from the O(N) counts. A run fits on the file it resolves, then scores the whole file, with λ rescaled to the file's size ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)). An update keeps the build's model and measures u again on all the run's records before it scores its batch: the counted levels are counted again, and a sampled comparison is sampled again only once its drift outgrows its sampling error.
 
 **Not chosen, to keep TF-IDF:**
 
@@ -167,7 +167,7 @@ With them, **no potential match on train depends on a window**: 0 of 3,278 at tr
 - **A dropped character** (サトウヒロシ, サトヒロシ): the shorter name is itself a deletion of the longer.
 - **Two neighbours swapped** (サトウ, サウト): deleting the ウ from both gives サト.
 
-A name of L characters emits L + 1 keys, so the work is O(N·L + P). Spelling correctors such as SymSpell use the same idea, called symmetric deletion. The keys are unnested once, into one table that the count, the join and the sample check of big blocks all read; an increment keeps only the blocks its batch reaches. The method uses them for company names, for person names within the postal area, for the CIF ID and for the birth date within the prefecture. The same idea counts u for the "one digit off" levels (Fix 3).
+A name of L characters emits at most L + 1 keys (deleting any one of a run of equal characters gives the same key, made once), so the work is O(N·L + P). Spelling correctors such as SymSpell use the same idea, called symmetric deletion. Every key of every record is made once a batch, into one table (`key_blocks`) that the count, the join and the sample check of big blocks all read; an update counts and joins only the blocks its batch reaches, and lists only the pairs that touch it. The method uses them for company names, for person names within the postal area, for the CIF ID and for the birth date within the prefecture. The same idea counts u for the "one digit off" levels (Fix 3).
 
 **Why within the postal area?** Many short names differ from another person's by one kana. On their own, the person-name deletion keys would pair them across the whole country. Within the postal area they grow like N^1.03. A potential match whose names are one edit apart but whose postal areas differ needs strong evidence from another field, and that field has a key of its own. The coverage check below confirms this on train.
 
@@ -182,7 +182,7 @@ A name of L characters emits L + 1 keys, so the work is O(N·L + P). Spelling co
 
 "Safer" is the cheaper test for a change that adds pairs: it may lose no true pair and add no false one. Its gain shows at scale, and the coverage check below measures it.
 
-**Challenge: an address alone grows with the square.** A key's pairs are of two kinds. Pairs of one entity grow like N: a bigger population of the same kind has proportionally more duplicated entities. Chance pairs between two entities grow like N², whenever the key's values come from a pool that doesn't grow with the file, because two entities then share a value with the same probability at any size. Addresses are such a pool: households share them, and a country has only so many. On train, 5,572 of the address key's 6,250 pairs join two different entities, and projected that way they reach **5.8 pairs per record at a million records**, over the budget of 5. The address code makes 5.7.
+**Challenge: an address alone grows with the square.** A key's pairs are of two kinds. Pairs of one entity grow like N: a bigger population of the same kind has proportionally more duplicated entities. Chance pairs between two entities grow like N², whenever the key's values come from a pool that doesn't grow with the file, because two entities then share a value with the same probability at any size. Addresses are such a pool: households share them, and a country has only so many. On train, 5,589 of the address key's 6,548 pairs join two different entities, and projected that way they reach **5.8 pairs per record at a million records**, over the budget of 5. The address code makes 5.7.
 
 **Solution: the address only with one more field.** A true pair that shares an address almost always shares something else with it: the phone digits, the name's first letter, or, after a marriage, the given name. Two households at one address rarely do. So the address and the address code are each combined with the phone and with the name's first letter, and the address code with the given name:
 
@@ -201,27 +201,27 @@ Every key and rule of the method stays under 5 pairs per record projected to a m
 
 For the method, the largest projection of a key is phone + name initial, at 2.1 pairs per record. And every potential match on train shares a key: all 3,278 at train's size, and all 3,071 at a million records.
 
-Without labels, a run can check only the patterns: every combination of comparison levels that could reach the threshold must imply a shared key (`pattern_coverage`, in every run's report.txt). A Jaro–Winkler level implies none, so a pattern built on close names counts as uncovered even when another key, in practice, joins it. For the method at a million records, 190 patterns are uncovered, and the model puts their share of matches at 13.2% at most. The largest pair a very close name with the same address. On labelled train, every potential match shares a key (above).
+Without labels, only the patterns can be checked: every combination of comparison levels that could reach the threshold must imply a shared key. A Jaro–Winkler level implies none, so a pattern built on close names counts as uncovered even when another key, in practice, joins it. Measured at design time for the method at a million records, 190 patterns are uncovered, and the model puts their share of matches at 13.2% at most. The largest pair a very close name with the same address. On labelled train, every potential match shares a key (above).
 
 ### Measured: a whole run, up to a million records
 
-`scripts/benchmark.py` generates files of growing size and resolves each with `python -m er build`, in a process of its own, as a real run: on DuckDB tables, fitted on the file itself, without labels, under an 8 GB memory limit ([reports/benchmark.md](../../reports/benchmark.md)):
+`scripts/benchmark.py` generates files of growing size and resolves each with `python -m nayose build`, in a process of its own, as a real run: on DuckDB tables, fitted on the file itself, without labels, under an 8 GB memory limit ([reports/benchmark.md](../../reports/benchmark.md)). Each stage's seconds:
 
-| Records | Fit | Rules | Candidates | Score | Total | Peak memory |
+| Records | Records stage | Fit | Score | Decide | Total | Peak memory |
 |---|---|---|---|---|---|---|
-| 13,019 | 1.49 s | 0.06 s | 0.20 s | 0.02 s | 2.3 s | 0.60 GB |
-| 25,947 | 1.58 s | 0.09 s | 0.31 s | 0.03 s | 2.8 s | 0.68 GB |
-| 52,115 | 1.86 s | 0.15 s | 0.54 s | 0.04 s | 3.9 s | 0.90 GB |
-| 77,926 | 2.23 s | 0.21 s | 0.76 s | 0.05 s | 5.1 s | 1.10 GB |
-| **1,039,995** | **4.33 s** | **2.11 s** | **10.74 s** | **0.25 s** | **26.2 s** | **7.26 GB** |
+| 13,019 | 0.72 | 2.75 | 0.29 | 0.04 | 3.8 | 1.25 |
+| 25,947 | 1.20 | 2.80 | 0.37 | 0.04 | 4.4 | 1.46 |
+| 52,115 | 2.11 | 3.15 | 0.55 | 0.13 | 5.9 | 1.81 |
+| 77,926 | 2.96 | 3.76 | 0.78 | 0.06 | 7.6 | 2.3 |
+| **1,039,995** | 9.83 | 6.03 | 14.83 | 0.18 | 30.9 | 6.69 |
 
-A million records take 26.2 seconds, 10.74 of them listing the candidates and 5.30 loading the file. The fit, on a fixed sample, and the u sample of the file inside it, 10 million pairs, grow far slower than the file: 1.49 s at 13,019 records, 4.33 s at a million. So at these sizes the total grows slower than the file, like N^0.57. Scoring stays under a quarter of a second at every size, since only the pairs that can reach 0 are listed. Peak memory is the process's, Python included: 7.3 GB at a million records, under the 8 GB limit. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
+A million records take 30.9 seconds, 14.83 of them in the score stage (the rules, the keys, the gate and the scores) and 9.83 reading the file. The fit, on a fixed sample, and the u sample of the file inside it, 10 million pairs, grow far slower than the file: 2.75 s at 13,019 records, 6.03 s at a million. So at these sizes the total grows slower than the file, like N^0.5. Only the rules' pairs and the pairs that can reach 0 bits are weighed: a bound from a pair's equalities alone rules out the rest before any string comparison. Peak memory is the process's, Python included: 6.69 GB at a million records, under the 8 GB limit. The cost of every step, for a build and for an update, is in [performance.md](../performance.md).
 
 Three choices keep a million records within bounds:
 
-- **DuckDB reads only what a step needs.** The scores stay in DuckDB, which reads only the columns used. Copied into pandas with every compared field of both records, they would not fit.
+- **The tables stay in the engine.** A run is a set of tables, a DuckDB file or a BigQuery dataset, and each statement reads only the columns it needs (the fit's `compared` view holds only the columns the comparisons read). Python reads only small results: the counts EM learns from, the report's numbers. Copied into pandas with every compared field of both records, the scores would not fit.
 - **The lists merge in SQL.** Each generator sets one bit, and one query ORs them, so no Python code runs once per pair.
-- **Tables spill to disk.** Every table of size N or C is a DuckDB table, which spills to disk past the memory limit: to a folder of the person's own in the system's temporary folder, unless `[compute] temp_directory` says otherwise. A run counts the room DuckDB may spill to (90% of the free disk) in its capacity. pandas holds only one chunk of the file at a time, and small summaries.
+- **Tables spill to disk.** On DuckDB, a table past the memory limit (`--compute memory_limit=8GB`) spills to disk, beside the run's database file unless `--compute temp_directory=…` names another folder. The file itself is read by DuckDB, straight from Parquet.
 
 The generator has 60,000 distinct personas. Beyond that it must reuse them, which creates clones no matcher can tell apart, so the million-record row measures cost only.
 
@@ -238,19 +238,19 @@ Up to 78,000 records, every entity is still a distinct persona, so quality can b
 
 On train, every true pair that could reach the threshold shares a key, at its size and at a million records. Two things change as the file grows:
 
-- **False pairs appear.** A bigger file holds more pairs of different entities that look alike. The run joined 2 false pairs at 13,019 records, through 1 false link, 2 at 52,115, through 2, and 6 at 77,926, through 5. Each is a model link between 6.8 and 12.0 bits (the threshold is 6), between two people who share an address or a phone, most of them a family name too. The model expects at least as many: the sum of 1 − match probability over its links, which every run reports without labels, is 1.61 at 13,019 records, 2.33 at 25,947, 4.82 at 52,115 and 8.07 at 77,926; at a million, where personas repeat as clones, 54.54 of 44,065 links. The bound on the false-merge rate is 0.44% at 13,019 records, above the 0.26% reported for test, and 0.11–0.14% at the larger sizes.
+- **False pairs appear.** A bigger file holds more pairs of different entities that look alike. Taken at 6 bits, the pairs join 2 false pairs at 13,019 records, through 1 false link, 2 at 52,115, through 2, and 6 at 77,926, through 5. Each is a model link between 6.8 and 12.0 bits (the threshold is 6), between two people who share an address or a phone, most of them a family name too. The model expects at least as many: the sum of 1 − match probability over its links, which needs no labels, is 1.61 at 13,019 records, 2.33 at 25,947, 4.82 at 52,115 and 8.07 at 77,926; at a million, where personas repeat as clones, 54.54 of 44,065 links. The bound on the false-merge rate is 0.44% at 13,019 records, above the 0.26% reported for test, and 0.11–0.14% at the larger sizes.
 - **Recall stays within two points,** between 47.5% and 49.2%. u is measured on each scored file, so an agreement on a field whose values grow with the file, such as the address or the CIF ID, earns the credit it has at that size. On the labelled splits, which are no bigger than train, this choice costs true pairs: 700 on cross-validated train and 92 on val (adopted as "chosen", [chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)).
 
-**In short:** two kinds of step grow with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, no TF-IDF and a narrower F2 join keep both in check. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one, and the method uses no window at all. A million records take 26.2 seconds, with peak memory 7.3 GB under an 8 GB limit, on DuckDB tables that spill to disk past it.
+**In short:** two kinds of step grow with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, no TF-IDF and a narrower F2 join keep both in check. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one, and the method uses no window at all. A million records take 30.9 seconds, with peak memory 6.69 GB under an 8 GB limit, on DuckDB tables that spill to disk past it.
 
 ## In the code
 
-- `er/config.py`: the generator types `KeyBlocker` and `DeletionKeys` (one-deletion keys); `er/candidates.py`: each as SQL (`pairs_sql`), `candidates` (merge by bits), `estimate` (the count before any join)
-- `er/match.py`: `pattern_coverage` (the same question without labels, which every run's `report.txt` reports)
-- `er/config.py`: `Budget` (`sample_pairs`)
-- `er/match.py`: `exact_u` (u counted: the leading exact levels, and a one-edit level after them through one-deletion keys), `sample_u` (u sampled, every comparison's levels in one pass), `assemble_u`, `refreshed_u` (an increment's u)
-- `config/pipeline.toml`: every generator, in logical fields; `config/settings.toml`: the fields behind the compound keys (`any_name`, the postal area) and the normalizers `initial` and `first3`
-- `er/steps/budget.py`: `steps.budget.budget`, the exact count on the file before any join; `steps.budget.capacity`, the memory limit plus the spill room; `er/steps/fit.py`: `steps.fit.fit`, the fit and then u on the file; `er/candidates.py`: `oversized`, `sample_sql`, `_gate`, the sample check of big blocks; `scripts/benchmark.py`: whole runs on generated files from 13,000 to a million records
+- `nayose/sql/score.sql`: the generators by name, their order each one's bit in `sources`; 2. The keys (`key_blocks`, every generator's block of each record, a deletion key's every value with one character deleted; `key_sizes`, each block's records counted before any join; `listed`, the pairs of the blocks under `@oversized`, merged by bits); 4. The gate (`gate_pairs`, each oversized block's sample; `gated`, kept or skipped); 5. The candidates (`cands`, with the keys that listed each pair); 3. The model's bits (`bound_of`, a pair's best weight from its equalities alone)
+- `nayose/config.toml` `[score]`: `keys` (the generators a run uses, by name), `oversized` (64), `search_floor` (0 bits), `keep_from` (0 bits: the pairs a run keeps)
+- `nayose/sql/records.sql`, 6. The copies: the fields behind the compound keys (`any_name__initial`, `postal_code__first3`, `address__address_first3`, `person_name__kana_fold_long_vowel_last3`)
+- `nayose/sql/fit.sql`: 1. The sample (`fit_sample`, whole postal areas by hash); 4. u: 4b `u_counted` (the leading exact levels, from value counts), 4c `u_near` (a one-edit level after them, through one-deletion keys), 4d `u_drawn` and `u_patterns` (the rest sampled), 4e `u_filled` (what bounds a level no sampled pair reached); `config.toml` `[fit]`: `fit_rows`, `fit_u_max_pairs`, `u_max_pairs`
+- `nayose/em.py`: `exact_u`, `sampled_u`, `u_bound`, `assemble` (u on the file), `refresh` and `stale_u` (an update's u)
+- `scripts/benchmark.py`: `cost`, whole builds on generated files from 13,000 to a million records
 
 ## Further reading
 

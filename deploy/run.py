@@ -6,7 +6,9 @@ what it did said: build and update print report.txt (nayose.report_text, from th
     python deploy/run.py PROJECT.DATASET decide gs://BUCKET/in/decided.parquet        people's decisions applied
     python deploy/run.py PROJECT.DATASET match 8                                      the match table at 8 points: matched
 
-Runs as nayose-runtime (deploy/Jenkinsfile, Run). BigQuery runs one job's statements at a time in a dataset.
+Runs as nayose-runtime (deploy/Jenkinsfile, Run, from main): Jenkins runs one at a time, BigQuery doesn't keep two
+apart. shortcut: a procedure that fails partway leaves the tables it replaced replaced (BigQuery takes no DDL in a
+transaction); build the run again; a table snapshot before each job, at the parity step, would undo it.
 """
 import json
 import sys
@@ -27,6 +29,10 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
         print(__doc__, file=sys.stderr)
         return 2
     dataset, job, given = args[0], args[1], args[2:]
+    floor = float(nayose.config()["score"]["keep_from"])
+    if job == "match" and float(given[0]) < floor:  # as the job does here (nayose.match): the run keeps no pair below it
+        print(json.dumps(dict(severity="ERROR", error=f"threshold {given[0]}: the run keeps the pairs from {floor:g} points up only")))
+        return 2
     engine, t = BigQuery(dataset, dataset, client=client, bigquery=bigquery), time.perf_counter()
     try:
         if job in ("build", "update"):

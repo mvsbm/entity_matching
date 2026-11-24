@@ -1,99 +1,112 @@
 [← README](../README.md) · [Guide](guide/01-entity-resolution-and-our-task.md)
 
-*Reference for the guide. The synthetic world is explained in [chapter 1](guide/01-entity-resolution-and-our-task.md#where-does-the-truth-come-from).*
-
 # Data
 
-## Datasets
+What a run reads, what it makes of it, and what people give back. The method's own tables are in [architecture](architecture.md).
 
-**Datasets:** one generated population of 40,000 entities and 1,578 household members (52,115 records), split by household so neither a duplicate group nor a household spans two splits. Each split uses the same file name in every layer:
+## The input
 
-| Dataset | Entities | Records | Role |
-|---|---|---|---|
-| `train` | 60% | 31,226 | fitting, and every design-time choice: the cross-validated threshold and the decision rule |
-| `val` | 20% | 10,496 | confirming each choice |
-| `test` | 20% | 10,393 | the final report, scored once |
+Records as Parquet. Locally, a file, a folder of them or a quoted glob, joined by column name (`python -m nayose build|update`); in prod, files in the bucket's `in/`, loaded into the run's dataset as the table `input` (`deploy/run.py`). Text that isn't UTF-8 is refused. Locally each column gets a name of its own: control characters dropped, a blank name numbered (`column_4`), one repeating another but for case suffixed (`TEL`, `tel` → `TEL`, `tel_2`). Both engines read column names case aside.
 
-Every table is Parquet. Only `reference/` is in git; everything else rebuilds from the scripts (`.gitignore`). The medallion
-layers follow the pipeline: bronze is the records as they arrive, silver the standardized records each run keeps in its
-folder, gold the resolved run. The reference data feeds the generator and the person-or-company name model, so it
-sits outside them:
+`nayose/config.toml` `[input]`:
+
+| Key | Holds |
+|---|---|
+| `id` | the column a record's ID is read from (`CONT_ID`) |
+| `columns` | every column `mapping.sql` reads; one a file lacks is read as missing |
+| `nulls` | the values that mean missing (`NULL`, `\N`, `N/A`, `-` …), spaces around them or not |
+
+## The mapping: columns to fields
+
+`nayose/mapping.sql` turns the input's columns into the fields the method reads. The repository's maps the generated data. Each deployment has its own, in the same form, kept out of the repository: in prod the secret `nayose-mapping`, locally the file `NAYOSE_MAPPING` names. It makes two tables: `input_rows`, every distinct row as given with its ID, and `mapped`, one row a record. Each column is read through `read_value(column, numeric, @nulls)`; a column that isn't text is cast first. A field with several sources takes the first whose columns are all filled (`A || B` is missing when either part is).
+
+| Field | The generated data's columns | Read by |
+|---|---|---|
+| `full_name` | FULL_NAME_KANA | rules, the prior |
+| `person_name` | FULL_NAME_KANA, else O_PERSON_NAME_KANA, else LAST_NAME_KANA and GIVEN_NAME_KANA joined | the name comparison, rules, keys |
+| `given_name` | GIVEN_NAME_KANA | the name comparison, rules, keys, the household label |
+| `company_name` | NYS_CNV_P_NAME_KANA | the company comparison, rules, keys |
+| `any_name` | person_name's columns, else NYS_CNV_P_NAME_KANA | the kind, name-initial keys |
+| `address` | STD_ADDRESS, else ORIGINAL_ADDRESS | the address comparison, rules, keys |
+| `address_code` | SOURCE_ADDR_CD | the address comparison, rules, keys |
+| `postal_code` | POST_CD, else POST_CD_KANA | the address comparison, rules, keys, the fit's sample |
+| `prefecture` | ADDRESS_ONE | keys |
+| `town_code`, `city` | ADDR_CD, ADDRESS_TWO | report.txt only |
+| `phone` | PHONE_NUM_4 | the phone comparison, rules, keys |
+| `customer_id` | CIF_ID | the cif comparison, rules, keys |
+| `birth_date` | BIRTH_DATE | the birth comparison, keys |
+| `kind_flag` | PERSON_ORG_CODE | the kind, where the name doesn't settle it |
+
+**Person or company.** A written legal form says company. Otherwise the name model (`config/kind_names.npz`) decides when it is `name_line` sure (0.99), but a person's name never overrides a company flag. Otherwise `kind_flag` decides: `flag_company`'s values say company. `trust_flag = true` lets the flag decide every record. `shared_name_column = true` handles one column that holds every name: the person fields keep it on records that lean person, `company_name` on those that lean company (`design/shared_name_mapping.sql` maps such a file).
+
+## How a value is read
+
+`read_value` (`nayose/sql/functions.sql`) fixes what loses nothing, in this order:
+
+- **damaged:** a value holding U+FFFD (bytes decoded wrong upstream) is missing;
+- **lists:** `["8700848"]`, `['大分市']` or `[0708612]` give their first filled item; with none filled, the value is missing;
+- **controls:** control characters, zero-width characters and BOMs are removed, and tabs and line breaks become one space;
+- **placeholders:** one of `[input] nulls`, or spaces alone (any width), is missing;
+- **numbers:** in a numeric column, `12345.0` is read as `12345`; one cut short in E notation (`1.23E+11`: its digits are gone) is missing.
+
+Each field is then standardized (`records.sql`, step 2): NFKC, hiragana as katakana, spaces and separators dropped, legal forms stripped, kana folded, as each field's chain says. A value the chain leaves empty is missing.
+
+## What is set aside
+
+Rows identical in every column are kept once. These are set aside: a record without an ID (blank, of spaces of any width); a record already in the run, so a batch given twice adds nothing; every record of an ID that holds different content, because the run can't tell which is right. The table `set_aside` keeps the latest batch's rows as given, each with its `reason`. An update whose every record is already in the run exits 0 with `added: 0`. One that has no new record for any other reason is refused.
+
+## Placeholders
+
+A value held by too many records to be one customer's, such as a dummy phone, is read as missing (`records.sql`, step 5). For `person_name`, `company_name`, `address_code`, `address`, `phone` and `birth_date`, a value is a placeholder when all three of these hold:
+
+- it is held by at least `min_block` records (64), or by `spread` (10) times the field's records per value if that is more;
+- it is held by at least `crowd` (64) customers, counted by customer ID, else by record ID;
+- its pairs outnumber those of all the values below that line together.
+
+A `customer_id` value is one when it passes the first test alone. Placeholders are counted over the run's records and the batch's together, and they stay with the run (the table `placeholders`). A batch is read with them as missing, and a run record holding a value newly found to be a placeholder is made again without it. report.txt's SUMMARY notes each field's. A lookup adds none.
+
+## The run's answer: `gold`
+
+Each record's entity: `id`, `cluster_id` (the entity, named by its smallest ID), `resolved_by` (`review` where people's decisions joined it), `kind`, `kind_p`, `kind_by`, `kind_flagged` (the engine is sure against the flag) and `customer_kind` (2 company if a record is one; 1 person if one is a person and none leans company; else 0). Nothing merges by itself: a record that no decision joins is an entity alone.
+
+## People's decisions
+
+A Parquet file with `id_l`, `id_r`, `decision` (`match` or `no_match`) and, optionally, `why`: a match table filled in is one. Every value is read as text and a blank one as missing; the decision is read in lower case, each pair once. A row without a decision is skipped. The file is refused for:
+
+- a decided row without both IDs;
+- rows given, but none decided;
+- a decision other than `match` or `no_match`;
+- a pair decided both ways;
+- an ID that names no record of the run (a spreadsheet may have read `0000000151` as `151`).
+
+A decision is stored (`decisions`) only when it changes its pair's latest standing. The entities are connected components over the pairs whose latest decision is `match`, so a later `no_match` parts what only that pair joined. A decision kept from an earlier run, naming records the run no longer holds, joins nothing.
+
+## The match table
+
+`python -m nayose match --threshold T` writes `matched/points-T.parquet`; on BigQuery it is the table `matched`. It holds the pairs at T points or more, minus those whose latest decision is `no_match`, highest first:
+
+- `decision`, empty, for people to fill in;
+- `id_l` and `id_r`; `match_weight` (points), `match_probability`, `rule` (a rule's name, if one joins the pair), `named` (a name was compared), `household` (it may be two people of one household: a label only), `sources` (the keys that listed it);
+- each record's fields side by side: `person_name_l`, `person_name_r`, and so on for `given_name`, `company_name`, `address_code`, `address`, `postal_code`, `phone`, `customer_id` and `birth_date`;
+- each comparison's level and its points: `name`, `name_bits`, then `company`, `address`, `phone`, `cif` and `birth` the same way.
+
+## A lookup's answer
+
+`python -m nayose lookup` prints one JSON object. `record` is the record as compared. `entities` lists those from `[lookup] at_least` points up, or joined by a rule, best first, `most` of them. Each entry gives the entity, its best record, `points`, `likely`, `rule`, `keys`, each comparison's level (`compared`), its candidate `records` and its fields (`shown`). Then come `found`, `candidates`, `likely`, `closest` (the nearest record when no entity is shown) and `checked`: each key, the records it found, and why it found none, or which oversized blocks it sampled. With `--file`, `records` gives one row per entity found for each record asked about: `asked`, `entity`, `record`, `points`, `rule` and `keys`.
+
+## Generated data
+
+`scripts/generate.py` writes a population from `config/generator.toml` and the reference data, split by household into `train`, `val` and `test`:
 
 ```
-data/reference/*.json                       public reference data (tracked; SOURCES.md)
-data/medallion/bronze/<dataset>.parquet     records as they arrive (generated)      scripts/generate.py
-data/labels/<dataset>.parquet               truth, read only to measure             scripts/generate.py
-data/artifacts/benchmark/                   the benchmark's runs: a run's folder each   scripts/benchmark.py
-                                            (silver: its state/records/)
+data/reference/*.json                    public reference data, tracked (SOURCES.md: sources, licences, steps)
+data/medallion/bronze/<split>.parquet    records as they arrive              scripts/generate.py
+data/labels/<split>.parquet              each record's entity and household  scripts/generate.py
+data/artifacts/benchmark/cost_<N>/       records.parquet and run/, a run     scripts/benchmark.py
 ```
 
-A run's folder is the same wherever `python -m er build` writes it: `gold.parquet`, `rule_kept/`, `scored/`, `steps.json`, `state/`, `report.txt` and `index/`; `matched/`, `decisions/` and `set_aside/` appear when there are any ([architecture](architecture.md#the-runs-folder)).
-
-## Reference data: `data/reference/`
-
-Built once from public sources. The downloads are not kept; `SOURCES.md` records the exact steps, filters, counts and licences.
-
-| File | Records | Source (licence) | Content |
-|---|---|---|---|
-| `individual.json` | 60,000 personas, 8,405 distinct surnames | NVIDIA Nemotron-Personas-Japan (CC BY 4.0) | names parsed from the persona text; kana readings by SudachiPy; sex, age, prefecture |
-| `companies.json` | 31,596 companies | Wikidata, direct company types (CC0) | name + kana (official P1814 where present, else SudachiPy); legal forms stripped |
-| `addresses.json` | 46,364 towns, all 47 prefectures | geolonia/japanese-addresses (CC BY 4.0) + yubinbango-data | prefecture, city and town with kana, JIS municipality code, chome, postal code |
-| `registry.json` | 60,000 corporations of three prefectures (Miyagi, Okayama, Fukuoka) | the National Tax Agency's corporate-number site (Public Data License 1.0; processed) | each name's reading, its legal form's reading and bank abbreviation, whether the form leads the name |
-
-Two of them train the person-or-company name model, `config/kind_names.npz` (`scripts/train_name_model.py`, `design.generate.train_name_model`): `individual.json` and `registry.json`, written as `config/generator.toml`'s `kana_confusions` and `branches` say bank records write them; `companies.json` and `addresses.json` are loaded with the personas. A run reads none of them: it loads the model. It trains on one half of them only (`design.generate.name_model_split`): the companies of Miyagi and Okayama, and the first half of the shuffled personas. Fukuoka's companies and the other personas are held out, for the person-or-company measurements to test on and for `kind_problems` to draw its companies from. The rest is for the generator.
-
-Two traps in the sources:
-- **Wikidata's class tree:** 13,766 of the 16k "Japanese companies" with kana in the transitive `company` tree are dissolved municipalities. Only direct company types give real companies.
-- **yubinbango prefecture codes:** they are written without the leading zero (`1`, not `01`), so they are zero-padded; unpadded, the prefectures numbered 1 to 9 would drop out of the join silently.
-
-## Synthetic data: `scripts/generate.py`
-
-All parameters live in `config/generator.toml`: `[population]` (`design.generate.Spec`) and `[split]` (shares and seed). `design.generate.generate` builds the population, `check` asserts its invariants, and `scripts/generate.py` writes `medallion/bronze/<split>.parquet` and `labels/<split>.parquet` (`--entities` and `--seed` change the population; `--out` writes it there, unsplit, instead of the splits).
-
-- **Entities:** 40,000, 20% companies, and their household members (below). Each entity has `1 + Poisson(0.25)` records.
-  - **Persons** are sampled personas, each at most once, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture. Sampling with replacement would make clones (same name, same prefecture) that no matcher can tell apart, so same-name pairs come only from the persona file itself. Past 60,000 entities the benchmark repeats the personas, which makes clones no matcher can tell apart: those files measure cost only.
-  - **Companies** are sampled real names with a legal form before or after the name, written as each record's system writes it: カブシキガイシャ, (カ), カ), ｶﾌﾞｼｷｶﾞｲｼｬ or left out; one record in ten adds a branch (ホンシャ, トウキョウシテン …).
-  - **Addresses** are real towns with random 番/号, and a real postal code and JIS code.
-- **Multi-valued entities:** each entity owns `1 + Poisson(λ)` phones and addresses (λ = 2.0 for persons, 3.0 for companies: moves and new phones) and names (λ = 0.3 and 1.0: married names, other company names). Each record shows one of them.
-- **Columns:**
-  - IDs and codes: CONT_ID (unique everywhere: the key a user's input is joined back by), PHONE_NUM_4, CIF_ID (a duplicate keeps the entity's CIF 3% of the time, one digit off in a tenth of those)
-  - person names in kana: FULL_NAME_KANA, O_PERSON_NAME_KANA, LAST_NAME_KANA, GIVEN_NAME_KANA
-  - BIRTH_DATE (persons, YYYYMMDD): 15% filled, missing independently of everything else
-  - company name in kana: NYS_CNV_P_NAME_KANA
-  - names in kanji, from the same reference rows as the kana (a maiden or married surname with its own kanji): FULL_NAME_KANJI, LAST_NAME_KANJI, GIVEN_NAME_KANJI (persons; 60%, 50% and 50% filled), COMPANY_NAME_KANJI (companies, 60%: the name with 株式会社 where the record writes a legal form). Fewer systems hold kanji than kana; these columns have their own fill rates and their own random draws, so every other column is exactly what it would be without them
-  - postal: POST_CD, POST_CD_KANA
-  - address: SOURCE_ADDR_CD, ORIGINAL_ADDRESS (as typed, in 3 formats), ADDRESS_FIVE(_KANA) (`chome-ban-go`, or `ban-go`), ADDR_CD(_KANA) (11-digit 住所コード), ADDRESS_ONE (prefecture), ADDRESS_TWO (city), ADDRESS_THREE (town), and STD_ADDRESS, built from those parts as they arrive (the filled ones joined), so it is missing only where every part is
-- **Entry errors and notations:**
-  - 30% of name parts get one kana typo (ガ/カ, ッ/ツ, ー/ウ … or a dropped character); the kanji of the same record keeps the right name
-  - 10% of kanji name parts have one character written as its variant (斎/齋, 高/髙, 崎/﨑, 辺/邊 …: `kanji_variants`)
-  - 30% of person records put a space between surname and given name; 15% of records hold every name in half-width katakana (ｻﾄｳ)
-  - 10% of phones, birth dates, ORIGINAL_ADDRESS values and reused CIF IDs get one wrong digit (or, in an address, a dropped character)
-- **Missingness:**
-  - **Rates:** the non-null rate falls from 0.9999 to 0.6544 along the column order, counted where the column applies; BIRTH_DATE has its own rate, and STD_ADDRESS follows its parts.
-  - **Correlation:** shared within the name, postal and address groups by `nesting` ρ.
-- **Households:** unrelated entities sometimes share an address, which gives look-alikes that must not be merged. And 5% of persons have a household member, an entity of their own (`households`, entity ID `E…H`):
-  - they share the family name and every address, and the phones half the time (else their own);
-  - half are siblings, born 1 to 15 years apart, half of them with a given name that starts alike (ユウキ, ユウタ);
-  - the other half are a spouse or a parent, with an unrelated given name, born 1 to 35 years apart.
-
-  A household is never split across train, val and test. With `share = 0`, every record is drawn exactly as in a population without households.
-- **Persons and companies, made hard to tell apart** (`design.generate.kind_problems`, off unless asked for: the benchmark and the tests turn it on). One name column for every kind, NAME_KANA; real company names from `registry.json`'s held-out companies, written as bank records write them (the legal form in full, abbreviated at the front, カ)〇〇, or the end, 〇〇(カ, or left out); company records under their representative's name, the representative a person of the file, half at that person's address and phone; sole traders (legally persons) named like a shop on most of their records; a date in BIRTH_DATE on 30% of company records; and PERSON_ORG_CODE, the file's flag (1 person, 2 company), wrong on 3% of records, on half the representative-named ones and on 30% of the sole traders'. Its own random stream: the records start as `generate` made them.
-- **Asserts** run on the whole population before it is split: exact rates, digit formats, kind consistency, CONT_ID unique, no CIF shared across entities, address code ↔ address 1:1.
+`--entities`, `--seed` and `--out DIR` write one unsplit `records.parquet` and `labels.parquet` instead. `test` is held out: no work reads `data/medallion/bronze/test.parquet` or `data/labels/test.parquet`. The tests and the benchmark generate their own populations. The name model is trained from `individual.json` and `registry.json` (`scripts/train_name_model.py`); a run reads only the model.
 
 ### How hard it is
 
-Real data holds very few direct duplicates, so the generator is calibrated to make them rare. `design.generate.profile`
-measures it on the true pairs (two records of one entity; 11,950 in this population), and `scripts/generate.py` prints it:
-
-| A true pair shares | Share |
-|---|---|
-| the customer ID | 2.3% |
-| the exact name, as written | 9.1% |
-| the phone digits | 33.2% |
-| the address code | 27.1% |
-| the standard address | 9.9% |
-| the birth date | 1.5% |
-| **direct**: the same customer ID and name, or the same name, address code and phone (what exact rules settle) | **1.1%** |
-| **nothing in common**: no field equal, and the names not even close (Jaro–Winkler under 0.75) | **11.3%** |
-
-The pairs with nothing in common can't be found by any method, so recall is read against the other 88.7%.
+Real data holds few direct duplicates, so the generator makes them rare. `design.generate.profile` measures it on the true pairs (two records of one entity), and `scripts/generate.py` prints it: the share that shares the customer ID, the exact name, the phone, the address code, the standard address or the birth date; the share that is **direct** (the same customer ID and name, or the same name, address code and phone: what exact rules settle); and the share with **nothing in common** (no field equal, and the names under 0.75 Jaro–Winkler). No method can find that last share, so recall is read against the rest. of its 11,950 true pairs (40,000 entities, 52,115 records), 2.3% share the customer ID, 9.1% the exact name, 33.2% the phone, 27.1% the address code, 9.9% the standard address and 1.5% the birth date; 1.1% are direct (an exact rule pairs them) and 11.3% share nothing

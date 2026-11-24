@@ -82,3 +82,12 @@ def test_people_s_decisions_are_read_in_either_order_and_any_width_of_space_once
         with pytest.raises(Exception, match=refused):
             given(rows, columns or ("id_l", "id_r", "decision"))
     assert engine.value("SELECT COUNT(*) FROM decisions") == 2  # a refused table stores nothing
+
+
+def test_an_update_is_refused_once_the_method_its_values_or_the_mapping_changed_since_the_build(tmp_path, population, monkeypatch):
+    population.df.to_parquet(tmp_path / "in.parquet", index=False)
+    engine = DuckDB()
+    nayose.build(engine, [tmp_path / "in.parquet"])
+    monkeypatch.setattr(nayose, "fingerprint", lambda *a, **k: "another")
+    with pytest.raises(nayose.InputError, match="changed since the run was built"):
+        nayose.update(engine, [tmp_path / "in.parquet"])

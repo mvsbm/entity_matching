@@ -39,6 +39,9 @@ HIRAGANA = "".join(chr(c) for c in range(0x3041, 0x3097))  # hiragana, and the k
 KATAKANA = "".join(chr(c + 0x60) for c in range(0x3041, 0x3097))
 KATAKANA_BLOCK, ONE_BYTE = "".join(map(chr, range(0x30A0, 0x3100))), "".join(map(chr, range(1, 0x61)))  # the block, each a byte: 0x01–0x60
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a column name config.toml gives
+METHOD = "CREATE OR REPLACE TABLE method AS SELECT @fingerprint AS fingerprint"  # a build's: the SQL, the values and the mapping it ran
+CHANGED = "the method, its values or the mapping changed since the run was built: an update would score its batch otherwise"
+UNCHANGED = f"SELECT IF((SELECT fingerprint FROM method) <> @fingerprint, ERROR('{CHANGED}; build the run again'), 0)"  # an update's first, on BigQuery
 QUERY = "\uffffasked"  # the ID of a record looked up by its values: no record's, and after every one in order
 SHOWN = ("full_name", "person_name", "company_name", "address", "postal_code", "phone", "birth_date", "customer_id")  # a record, as a person reads it
 BLANK = "".join(ch for ch in map(chr, range(0x3001)) if ch.isspace())  # what a blank value people give is made of: Python's whitespace
@@ -207,12 +210,15 @@ def build(engine, files: list, model: str | None = None) -> None:
     fit(engine, refit=model is None)
     score(engine)
     decide(engine, [])
+    engine.run(METHOD, {"fingerprint": fingerprint()})
 
 
 def update(engine, files: list) -> None:
     """A batch added to the run on `engine`: its records (one already in the run set aside), the build's model with u
     measured again on every record, the pairs touching the batch scored, the entities made again.
     O(Δ·(L + b) + C_Δ·K·L²), plus O(N) scans of the run's records and keys."""
+    if engine.value("SELECT fingerprint FROM method") != fingerprint():
+        raise InputError(CHANGED, fix="build the run again with them (python -m nayose build FILE --out RUN --overwrite), or update with the code the build ran")
     records(engine, files)
     fit(engine, refit=False)
     score(engine)
@@ -419,10 +425,12 @@ def run_file(engine, path: Path, **values: object) -> None:
         engine.run(sql, {k: values[k] for k in named})
 
 
-def fingerprint(root: Path = HERE) -> str:
-    """What an increment needs to be what the full run was: a hash of every stage file, the values (config.toml) and
-    the input's mapping (mapping.sql), by name and content. A change to any refuses increments until a full run."""
+def fingerprint(root: Path = HERE, mapping: Path | None = None) -> str:
+    """What an update needs to be what the build was: a hash of every stage file, the values (config.toml) and the
+    input's mapping, by name and content. A build stores it (the table method); an update refuses another."""
     h = hashlib.sha256()
-    for f in sorted([*(root / "sql").glob("*.sql"), *(p for p in (root / "config.toml", mapping() if root == HERE else root / "mapping.sql") if p.exists())]):
+    the_mapping = mapping or (globals()["mapping"]() if root == HERE else root / "mapping.sql")
+    config_file = Path(os.environ.get("NAYOSE_CONFIG") or root / "config.toml") if root == HERE else root / "config.toml"
+    for f in sorted([*(root / "sql").glob("*.sql"), *(p for p in (config_file, the_mapping) if p.exists())], key=lambda p: p.name):
         h.update(f.name.encode() + b"\0" + f.read_bytes() + b"\0")
     return h.hexdigest()

@@ -28,4 +28,3 @@ testpaths = ["tests"]
 pythonpath = ["."]  # this checkout's nayose, whichever one the venv was installed from
 addopts = "-ra --strict-markers --durations=10"
 faulthandler_timeout = 300  # a test still running after 5 minutes prints every thread's stack: a hang says where it is
-markers = ["slow: a test longer than a minute, left out of the fast tier (-m \"not slow\")"]

@@ -1,5 +1,5 @@
 # One environment of nayose (staging or prod) in its own Google Cloud project: what docs/operations.md sets up once,
-# and what deploy/deploy.sh then deploys the jobs into. Applied by the DevOps team, once per project:
+# and what deploy/deploy.py then makes the run's functions and procedures in. Applied by the DevOps team, once per project:
 #   terraform init -backend-config="bucket=STATE_BUCKET" -backend-config="prefix=nayose/ENVIRONMENT"
 #   terraform apply -var-file=ENVIRONMENT.tfvars
 terraform {

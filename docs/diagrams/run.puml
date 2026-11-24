@@ -1,0 +1,81 @@
+@startuml run
+title 3 · A run: each stage file, the tables it makes, from the input to gold and the match table
+skinparam defaultFontSize 11
+skinparam rectangle {
+  BackgroundColor #F4F6F8
+  BorderColor #65717E
+}
+skinparam database {
+  BackgroundColor #E8F1FB
+  BorderColor #2C6DB3
+}
+skinparam file {
+  BackgroundColor #FFF8E6
+  BorderColor #B07D00
+}
+skinparam actor {
+  BackgroundColor #FFFFFF
+  BorderColor #65717E
+}
+
+file "input: the batch's Parquet files\n(a build: the first batch)" as input
+file "mapping.sql: the input's columns as fields" as mapping
+file "config.toml: each stage's values" as values
+file "name_weights: config/kind_names.npz" as names
+
+rectangle "<b>records.sql</b>: set aside, standardize, tell the kind,\nread placeholders as missing, make the copies\n<i>O(Δ·L) + O(N)</i>" as records
+rectangle "<b>fit.sql</b> + fit_model (em.py): sample, λ, EM, u on the sample and the file\nan update: the build's model kept, u measured again\n<i>O(n + P·K) + O(N + max_pairs·K)</i>" as fit
+rectangle "<b>score.sql</b>: rules, the keys' candidates, the gate on big blocks,\nthe bound, the scores: the pairs touching the batch\n<i>O(Δ·b + C·K·L²) + O(N·L)</i>" as score
+rectangle "<b>decide.sql</b> + entities_of (entities.py): decisions stored,\nentities by connected components\n<i>O(D + N)</i>" as decide
+rectangle "<b>report.sql</b>: the run's numbers, no record's value\n<i>O(N·F + C)</i>" as report
+rectangle "<b>match.sql</b> (the match job): the pairs at a threshold,\nless those people said differ\n<i>O(C + P·F)</i>" as match
+
+database "records · this_batch\nset_aside · placeholders" as t_records
+database "fit_sample · fit_prior · em_patterns\nu_outside · u_counted · u_near · u_sampled · u_filled\nmodel · fit" as t_fit
+database "rule_pairs · cands · gated · scored" as t_score
+database "decisions · gold" as t_decide
+database "report_counts · report_fields · report_scores\nreport_patterns · report_keys · report_clusters" as t_report
+database "matched" as t_matched
+
+file "report.txt" as f_report
+file "matched/points-<t>.parquet\n(on BigQuery: the table matched)" as f_matched
+actor "people" as people
+file "given: the match table, its decision filled in" as given
+
+input --> mapping
+mapping --> records : input_rows, mapped
+names --> records
+values ..> records
+values ..> fit
+values ..> score
+records --> t_records
+t_records --> fit
+fit --> t_fit
+t_records --> score
+t_fit --> score : model, fit
+score --> t_score
+t_score --> report
+t_records --> decide
+decide --> t_decide
+t_decide --> report
+report --> t_report
+t_report --> f_report : nayose.report_text
+t_score --> match : scored
+t_decide --> match : decisions
+match --> t_matched
+t_matched --> f_matched
+f_matched --> people
+people --> given
+given --> decide
+
+legend right
+  rectangle: a stage file, what it does, its cost
+  cylinder: the run's tables it writes
+  note shape: a file read or written
+  solid arrow: makes or reads; dotted: its values
+  build: records, fit, score, decide, report
+  update: the same on a new batch
+  decide: decide.sql alone · match: match.sql alone
+  every job runs functions.sql first
+endlegend
+@enduml

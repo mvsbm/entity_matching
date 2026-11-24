@@ -1,5 +1,5 @@
-"""Every job's tables on the tests' population, as er/ made them (the old engine, before nayose replaced it, proven
-equal row for row): each table's digest (its rows in order, floats to 9 places) against tests/fixtures/parity.json.
+"""Every job's tables on the tests' population, held to the results recorded in tests/fixtures/parity.json: each
+table's digest (its rows in order, floats to 9 places).
 A build with two crowds of 70 (one block gated and skipped, one kept), match runs and two rounds of people's
 decisions; an update whose batch brings a placeholder past the line; lookups of stored records and of typed values.
 A change that moves any is a change of results: say so in its pull request, and write the digests again
@@ -80,6 +80,6 @@ def got(tmp_path_factory, population) -> dict:
     return out
 
 
-def test_every_job_s_tables_are_er_s(got):
+def test_every_job_s_tables_are_as_recorded(got):
     want = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert {k: v for k, v in got.items() if want.get(k) != v} == {} and set(got) == set(want)
