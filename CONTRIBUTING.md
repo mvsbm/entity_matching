@@ -45,5 +45,5 @@ A pull request that changes SQL quotes BigQuery's cost before and after, as meas
 
 ## Docs
 
-Docs describe the code as it is, in the present tense. Its history is in git. Each diagram in `docs/diagrams/` is a
-`.puml` file with the `.svg` it renders to. After an edit, run `plantuml -tsvg docs/diagrams/NAME.puml`.
+Docs describe the code as it is, in the present tense. Its history is in git. The diagrams are Mermaid, written in the
+Markdown itself: GitHub draws them, so there is no file to render.

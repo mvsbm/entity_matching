@@ -480,7 +480,7 @@ def bank_name(reading: str, legal: str | None, abbreviation: str | None, front: 
 
 @dataclass(frozen=True, kw_only=True)
 class KindProblems:
-    """What makes persons and companies hard to tell apart. Off unless asked for (the benchmark, the demo, the tests)."""
+    """What makes persons and companies hard to tell apart. Off unless asked for (the benchmark, the tests)."""
     flag_wrong: float = 0.03                  # the person/company flag wrong on any record
     flag_wrong_representative: float = 0.5    # ... on a record under the representative's name
     sole_flagged_company: float = 0.3         # a sole trader's record flagged company

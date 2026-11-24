@@ -19,7 +19,38 @@ costs is in [performance](performance.md).
 
 ## 1 · Context
 
-![Context: the developer changes the SQL through a pull request, which GitHub Actions checks; Jenkins ships main to BigQuery and starts the jobs the data owner asks for; reviewers decide a match table and give it back; DuckDB runs the same SQL locally](diagrams/context.svg)
+```mermaid
+flowchart TB
+  developer(["Developer: changes the SQL or config.toml,<br/>measures it on synthetic data, opens a pull request"])
+  owner(["Data owner: starts the jobs in prod"])
+  reviewer(["Reviewer: decides a match table's pairs,<br/>in a BigQuery table or a Sheet"])
+  devops(["DevOps team: applies deploy/terraform/,<br/>holds the credentials and the column mapping"])
+  subgraph repo ["this repository"]
+    nayose["nayose: the method as BigQuery SQL (nayose/sql/),<br/>its values (config.toml), the jobs, the deploy"]
+  end
+  github["GitHub Actions: every pull request,<br/>lint, the tests, the Terraform checked"]
+  jenkins["Jenkins (deploy/Jenkinsfile): staging, smoke test,<br/>a person's approval, prod; then one job at a time"]
+  bigquery[("BigQuery: a run is the dataset nayose,<br/>its tables, functions and procedures")]
+  storage[("Cloud Storage and Secret Manager: the input files,<br/>the deployment's mapping.sql")]
+  duckdb[("DuckDB: a laptop or CI,<br/>the same SQL translated; a run is a folder")]
+  downstream["Downstream systems: each record's entity"]
+  developer -->|"changes, by pull request"| nayose
+  nayose -->|"is checked by"| github
+  developer -->|"runs the jobs and the benchmark on"| duckdb
+  nayose -->|"main is shipped by"| jenkins
+  owner -->|"starts a job: JOB, ARGS"| jenkins
+  devops -->|"sets up"| storage
+  jenkins -->|"deploys to, calls: deploy.py, run.py"| bigquery
+  bigquery -->|"loads input from"| storage
+  jenkins -->|"reads the mapping from"| storage
+  bigquery -->|"gives a match table to: matched"| reviewer
+  reviewer -->|"gives decisions back to: decide"| bigquery
+  bigquery -->|"gives: gold"| downstream
+```
+
+*The developer changes the SQL through a pull request, which GitHub Actions checks; Jenkins ships main to BigQuery
+and starts the jobs the data owner asks for; reviewers decide a match table and give it back; DuckDB runs the same
+SQL locally.*
 
 | Who | Does | Uses |
 |---|---|---|
@@ -36,7 +67,32 @@ candidates and matches, as counts alone.
 
 ## 2 · Components
 
-![Components: python -m nayose calls the stages and jobs in nayose/__init__.py, which read the SQL files and config.toml and run each statement on an engine; the engines register the Python UDFs and embed the JavaScript comparisons; deploy/ makes the BigQuery functions and procedures from the same files](diagrams/components.svg)
+```mermaid
+flowchart TB
+  cli["The jobs, here: nayose/__main__.py<br/>python -m nayose build, update, match, decide, lookup:<br/>a run's folder, its lock, the JSON printed, the exit code"]
+  deploy["The deploy: deploy/<br/>deploy.py: functions and procedures · run.py: a job called<br/>smoke.py: BigQuery against DuckDB · Jenkinsfile · terraform/"]
+  tools["Design time: scripts/, design/<br/>synthetic data, the benchmark, the cost estimate,<br/>key quality, the name model's training"]
+  stages["Stages and jobs: nayose/__init__.py<br/>records, fit, score, decide, match, lookup, build, update:<br/>each stage file run with its values; report.txt"]
+  engines["Engines: nayose/engines.py<br/>DuckDB: the SQL translated, the function twins<br/>BigQuery: the SQL as written, a session a job<br/>functions(), procedures(): the deploy's statements"]
+  udfs["Python UDFs: nayose/em.py, nayose/entities.py<br/>fit_model: EM · entities_of: connected components<br/>standard library only, BigQuery's python-3.11"]
+  sql[("The method: nayose/sql/*.sql, mapping.sql<br/>functions, records, fit, score, decide, match, lookup, report")]
+  values[("The values: nayose/config.toml, config/kind_names.npz<br/>a section a stage; the name model")]
+  js[("The comparisons in JavaScript: nayose/strings.js")]
+  cli -->|"calls"| stages
+  deploy -->|"BigQuery, functions(), procedures()"| engines
+  deploy -->|"values, report_text"| stages
+  tools -->|"build, on DuckDB"| stages
+  stages -->|"reads"| sql
+  stages -->|"reads"| values
+  stages -->|"runs each statement on"| engines
+  engines -->|"registers, embeds"| udfs
+  engines -->|"embeds"| js
+  engines -->|"procedures(): every job's statements"| sql
+```
+
+*python -m nayose calls the stages and jobs in nayose/__init__.py, which read the SQL files and config.toml and run
+each statement on an engine; the engines register the Python UDFs and embed the JavaScript comparisons; deploy/ makes
+the BigQuery functions and procedures from the same files.*
 
 | File | Holds |
 |---|---|
@@ -51,7 +107,59 @@ candidates and matches, as counts alone.
 
 ## 3 · A run
 
-![A run: records.sql makes the records from the input, fit.sql the model, score.sql the scored pairs, decide.sql the entities, report.sql the report's numbers; the match job's table goes to people, whose decisions decide reads back](diagrams/run.svg)
+```mermaid
+flowchart TB
+  input[/"input: the batch's Parquet files (a build: the first batch)"/]
+  mapping[/"mapping.sql: the input's columns as fields"/]
+  values[/"config.toml: each stage's values"/]
+  names[/"name_weights: config/kind_names.npz"/]
+  records["records.sql: set aside, standardize, tell the kind,<br/>read placeholders as missing, make the copies<br/>O(Δ·L) + O(N)"]
+  fit["fit.sql + fit_model (em.py): sample, λ, EM, u on the sample and the file;<br/>an update keeps the build's model and measures u again<br/>O(n + P·K) + O(N + max_pairs·K)"]
+  score["score.sql: rules, the keys' candidates, the gate on big blocks,<br/>the bound, the scores of the pairs touching the batch<br/>O(Δ·b + C·K·L²) + O(N·L)"]
+  decide["decide.sql + entities_of (entities.py): decisions stored,<br/>entities by connected components<br/>O(D + N)"]
+  report["report.sql: the run's numbers, no record's value<br/>O(N·F + C)"]
+  match["match.sql (the match job): the pairs at a threshold,<br/>less those people said differ<br/>O(C + P·F)"]
+  t_records[("records · this_batch · set_aside · placeholders")]
+  t_fit[("fit_sample · fit_prior · em_patterns · u_outside · u_counted<br/>u_near · u_sampled · u_filled · model · fit")]
+  t_score[("rule_keys · every_key (the key index)<br/>rule_pairs · cands · gated · scored")]
+  t_decide[("decisions · gold")]
+  t_report[("report_counts · report_fields · report_scores<br/>report_patterns · report_keys · report_clusters")]
+  t_matched[("matched")]
+  f_report[/"report.txt"/]
+  f_matched[/"matched/points-t.parquet (on BigQuery: the table matched)"/]
+  people(["people"])
+  given[/"given: the match table, its decision filled in"/]
+  input --> mapping
+  mapping -->|"input_rows, mapped"| records
+  names --> records
+  values -.-> records
+  values -.-> fit
+  values -.-> score
+  records --> t_records
+  t_records --> fit
+  fit --> t_fit
+  t_records --> score
+  t_fit -->|"model, fit"| score
+  score --> t_score
+  t_score --> report
+  t_records --> decide
+  decide --> t_decide
+  t_decide --> report
+  report --> t_report
+  t_report -->|"nayose.report_text"| f_report
+  t_score -->|"scored"| match
+  t_decide -->|"decisions"| match
+  match --> t_matched
+  t_matched --> f_matched
+  f_matched --> people
+  people --> given
+  given --> decide
+```
+
+*A box is a stage file, what it does and its cost; a cylinder, the run's tables it writes; a slanted box, a file read
+or written. A solid arrow makes or reads; a dotted one gives values. A build runs records, fit, score, decide and
+report; an update the same on a new batch; decide and match their own file alone. Every job runs functions.sql
+first.*
 
 Every job runs `functions.sql` first. It holds the functions the other files call: the intake's `read_value`, the
 comparisons (`gamma_*`, and the name's `name_score` then `name_level`; one level per pair) and the rules' fuzzy tests
