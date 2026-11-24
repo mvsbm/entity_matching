@@ -1,30 +1,27 @@
-// Delivery of nayose's Cloud Run jobs (deploy/jobs/*.yaml), as docs/operations.md sets it up. GitHub Actions gates
-// every pull request (.github/workflows/); this pipeline ships what main holds, the same image from staging to prod:
-//   Checks    every push: the lint and the fast tests, a second look at the commit about to ship
-//   Image     main: one image a commit, built and pushed once; deployed by its digest from then on
-//   Staging   the jobs deployed to the staging project; then the smoke test (deploy/smoke.sh): a generated file built by
-//             Cloud Run there and by python -m er here, the two runs' files compared
+// Delivery of nayose to BigQuery, as docs/operations.md sets it up. GitHub Actions gates every pull request
+// (.github/workflows/); this pipeline ships what main holds, the same commit from staging to prod:
+//   Checks    every push: the lint and the fast tests
+//   Staging   main: nayose made in staging's dataset (deploy/deploy.py: its functions, procedures and name model); then
+//             the smoke test (deploy/smoke.py): a generated file built by BigQuery there and by DuckDB here, compared
 //   Approve   a person promotes the commit; nothing reaches prod without one
-//   Prod      the same digest deployed to prod; then nayose-check: when the method or the settings changed what an
-//             increment needs (runs/main/CHECK.json says rebuild_due), a person starts the full run
-//   Run       a build with RUN set does only this: one job started in prod, with ARGS
-// Every gcloud call runs as the deployer account of the project it touches. Its credential is a Jenkins file
-// credential: a Workload Identity Federation configuration where this Jenkins can issue OIDC tokens, else a service
-// account key (docs/operations.md). Jenkins provides, as environment: STAGING_PROJECT, PROD_PROJECT, REGION, REGISTRY
-// (an Artifact Registry repository, REGION-docker.pkg.dev/PROJECT/REPO), and APPROVERS (who may promote to prod).
+//   Prod      the same commit made in prod's dataset, with prod's column mapping (the secret nayose-mapping)
+//   Run       a build with JOB set does only this: one job in prod (deploy/run.py), with ARGS
+// Every call runs as an account of the project it touches: nayose-deployer to make, nayose-runtime to run. Each
+// credential is a Jenkins file credential: a Workload Identity Federation configuration where this Jenkins can issue
+// OIDC tokens, else a service account key (docs/operations.md). Jenkins provides, as environment: STAGING_PROJECT,
+// PROD_PROJECT, and APPROVERS (who may promote to prod). The run's dataset in each project is nayose.
 pipeline {
   agent none
   options {
-    disableConcurrentBuilds()  // one delivery at a time: two would race to deploy
+    disableConcurrentBuilds()  // one delivery at a time: two would race to make the procedures
   }
   parameters {
-    choice(name: 'RUN', choices: ['none', 'nayose-build', 'nayose-update', 'nayose-decide', 'nayose-match', 'nayose-lookup', 'nayose-check'],
-           description: 'only start this job in prod, with ARGS (no build, no deploy)')
-    string(name: 'ARGS', defaultValue: '', description: 'its arguments, comma-separated, e.g. runs/main,lookup,--record,1234')
+    choice(name: 'JOB', choices: ['none', 'build', 'update', 'decide', 'match'], description: 'only run this job in prod, with ARGS (no checks, no deploy)')
+    string(name: 'ARGS', defaultValue: '', description: 'its arguments, space-separated: gs://… input files, or match\'s threshold')
   }
   stages {
     stage('Checks') {
-      when { expression { params.RUN == 'none' } }
+      when { expression { params.JOB == 'none' } }
       agent any
       steps {
         sh '''
@@ -35,99 +32,64 @@ pipeline {
         '''
       }
     }
-    stage('Image') {
-      when { allOf { branch 'main'; expression { params.RUN == 'none' } } }
+    stage('Staging') {
+      when { allOf { branch 'main'; expression { params.JOB == 'none' } } }
       agent any
       steps {
-        withCredentials([file(credentialsId: 'nayose-registry', variable: 'GCP_CREDENTIALS')]) {
+        withCredentials([file(credentialsId: 'nayose-staging-deployer', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
           sh '''
-            export CLOUDSDK_CONFIG="$WORKSPACE/.gcloud-registry"
-            gcloud auth login --cred-file="$GCP_CREDENTIALS" --quiet
-            gcloud auth configure-docker "${REGISTRY%%/*}" --quiet
-            docker build --pull --platform linux/amd64 -f deploy/Dockerfile -t "$REGISTRY/nayose:$GIT_COMMIT" .
-            docker push "$REGISTRY/nayose:$GIT_COMMIT"
-            docker inspect --format '{{index .RepoDigests 0}}' "$REGISTRY/nayose:$GIT_COMMIT" > image-digest
+            python3 -m venv .venv
+            .venv/bin/python -m pip install --quiet -r requirements.txt -r deploy/requirements.txt
+            .venv/bin/python deploy/deploy.py "$STAGING_PROJECT.nayose"
           '''
         }
-        script { env.IMAGE = readFile('image-digest').trim() }  // REGISTRY/nayose@sha256:…: what every stage after deploys
-      }
-    }
-    stage('Staging') {
-      when { allOf { branch 'main'; expression { params.RUN == 'none' } } }
-      agent any
-      steps {
-        withCredentials([file(credentialsId: 'nayose-staging', variable: 'GCP_CREDENTIALS')]) {
+        withCredentials([file(credentialsId: 'nayose-staging-runtime', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
           sh '''
             export CLOUDSDK_CONFIG="$WORKSPACE/.gcloud-staging"
-            gcloud auth login --cred-file="$GCP_CREDENTIALS" --quiet
-            deploy/deploy.sh "$STAGING_PROJECT" "$REGION" "$IMAGE"
-            python3 -m venv .venv
-            .venv/bin/python -m pip install --quiet -r requirements.txt
-            deploy/smoke.sh "$STAGING_PROJECT" "$REGION"
+            gcloud auth login --cred-file="$GOOGLE_APPLICATION_CREDENTIALS" --quiet
+            .venv/bin/python scripts/generate.py --entities 2000 --seed 7 --out smoke
+            gcloud storage cp smoke/records.parquet "gs://$STAGING_PROJECT-nayose-runs/in/smoke.parquet" --project="$STAGING_PROJECT"
+            .venv/bin/python deploy/smoke.py "$STAGING_PROJECT.nayose" "gs://$STAGING_PROJECT-nayose-runs/in/smoke.parquet" smoke/records.parquet
           '''
         }
       }
     }
     stage('Approve') {
-      when { allOf { branch 'main'; expression { params.RUN == 'none' } } }
+      when { allOf { branch 'main'; expression { params.JOB == 'none' } } }
       steps {
         timeout(time: 7, unit: 'DAYS') {  // no agent held while a person decides
-          input message: "Deploy ${env.GIT_COMMIT} (${env.IMAGE}) to prod? Staging passed its smoke test.", ok: 'Deploy to prod', submitter: env.APPROVERS
+          input message: "Make ${env.GIT_COMMIT} in prod? Staging passed its smoke test.", ok: 'Make it in prod', submitter: env.APPROVERS
         }
       }
     }
     stage('Prod') {
-      when { allOf { branch 'main'; expression { params.RUN == 'none' } } }
+      when { allOf { branch 'main'; expression { params.JOB == 'none' } } }
       agent any
       steps {
-        withCredentials([file(credentialsId: 'nayose-prod', variable: 'GCP_CREDENTIALS')]) {
+        withCredentials([file(credentialsId: 'nayose-prod-deployer', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
           sh '''
             export CLOUDSDK_CONFIG="$WORKSPACE/.gcloud-prod"
-            gcloud auth login --cred-file="$GCP_CREDENTIALS" --quiet
-            deploy/deploy.sh "$PROD_PROJECT" "$REGION" "$IMAGE"
-            gcloud run jobs execute nayose-check --project="$PROD_PROJECT" --region="$REGION" --wait
-            gcloud storage cat "gs://$PROD_PROJECT-nayose-runs/runs/main/CHECK.json" > check.json
-          '''
-        }
-        script {
-          if (sh(returnStdout: true, script: 'python3 -c "import json; print(json.load(open(\'check.json\'))[\'rebuild_due\'])"').trim() == 'True') {
-            env.REBUILD = 'due'
-            unstable('a full run is due: increments, match runs and lookups refuse until nayose-build runs')
-          }
-        }
-      }
-    }
-    stage('Confirm rebuild') {
-      when { allOf { branch 'main'; expression { env.REBUILD == 'due' } } }
-      steps {
-        timeout(time: 7, unit: 'DAYS') {
-          input message: 'The method or the settings changed what an increment needs: start the full run (nayose-build) in prod now?', ok: 'Start nayose-build', submitter: env.APPROVERS
-        }
-      }
-    }
-    stage('Rebuild') {
-      when { allOf { branch 'main'; expression { env.REBUILD == 'due' } } }
-      agent any
-      steps {
-        withCredentials([file(credentialsId: 'nayose-prod', variable: 'GCP_CREDENTIALS')]) {
-          sh '''
-            export CLOUDSDK_CONFIG="$WORKSPACE/.gcloud-prod"
-            gcloud auth login --cred-file="$GCP_CREDENTIALS" --quiet
-            gcloud run jobs execute nayose-build --project="$PROD_PROJECT" --region="$REGION" --async
+            gcloud auth login --cred-file="$GOOGLE_APPLICATION_CREDENTIALS" --quiet
+            python3 -m venv .venv
+            .venv/bin/python -m pip install --quiet -r requirements.txt -r deploy/requirements.txt
+            gcloud secrets versions access latest --secret=nayose-mapping --project="$PROD_PROJECT" > mapping.sql
+            .venv/bin/python deploy/deploy.py "$PROD_PROJECT.nayose" --mapping mapping.sql
+            rm -f mapping.sql
           '''
         }
       }
     }
     stage('Run') {
-      when { expression { params.RUN != 'none' } }
+      when { expression { params.JOB != 'none' } }
       agent any
       steps {
-        withCredentials([file(credentialsId: 'nayose-prod', variable: 'GCP_CREDENTIALS')]) {
+        withCredentials([file(credentialsId: 'nayose-prod-runtime', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
           sh '''
-            export CLOUDSDK_CONFIG="$WORKSPACE/.gcloud-prod"
-            gcloud auth login --cred-file="$GCP_CREDENTIALS" --quiet
-            gcloud run jobs execute "$RUN" --project="$PROD_PROJECT" --region="$REGION" --wait ${ARGS:+--args="$ARGS"}
+            python3 -m venv .venv
+            .venv/bin/python -m pip install --quiet -r requirements.txt -r deploy/requirements.txt
+            .venv/bin/python deploy/run.py "$PROD_PROJECT.nayose" "$JOB" $ARGS > report.txt
           '''
+          archiveArtifacts artifacts: 'report.txt', allowEmptyArchive: true  // build's and update's: no record's value in it
         }
       }
     }

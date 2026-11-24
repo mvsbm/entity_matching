@@ -13,7 +13,7 @@ variable "environment" {
 }
 
 variable "region" {
-  description = "Where the jobs, the bucket and the registry are."
+  description = "Where the bucket is."
   type        = string
   default     = "asia-northeast1"
 }
@@ -22,18 +22,6 @@ variable "bigquery_location" {
   description = "Where the datasets are."
   type        = string
   default     = "asia-northeast1"
-}
-
-variable "create_registry" {
-  description = "Whether the image's Artifact Registry repository lives in this project: true in exactly one environment."
-  type        = bool
-  default     = false
-}
-
-variable "registry_readers" {
-  description = "With create_registry: the other environments' job accounts (nayose-runtime@…), which pull the image from here."
-  type        = list(string)
-  default     = []
 }
 
 variable "jenkins_oidc_issuer" {
@@ -46,18 +34,6 @@ variable "jenkins_oidc_subject" {
   description = "With jenkins_oidc_issuer: the token subject (sub) of the Jenkins job that may act as the deployer."
   type        = string
   default     = ""
-}
-
-variable "update_schedule" {
-  description = "When nayose-update runs by itself, as cron in time_zone (e.g. \"0 2 * * *\"); empty: only when started."
-  type        = string
-  default     = ""
-}
-
-variable "time_zone" {
-  description = "update_schedule's time zone."
-  type        = string
-  default     = "Asia/Tokyo"
 }
 
 variable "alert_emails" {

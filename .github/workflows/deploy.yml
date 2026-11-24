@@ -1,48 +1,17 @@
-# The image, as Cloud Run runs it: built from deploy/Dockerfile (its packages checked against their hashes), then the
-# runner run in it on a generated file, a folder mounted as the bucket: a full run, a check, a lookup and a second
-# full run published over the first. The deploy's shell scripts, linted; the Terraform, formatted and valid. On a pull
-# request that touches what the image holds or the deploy, and on main.
+# The Terraform the DevOps team applies, formatted and valid (the procedures deploy/deploy.py makes are the tests':
+# tests/test_deploy.py). On a pull request that touches the deploy, and on main.
 name: deploy
 on:
   push:
     branches: [main]
   pull_request:
-    paths: ["deploy/**", "er/**", "config/**", "pyproject.toml", "requirements.txt", ".github/workflows/deploy.yml"]
+    paths: ["deploy/terraform/**", ".github/workflows/deploy.yml"]
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
-  image:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
-        with:
-          enable-cache: true
-          cache-dependency-glob: requirements.txt
-      - run: uv pip install --system -r requirements.txt
-      - run: docker run --rm -v "$PWD/deploy:/d" koalaman/shellcheck:v0.10.0 /d/deploy.sh /d/smoke.sh
-      - run: docker build --platform linux/amd64 -f deploy/Dockerfile -t nayose .
-      - name: the runner in the image, on a folder as the bucket
-        run: |
-          mkdir -p bucket/in && chmod -R a+rwX bucket
-          python scripts/generate.py --entities 2000 --seed 7 --out gen
-          cp gen/records.parquet bucket/in/records.parquet
-          id=$(python -c "import pandas as pd; print(pd.read_parquet('gen/records.parquet')['CONT_ID'].iloc[0])")
-          run() { docker run --rm -v "$PWD/bucket:/gcs" nayose runs/main "$@"; }
-          run build /gcs/in/records.parquet --overwrite
-          run check
-          run lookup --record "$id"
-          first=$(cat bucket/runs/main/CURRENT)
-          run build /gcs/in/records.parquet --overwrite
-          test "$(cat bucket/runs/main/CURRENT)" != "$first" && test "$(ls bucket/runs/main/v | wc -l)" -eq 2
-          python -c "import json; assert not json.load(open('bucket/runs/main/CHECK.json'))['rebuild_due']"
   terraform:
     runs-on: ubuntu-latest
     timeout-minutes: 10

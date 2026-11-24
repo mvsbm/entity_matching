@@ -257,6 +257,71 @@ def functions(dataset: str) -> list[str]:
     return out
 
 
+JOBS = {  # each job BigQuery runs as a procedure of the run's dataset: its stages in order, and what values() is told
+    "build": [("functions", {}), ("mapping", {}), ("records", {}), ("fit", {"refit": True}), ("score", {}), ("decide", {}), ("report", {})],
+    "update": [("functions", {}), ("mapping", {}), ("records", {}), ("fit", {"refit": False}), ("score", {}), ("decide", {}), ("report", {})],
+    "decide": [("functions", {}), ("decide", {})],
+    "match": [("functions", {}), ("match", {})],
+}  # shortcut: no lookup procedure, a lookup's statements roll back where BigQuery takes no DDL; on a session over the run's clones, at the parity step
+ARGUMENTS = {"match": {"threshold": "FLOAT64"}}  # a procedure's own values: given when it is called, not declared
+RUN_TABLES = ("records", "placeholders", "this_batch", "set_aside", "fit_sample", "fit_prior", "em_patterns", "u_outside", "u_counted",
+              "u_near", "u_sampled", "u_filled", "model", "fit", "rule_pairs", "cands", "gated", "scored", "gold")  # a build starts without them; decisions stay
+TEMP_FUNCTION = re.compile(r"^((?:\s*--[^\n]*\n)*\s*)CREATE OR REPLACE TEMP FUNCTION (\w+)", re.I)
+
+
+def procedures(dataset: str, functions: str, mapping: Path | None = None) -> list[str]:
+    """The statements the deploy runs in `dataset` (project.dataset), after functions(): the method's own SQL functions
+    (each file's CREATE TEMP FUNCTION), the dataset's; then one procedure a job (JOBS), its stages' statements in order
+    (mapping: the deployment's mapping.sql), the values they read (@name: nayose.values, config.toml's) declared at
+    its top as v_name, the dataset the one whose tables they name. Every call of a method's function names its
+    dataset: `functions`' for the JavaScript and Python ones, `dataset`'s for the SQL ones."""
+    import nayose
+    path = lambda stage: (mapping or nayose.HERE / "mapping.sql") if stage == "mapping" else nayose.SQL / f"{stage}.sql"
+    made, bodies = {}, {}
+    for job, stages in JOBS.items():
+        body, declared = [], {}
+        for stage, told in stages:
+            declared |= nayose.values(stage, **told)
+            for sql in nayose.statements(path(stage).read_text(encoding="utf-8")):
+                if m := TEMP_FUNCTION.match(sql):
+                    made.setdefault(m[2], TEMP_FUNCTION.sub(lambda x: f"{x[1]}CREATE OR REPLACE FUNCTION `{dataset}`.{x[2]}", sql, count=1))
+                else:
+                    body.append(re.sub(r"@(\w+)", r"v_\1", sql))
+        bodies[job] = (body, {k: v for k, v in declared.items() if k not in ARGUMENTS.get(job, {})})
+    own = re.compile(r"(?<![\w.`])(" + "|".join(sorted(made, key=len, reverse=True)) + r")\s*\(")
+    ours = lambda sql: own.sub(lambda m: f"`{dataset}`.{m[1]}(", BigQuery.CALLS.sub(lambda m: f"`{functions}`.{m[1]}(", sql))
+    out = [ours(sql) for sql in made.values()]
+    project, name = dataset.split(".")
+    for job, (body, declared) in bodies.items():
+        args = ", ".join(f"v_{k} {kind}" for k, kind in ARGUMENTS.get(job, {}).items())
+        head = [f"DECLARE v_{k} {bigquery_type(v)} DEFAULT {bigquery_literal(v)}" for k, v in declared.items()]
+        head += [f"SET @@dataset_project_id = '{project}'", f"SET @@dataset_id = '{name}'"]
+        head += [f"DROP TABLE IF EXISTS {x}" for x in RUN_TABLES] if job == "build" else []
+        out.append(f"CREATE OR REPLACE PROCEDURE `{dataset}`.{job}({args})\nBEGIN\n" + ";\n".join([*head, *map(ours, body)]) + ";\nEND")
+    return out
+
+
+def bigquery_type(v: object) -> str:  # a value's BigQuery type, as values() gives it
+    if isinstance(v, bool):
+        return "BOOL"
+    if isinstance(v, list):
+        return f"ARRAY<{bigquery_type(v[0]) if v else 'STRING'}>"
+    return "INT64" if isinstance(v, int) else "FLOAT64" if isinstance(v, float) else "STRING"
+
+
+def bigquery_literal(v: object) -> str:  # a value as BigQuery SQL: a string escaped character by character where it must be
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, list):
+        return f"{bigquery_type(v)}[{', '.join(map(bigquery_literal, v))}]"
+    if isinstance(v, float):
+        return f"CAST('{v!r}' AS FLOAT64)" if v != v or v in (float("inf"), float("-inf")) else f"CAST({v!r} AS FLOAT64)"
+    if isinstance(v, int):
+        return str(v)
+    said = {"\\": "\\\\", "'": "\\'"}
+    return "'" + "".join(said.get(ch) or (ch if ch.isprintable() else f"\\U{ord(ch):08x}") for ch in str(v)) + "'"
+
+
 class BigQuery:
     """nayose's SQL on BigQuery, as written, in one session of the job's own (its temporary tables die with it). A
     run's tables are in `dataset` (project.dataset), so a statement names them alone; the functions it calls are

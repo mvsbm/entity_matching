@@ -80,34 +80,58 @@ def records(engine, files: list | None, lookup: bool = False) -> None:
         raise ValueError(f"config.toml [input] columns: {bad} are no plain column names")
     if files is not None:
         engine.read_parquet("input", files, c["input"]["columns"])
-    model = np.load(NAME_MODEL)
-    engine.put("name_weights", pd.DataFrame({"term": model["terms"].tolist(), "w": model["coef"]}))
+    engine.put("name_weights", name_weights())
     stage(engine, "functions")
-    run_file(engine, HERE / "mapping.sql", nulls=nulls_pattern(c["input"]["nulls"]))
-    r = c["records"]
-    stage(engine, "records", hiragana=HIRAGANA, katakana=KATAKANA, katakana_block=KATAKANA_BLOCK, one_byte=ONE_BYTE, kana_fold_from=r["kana_fold_from"], kana_fold_to=r["kana_fold_to"],
-          legal_pattern=legal_pattern(r), prefecture_pattern=f"^(?:{'|'.join(map(re.escape, r['prefectures']))})",
-          flag_company=list(r["flag_company"]), name_line=float(r["name_line"]), trust_flag=bool(r["trust_flag"]),
-          shared_name_column=bool(r["shared_name_column"]), ngram=int(r["ngram"]), intercept=float(model["intercept"]),
-          min_block=int(r["min_block"]), spread=int(r["spread"]), crowd=int(r["crowd"]), lookup=lookup)
+    run_file(engine, HERE / "mapping.sql", **values("mapping"))
+    stage(engine, "records", **values("records", lookup=lookup))
+
+
+def name_weights() -> pd.DataFrame:  # the name model (config/kind_names.npz): each character n-gram's weight
+    model = np.load(NAME_MODEL)
+    return pd.DataFrame({"term": model["terms"].tolist(), "w": model["coef"]})
+
+
+def values(name: str, refit: bool = True, lookup: bool = False) -> dict:
+    """The values stage `name` reads as @name, from config.toml: what a run here passes as query parameters, and what
+    a BigQuery procedure declares (engines.procedures). `refit`: a build (an update keeps the model); `lookup`: the
+    batch is a record asked about. match's @threshold, lookup's and report's own are their jobs'."""
+    c = config()
+    r, f, s = c["records"], c["fit"], c["score"]
+    if name == "mapping":
+        return dict(nulls=nulls_pattern(c["input"]["nulls"]))
+    if name == "records":
+        return dict(hiragana=HIRAGANA, katakana=KATAKANA, katakana_block=KATAKANA_BLOCK, one_byte=ONE_BYTE, kana_fold_from=r["kana_fold_from"],
+                    kana_fold_to=r["kana_fold_to"], legal_pattern=legal_pattern(r), prefecture_pattern=f"^(?:{'|'.join(map(re.escape, r['prefectures']))})",
+                    flag_company=list(r["flag_company"]), name_line=float(r["name_line"]), trust_flag=bool(r["trust_flag"]),
+                    shared_name_column=bool(r["shared_name_column"]), ngram=int(r["ngram"]), intercept=float(np.load(NAME_MODEL)["intercept"]),
+                    min_block=int(r["min_block"]), spread=int(r["spread"]), crowd=int(r["crowd"]), lookup=lookup)
+    if name == "fit":
+        return dict(fit_rows=int(f["fit_rows"]), seed=str(f["seed"]), fit_u_max_pairs=float(f["fit_u_max_pairs"]),
+                    u_max_pairs=float(f["u_max_pairs"]), settings=json.dumps(f), refit=refit)
+    if name == "score":
+        return dict(keys=list(s["keys"]), rules=list(s["rules"]), keep_from=-math.inf if lookup else float(s["keep_from"]),
+                    search_floor=float(s["search_floor"]), oversized=int(s["oversized"]))
+    if name == "decide":
+        return dict(blank=BLANK)
+    if name == "report":
+        lo, line = float(c["lookup"]["at_least"]), float(c["lookup"]["likely_from"])
+        return dict(patterns=json.dumps({**c["report"]["patterns"], "company_name": legal_pattern(r)}, ensure_ascii=False),
+                    edges=sorted({-20.0, -10.0, 0.0, lo, line, line + 2, line + 4, line + 8, line + 12}), floor=lo, oversized=int(s["oversized"]))
+    return {}
 
 
 def fit(engine, refit: bool = True) -> None:
     """Stage 2 on `engine`, after records: fit.sql, with config.toml [fit]. O(n + S·K) on the sample, O(N + S·K) on the
     file. refit False (an update): the build's model kept, its u measured again on the run's records."""
-    c = config()["fit"]
     stage(engine, "functions")
-    stage(engine, "fit", fit_rows=int(c["fit_rows"]), seed=str(c["seed"]), fit_u_max_pairs=float(c["fit_u_max_pairs"]),
-          u_max_pairs=float(c["u_max_pairs"]), settings=json.dumps(c), refit=refit)
+    stage(engine, "fit", **values("fit", refit=refit))
 
 
 def score(engine, lookup: bool = False) -> None:
     """Stage 3 on `engine`, after fit: score.sql, with config.toml [score]. O(Δ·b + C·K·L²) + O(N·L) for the keys.
     `lookup`: every candidate scored, whatever its points (lookup)."""
-    c = config()["score"]
     stage(engine, "functions")
-    stage(engine, "score", keys=list(c["keys"]), rules=list(c["rules"]), keep_from=-math.inf if lookup else float(c["keep_from"]),
-          search_floor=float(c["search_floor"]), oversized=int(c["oversized"]))
+    stage(engine, "score", **values("score", lookup=lookup))
 
 
 def lookup(engine, record: str | None = None, values: dict | None = None, at_least: float | None = None, most: int | None = None) -> dict:
@@ -196,7 +220,7 @@ def decide(engine, files: list) -> None:
     else:
         engine.run("CREATE OR REPLACE TABLE given (id_l STRING, id_r STRING, decision STRING, why STRING)")
     stage(engine, "functions")
-    stage(engine, "decide", blank=BLANK)
+    stage(engine, "decide", **values("decide"))
 
 
 def match(engine, threshold: float) -> None:
@@ -215,14 +239,18 @@ FIELDS = ("full_name", "person_name", "given_name", "company_name", "any_name", 
 
 
 def report(engine, steps: dict[str, float], job: str) -> str:
-    """report.txt: the run on a page with no record's value in it, after a build or an update (`steps`: each stage's
-    seconds): what ran, the summary, each field's fill and look, the input's columns no field reads, the batch's
-    candidates by bits and each band's commonest patterns, the entities' sizes, each stage, each key's pairs, the
-    model and the largest blocks. Numbers from report.sql; O(N·F + C)."""
-    c, lo, line = config(), float(config()["lookup"]["at_least"]), float(config()["lookup"]["likely_from"])
-    edges = sorted({-20.0, -10.0, 0.0, lo, line, line + 2, line + 4, line + 8, line + 12})
-    patterns = {**c["report"]["patterns"], "company_name": legal_pattern(c["records"])}
-    stage(engine, "report", patterns=json.dumps(patterns, ensure_ascii=False), edges=edges, floor=lo, oversized=int(c["score"]["oversized"]))
+    """report.txt, after a build or an update on `engine`: report.sql, then report_text."""
+    stage(engine, "report", **values("report"))
+    return report_text(engine, steps, job)
+
+
+def report_text(engine, steps: dict[str, float], job: str) -> str:
+    """report.txt from report.sql's tables (`steps`: each stage's seconds): the run on a page with no record's value in
+    it: what ran, the summary, each field's fill and look, the input's columns no field reads (here, from the input
+    table's own columns), the batch's candidates by bits and each band's commonest patterns, the entities' sizes, each
+    stage, each key's pairs, the model and the largest blocks. O(F + C) over the report's tables."""
+    c, v = config(), values("report")
+    lo, edges, patterns = v["floor"], v["edges"], json.loads(v["patterns"])
     n = engine.frame("SELECT * FROM report_counts").iloc[0]
     pct = lambda x: "—" if x is None or pd.isna(x) else f"{x:.1%}"
 
