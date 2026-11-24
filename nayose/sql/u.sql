@@ -141,9 +141,12 @@ SELECT * FROM u_records WHERE NOT @draw OR MOD(er_hash(id || '_' || @seed), 1000
 CREATE OR REPLACE TEMP TABLE u_pairs AS
 SELECT
   gamma_name(l.person_name, r.person_name, l.person_name__kana_fold, r.person_name__kana_fold,
-             l.person_name__kana_fold_long_vowel, r.person_name__kana_fold_long_vowel, l.given_name__kana_fold, r.given_name__kana_fold) AS name,
-  gamma_company(l.company_name, r.company_name, l.company_name__nfkc_strip_legal_form_kana_fold, r.company_name__nfkc_strip_legal_form_kana_fold) AS company,
-  gamma_address(l.address_code, r.address_code, l.address, r.address, l.postal_code, r.postal_code, l.address__address, r.address__address) AS address,
+             l.person_name__kana_fold_long_vowel, r.person_name__kana_fold_long_vowel, l.given_name__kana_fold, r.given_name__kana_fold,
+             l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte) AS name,
+  gamma_company(l.company_name, r.company_name, l.company_name__nfkc_strip_legal_form_kana_fold, r.company_name__nfkc_strip_legal_form_kana_fold,
+                l.company_name__nfkc_strip_legal_form_kana_fold_one_byte, r.company_name__nfkc_strip_legal_form_kana_fold_one_byte) AS company,
+  gamma_address(l.address_code, r.address_code, l.address, r.address, l.postal_code, r.postal_code, l.address__address, r.address__address,
+                l.address__address_one_byte_hash, r.address__address_one_byte_hash) AS address,
   IF(plan.phone, gamma_phone(l.phone, r.phone), NULL) AS phone,
   IF(plan.cif, gamma_cif(l.customer_id, r.customer_id), NULL) AS cif,
   IF(plan.birth, gamma_birth(l.birth_date, r.birth_date), NULL) AS birth

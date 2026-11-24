@@ -3,8 +3,8 @@
     BigQuery   runs it as written, in a session of the job's own, a run's tables in its dataset; the functions it
                calls by name (cl_*, er_hash, nfkc) are the functions dataset's, which the deploy makes (functions())
     DuckDB     translates it first (sqlglot, BigQuery → DuckDB), refusing a form whose translation changes what it
-               gives (AVOID, avoided()), and calls Python twins of the same functions: rapidfuzz for cl_*,
-               unicodedata for nfkc, a macro for er_hash
+               gives (AVOID, avoided()), and calls twins of the same functions: for cl_*, DuckDB's own where
+               both strings are a byte a character (native), else rapidfuzz; unicodedata for nfkc, numpy for one_byte_hash, a macro for er_hash
 
 Both answer the same verbs: run (a statement, nothing back), rows, value, frame (small results only: a step's
 tables stay in the engine); put (a small frame as a table, such as the model EM learns); read_parquet (input files
@@ -111,6 +111,39 @@ def compare(name: str, cut: bool = False):
     return (lambda a, b, threshold: f(a, b, threshold)) if cut else (lambda a, b: f(a, b, None))  # DuckDB counts the parameters
 
 
+NATIVE = {"jaro_winkler": "jaro_winkler_similarity(a, b)", "levenshtein": "levenshtein(a, b)",
+          "damerau_levenshtein": "damerau_levenshtein(a, b)", "hamming": "hamming(a, b)"}
+
+
+def native(name: str, twin: str) -> str:
+    """cl_<name> on DuckDB, as SQL over a and b. DuckDB's own comparisons count bytes, and a Python function is called a
+    chunk at a time under one lock: where both strings are a byte a character (ASCII, or records.sql's one-byte copies)
+    and filled, DuckDB's own answers, giving what the twin gives (`twin`, its call), which answers elsewhere: a
+    similarity as float32; a cut's failing score as rapidfuzz's, 0 for a similarity and the threshold + 1 for a distance.
+    Hamming: DuckDB's takes strings of one length only (rapidfuzz pads the shorter)."""
+    score, cut = NATIVE[name], twin.endswith("t)")
+    if FUNCTIONS[name][0]:
+        value = f"CAST(CAST({score} AS FLOAT) AS DOUBLE)"
+        out = f"CASE WHEN {score} >= least(greatest(t - 1e-6, 0), 1) THEN {value} ELSE 0 END" if cut else value
+    else:
+        out = f"CASE WHEN {score} <= greatest(floor(t), 0) THEN {score} ELSE greatest(floor(t), 0) + 1 END" if cut else score
+    same = " AND length(a) = length(b)" if name == "hamming" else ""
+    return (f"CASE WHEN a IS NULL OR b IS NULL THEN NULL WHEN a <> '' AND b <> '' AND strlen(a) = length(a) AND strlen(b) = length(b){same} "
+            f"THEN CAST({out} AS DOUBLE) ELSE {twin} END")
+
+
+def one_byte_hash(a: pa.Array) -> pa.Array:
+    """Each character one ASCII byte, 33 + its code point mod 94, as BigQuery's one_byte_hash: two may share a byte, so
+    an edit distance of the copies is never more than the strings' (records.sql)."""
+    values = a.to_pylist()
+    filled = [v for v in values if v is not None]
+    points = np.frombuffer("".join(filled).encode("utf-32-le"), dtype=np.uint32)
+    text = (33 + points % 94).astype(np.uint8).tobytes().decode("ascii")
+    ends = np.cumsum([len(v) for v in filled], dtype=np.int64)
+    parts = iter(text[s:e] for s, e in zip(np.concatenate(([0], ends[:-1])), ends))
+    return pa.array([None if v is None else next(parts) for v in values], pa.string())
+
+
 def nfkc(a: pa.Array) -> pa.Array:  # Unicode NFKC, as BigQuery's NORMALIZE(x, NFKC) gives it
     return pa.array([None if v is None else unicodedata.normalize("NFKC", v) for v in a.to_pylist()], pa.string())
 
@@ -134,10 +167,13 @@ class DuckDB:
         self.con.execute("CREATE OR REPLACE MACRO er_hash(x) AS ('0x' || substr(md5(coalesce(CAST(x AS VARCHAR), '')), 1, 15))::BIGINT")
         # bytes as UTF-8, as BigQuery's: bytes that aren't hold U+FFFD
         self.con.execute("CREATE OR REPLACE MACRO safe_convert_bytes_to_string(b) AS CASE WHEN b IS NOT NULL THEN coalesce(TRY(decode(b)), chr(65533)) END")
-        for name in FUNCTIONS:
-            self.con.create_function(f"cl_{name}", compare(name), ["VARCHAR", "VARCHAR"], "DOUBLE", type="arrow")
-            self.con.create_function(f"cl_{name}_cut", compare(name, cut=True), ["VARCHAR", "VARCHAR", "DOUBLE"], "DOUBLE", type="arrow")
+        for name in FUNCTIONS:  # cl_*: DuckDB's own function where it answers as the twin does (native), else the twin
+            self.con.create_function(f"twin_{name}", compare(name), ["VARCHAR", "VARCHAR"], "DOUBLE", type="arrow")
+            self.con.create_function(f"twin_{name}_cut", compare(name, cut=True), ["VARCHAR", "VARCHAR", "DOUBLE"], "DOUBLE", type="arrow")
+            self.con.execute(f"CREATE OR REPLACE MACRO cl_{name}(a, b) AS {native(name, f'twin_{name}(a, b)')}")
+            self.con.execute(f"CREATE OR REPLACE MACRO cl_{name}_cut(a, b, t) AS {native(name, f'twin_{name}_cut(a, b, t)')}")
         self.con.create_function("nfkc", nfkc, ["VARCHAR"], "VARCHAR", type="arrow")
+        self.con.create_function("one_byte_hash", one_byte_hash, ["VARCHAR"], "VARCHAR", type="arrow")
 
     def run(self, sql: str, values: dict | None = None) -> None:
         self.con.execute(duckdb_sql(sql), values or None)
@@ -176,7 +212,8 @@ class DuckDB:
 
 def functions(dataset: str) -> list[str]:
     """The statements the deploy runs once in `dataset` (project.dataset): each comparison of FUNCTIONS in JavaScript
-    (cl_<name>, and cl_<name>_cut: the same score, its threshold unread), the portable hash (er_hash) and nfkc."""
+    (cl_<name>, and cl_<name>_cut: the same score, its threshold unread), the portable hash (er_hash), nfkc and
+    one_byte_hash."""
     library = STRINGS.read_text(encoding="utf-8")
     out = []
     for name in FUNCTIONS:
@@ -187,6 +224,8 @@ def functions(dataset: str) -> list[str]:
     out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.er_hash(x ANY TYPE) AS "
                "(CAST(CONCAT('0x', SUBSTR(TO_HEX(MD5(COALESCE(CAST(x AS STRING), ''))), 1, 15)) AS INT64))")
     out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.nfkc(x STRING) AS (NORMALIZE(x, NFKC))")
+    out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.one_byte_hash(x STRING) AS "
+               "(CODE_POINTS_TO_STRING(ARRAY(SELECT 33 + MOD(c, 94) FROM UNNEST(TO_CODE_POINTS(x)) AS c WITH OFFSET AS i ORDER BY i)))")
     return out
 
 
@@ -196,7 +235,7 @@ class BigQuery:
     `functions`' (project.dataset, the deploy's: functions()). `client`: a google.cloud.bigquery.Client (made when not
     given); `bigquery`: the module its job configurations come from (imported when not given)."""
     name = "bigquery"
-    CALLS = re.compile(r"(?<![\w.`])(" + "|".join([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc"]) + r")\s*\(", re.I)
+    CALLS = re.compile(r"(?<![\w.`])(" + "|".join([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc", "one_byte_hash"]) + r")\s*\(", re.I)
 
     def __init__(self, dataset: str, functions: str, client: object = None, bigquery: object = None) -> None:
         self.bigquery = bigquery or importlib.import_module("google.cloud.bigquery")
