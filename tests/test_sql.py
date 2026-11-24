@@ -32,6 +32,8 @@ def test_what_is_written_instead_translates_and_answers_as_bigquery_would():
     assert isinstance(duck.value("SELECT CAST(1.5 AS FLOAT64) FROM t LIMIT 1"), float)  # a FLOAT64, not a DECIMAL
     assert duck.value("SELECT ARRAY_TO_STRING(['a', NULL, 'b'], ' + ')") == "a + b"
     assert duck.value("SELECT 3 * DIV(5 * 5 - 9, 2)") == 24  # BigQuery's DIV: its sides and itself whole
+    assert duck.value("SELECT ARRAY_TO_STRING(ARRAY(SELECT CAST(i AS STRING) || x FROM UNNEST(['a', 'b']) AS x WITH OFFSET AS i ORDER BY i), ',')") == "0a,1b"  # from 0
+    assert duck.rows("SELECT [10, 20, 30][OFFSET(i)], [10, 20, 30][OFFSET(1)] FROM UNNEST([0, 2]) AS i ORDER BY i") == [(10, 20), (30, 20)]  # OFFSET: from 0
     # REGEXP_EXTRACT: the group's match, also where the pattern holds RE2's own escapes; NULL where nothing matches
     assert duck.rows(r"SELECT REGEXP_EXTRACT('\u3000a12', r'^[\x{3000}]a(\p{Nd}+)$'), REGEXP_EXTRACT('x', r'^(\d+)$'), REGEXP_EXTRACT('a', r'a(b*)')") == [("12", None, "")]
 

@@ -76,10 +76,23 @@ def as_bigquery(node: exp.Expression) -> exp.Expression:
     """Where sqlglot's translation answers otherwise, the node as BigQuery answers it:
     - DIV(a, b): DuckDB's a // b, each side and the whole in brackets (sqlglot writes DIV(x - y, 2) as x - y // 2);
     - a function's ANY TYPE parameter (a record's row, say): untyped, as a DuckDB macro's (sqlglot types it VARIANT);
+    - UNNEST ... WITH OFFSET: counted from 0, as BigQuery counts (sqlglot writes DuckDB's WITH ORDINALITY, from 1);
+    - array[OFFSET(i)] where i isn't a number: DuckDB's array[i + 1] (sqlglot moves a number's base only);
     - REGEXP_EXTRACT: the group's match where the pattern has one (sqlglot reads groups with Python's re, which can't
       read RE2's \\x{3000} or \\p{Nd}), and NULL where it doesn't match (DuckDB's gives '')."""
     if isinstance(node, exp.ColumnDef) and node.args.get("kind") is not None and node.args["kind"].this == exp.DataType.Type.VARIANT:
         node.set("kind", None)
+        return node
+    if isinstance(node, exp.Bracket) and node.args.get("offset") == 0 and not node.expressions[0].is_int:
+        node.set("expressions", [exp.Add(this=exp.Paren(this=node.expressions[0]), expression=exp.Literal.number(1))])
+        node.set("offset", 1)  # counted from 1 now, as DuckDB counts
+        return node
+    if isinstance(node, exp.Select) and not node.args.get("bigquery"):
+        node.set("bigquery", True)
+        for unnest in (u for u in node.find_all(exp.Unnest) if isinstance(u.args.get("offset"), exp.Identifier) and u.parent_select is node):
+            name = unnest.args["offset"].name
+            for col in [c for c in node.find_all(exp.Column) if c.name == name and not c.table and c.parent_select is node]:
+                col.replace(exp.Paren(this=exp.Sub(this=col.copy(), expression=exp.Literal.number(1))))
         return node
     if isinstance(node, exp.IntDiv) and not node.args.get("bigquery"):
         node.set("bigquery", True)  # done: transform visits it again inside the brackets

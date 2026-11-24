@@ -18,6 +18,8 @@
 --    a similarity passes at its threshold or above, a distance at its threshold or below. An edit distance is never
 --    less than the two lengths' difference, nor than the distance of the strings' one_byte_hash copies (records.sql):
 --    those are tested first, the same levels without the call where it can't pass. O(L²) a pair for a fuzzy level.
+--
+-- 3. The rules' fuzzy tests (score.sql): a name, a company, an address or a phone close enough.
 
 
 -- ---------- 1. The intake ----------
@@ -160,6 +162,37 @@ CREATE OR REPLACE TEMP FUNCTION gamma_birth(l ANY TYPE, r ANY TYPE) AS (
       AND cl_damerau_levenshtein_cut(l.birth_date, r.birth_date, 1) <= 1 THEN 1                       -- one digit off
     ELSE 0
   END
+);
+
+
+-- ---------- 3. The rules' fuzzy tests (score.sql) ----------
+
+-- a person's folded name within two edits (Damerau–Levenshtein), a company's within one (Levenshtein), an address close
+-- (Jaro–Winkler 0.9), a phone one digit off (Hamming): each an equality first, then its length, then the function, on
+-- one-byte copies where both have one
+CREATE OR REPLACE TEMP FUNCTION near_name(l ANY TYPE, r ANY TYPE) AS (
+  l.person_name__kana_fold = r.person_name__kana_fold
+  OR (ABS(LENGTH(l.person_name__kana_fold) - LENGTH(r.person_name__kana_fold)) <= 2
+      AND IF(l.person_name__kana_fold_one_byte IS NOT NULL AND r.person_name__kana_fold_one_byte IS NOT NULL,
+             cl_damerau_levenshtein_cut(l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte, 2),
+             cl_damerau_levenshtein_cut(l.person_name__kana_fold, r.person_name__kana_fold, 2)) <= 2)
+);
+
+CREATE OR REPLACE TEMP FUNCTION near_company(l ANY TYPE, r ANY TYPE) AS (
+  l.company_name__nfkc_strip_legal_form_kana_fold = r.company_name__nfkc_strip_legal_form_kana_fold
+  OR (ABS(LENGTH(l.company_name__nfkc_strip_legal_form_kana_fold) - LENGTH(r.company_name__nfkc_strip_legal_form_kana_fold)) <= 1
+      AND IF(l.company_name__nfkc_strip_legal_form_kana_fold_one_byte IS NOT NULL AND r.company_name__nfkc_strip_legal_form_kana_fold_one_byte IS NOT NULL,
+             cl_levenshtein_cut(l.company_name__nfkc_strip_legal_form_kana_fold_one_byte, r.company_name__nfkc_strip_legal_form_kana_fold_one_byte, 1),
+             cl_levenshtein_cut(l.company_name__nfkc_strip_legal_form_kana_fold, r.company_name__nfkc_strip_legal_form_kana_fold, 1)) <= 1)
+);
+
+CREATE OR REPLACE TEMP FUNCTION near_address(l ANY TYPE, r ANY TYPE) AS (
+  l.address__address = r.address__address
+  OR cl_jaro_winkler_cut(l.address__address, r.address__address, CAST(0.9 AS FLOAT64)) >= CAST(0.9 AS FLOAT64)
+);
+
+CREATE OR REPLACE TEMP FUNCTION near_phone(l ANY TYPE, r ANY TYPE) AS (
+  l.phone = r.phone OR (ABS(LENGTH(l.phone) - LENGTH(r.phone)) <= 1 AND cl_hamming_cut(l.phone, r.phone, 1) <= 1)
 );
 
 

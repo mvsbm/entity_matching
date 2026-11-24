@@ -6,6 +6,7 @@ a set of tables: a BigQuery dataset, or a DuckDB database file.
 
     records(engine, files)          stage 1: the input files read and mapped (mapping.sql), made records (records.sql)
     fit(engine)                     stage 2: the model learned on a sample, u on the file (fit.sql; EM in nayose/em.py)
+    score(engine)                   stage 3: the rules' pairs, the keys' candidates and their scores (score.sql)
     stage(engine, name, **values)   a stage's statements in order, each given the values it names (@name)
     statements(text)                a stage file's statements: each ends with a line that ends in ;
     fingerprint()                   what an increment needs unchanged since the full run: the SQL and the values
@@ -82,6 +83,13 @@ def fit(engine) -> None:
     stage(engine, "functions")
     stage(engine, "fit", fit_rows=int(c["fit_rows"]), seed=str(c["seed"]), fit_u_max_pairs=float(c["fit_u_max_pairs"]),
           u_max_pairs=float(c["u_max_pairs"]), settings=json.dumps(c))
+
+
+def score(engine) -> None:
+    """Stage 3 on `engine`, after fit: score.sql, with config.toml [score]. O(N·L + ΣP_g) + O(C·K·L²)."""
+    c = config()["score"]
+    stage(engine, "functions")
+    stage(engine, "score", keep_from=float(c["keep_from"]), search_floor=float(c["search_floor"]), oversized=int(c["oversized"]))
 
 
 def statements(text: str) -> list[str]:

@@ -29,15 +29,23 @@ PRIOR_RULES = {"cif_name": "customer_id + full_name", "cif_company": "customer_i
 def fit(counts: str, settings: str) -> str:
     """The model from fit.sql's counts (counts: its tables, each a list of rows) and config.toml [fit] (settings):
     learned on the sample (learn), its u measured on the file (assemble). Returns each level with m and u as fitted
-    and on the file (file_m, file_u), λ, the sample's size and the notes the report reads."""
+    and on the file (file_m, file_u, and bits: what a score adds), λ and its bits at the file's size (prior_bits), the
+    sample's size and the notes the report reads."""
     c, s = json.loads(counts), json.loads(settings)
     levels = sorted(c["levels"], key=lambda lv: (lv["position"], -lv["gamma"]))
     got = measured(c, s)
     model = learn(levels, got["sample"], c["prior"][0], c["patterns"] or [], s)
     scoring = assemble(model, got["file"])
+    n = got["file"]["n"]
+    lam = min(model["probability"] * (model["fit_rows"] - 1) / max(n - 1, 1), 1 - 1e-9)  # λ rescaled to the file's size: a per-pair rate
     return json.dumps(dict(
-        levels=[dict(lv, file_m=f["m"], file_u=f["u"]) for lv, f in zip(model["levels"], scoring["levels"])],
-        probability=model["probability"], fit_rows=model["fit_rows"], notes=dict(model["notes"], file_adjusted=scoring["notes"]["adjusted"])))
+        levels=[dict(lv, file_m=f["m"], file_u=f["u"], bits=bits(f["m"], f["u"])) for lv, f in zip(model["levels"], scoring["levels"])],
+        probability=model["probability"], fit_rows=model["fit_rows"], prior_bits=math.log2(lam / (1 - lam)),
+        notes=dict(model["notes"], file_adjusted=scoring["notes"]["adjusted"])))
+
+
+def bits(m: float, u: float) -> float:  # a level's weight, as Splink writes it: log2(m/u), each clamped at 1e-300
+    return math.log2(max(m, 1e-300) / max(u, 1e-300))
 
 
 # ---------- u: the counts made shares ----------
