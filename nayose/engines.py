@@ -122,6 +122,9 @@ class DuckDB:
     def frame(self, sql: str, values: dict | None = None) -> pd.DataFrame:
         return self.con.execute(duckdb_sql(sql), values or None).df()
 
+    def columns(self, table: str) -> list[tuple[str, str]]:  # a table's columns: (name, type)
+        return [(r[0], r[1]) for r in self.con.execute(f'DESCRIBE "{table}"').fetchall()]
+
     def put(self, table: str, frame: pd.DataFrame) -> None:  # a small frame as the table `table`, replacing it
         self.con.register("nayose_put", frame)
         try:
@@ -194,6 +197,9 @@ class BigQuery:
 
     def frame(self, sql: str, values: dict | None = None) -> pd.DataFrame:
         return self._job(sql, values).to_dataframe()
+
+    def columns(self, table: str) -> list[tuple[str, str]]:  # a table's columns: (name, type)
+        return [(f.name, f.field_type) for f in self.client.get_table(f"{self.dataset}.{table}").schema]
 
     def put(self, table: str, frame: pd.DataFrame) -> None:  # a small frame as the dataset's table `table` (a load job)
         config = self.bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
