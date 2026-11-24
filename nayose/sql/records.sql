@@ -225,16 +225,21 @@ WHERE person_name IN (SELECT value FROM found WHERE field = 'person_name')
    OR birth_date IN (SELECT value FROM found WHERE field = 'birth_date')
    OR customer_id IN (SELECT value FROM found WHERE field = 'customer_id');
 
-CREATE OR REPLACE TEMP TABLE made_again AS
+CREATE OR REPLACE TEMP TABLE redone_fields AS  -- their fields, before the copies: made again with the batch's, below
+SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
+       birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name, company_name, batch
+FROM records WHERE id IN (SELECT id FROM redone);
+
+DELETE FROM records WHERE id IN (SELECT id FROM redone);
+
+INSERT INTO records
 WITH made AS (  -- the batch's records, and the run's made again: their fields, before the copies
   SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
          birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name, company_name,
          (SELECT batch FROM this_batch) AS batch
   FROM sided
   UNION ALL
-  SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
-         birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name, company_name, batch
-  FROM records WHERE id IN (SELECT id FROM redone)
+  SELECT * FROM redone_fields
 ),
 blanked AS (  -- the placeholders read as missing: a name in person_name with full_name, given_name and any_name
   SELECT * REPLACE (
@@ -294,7 +299,3 @@ SELECT
   company_name__nfkc_strip_legal_form_kana_fold_one_byte, address__address_one_byte_hash,
   NULLIF(SUBSTR(person_name__kana_fold_long_vowel, -3), '') AS person_name__kana_fold_long_vowel_last3, batch
 FROM readings;
-
-DELETE FROM records WHERE id IN (SELECT id FROM redone);
-
-INSERT INTO records SELECT * FROM made_again;

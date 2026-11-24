@@ -15,7 +15,6 @@ import importlib
 import re
 import shutil
 import tempfile
-import unicodedata
 from pathlib import Path
 
 import duckdb
@@ -164,8 +163,10 @@ def one_byte_hash(a: pa.Array) -> pa.Array:
     return pa.array([None if v is None else next(parts) for v in values], pa.string())
 
 
-def nfkc(a: pa.Array) -> pa.Array:  # Unicode NFKC, as BigQuery's NORMALIZE(x, NFKC) gives it
-    return pa.array([None if v is None else unicodedata.normalize("NFKC", v) for v in a.to_pylist()], pa.string())
+def nfkc(a: pa.Array) -> pa.Array:
+    """Unicode NFKC, as BigQuery's NORMALIZE(x, NFKC) gives it: Arrow's (utf8proc), in C++ and the same on every Python.
+    Python's unicodedata 16.0 gives each code point the same but one assigned after it (U+A7F1)."""
+    return pc.utf8_normalize(a.cast(pa.string()), form="NFKC")
 
 
 class DuckDB:
@@ -219,7 +220,8 @@ class DuckDB:
 
     def read_parquet(self, table: str, files: list[Path], columns: list[str] = ()) -> None:
         """Parquet files as the table `table`, each column of each file a name of its own (names), the files' columns
-        joined by name, and each of `columns` they lack, missing. Text that isn't UTF-8 is refused."""
+        joined by name, and each of `columns` they lack, missing. Text that isn't UTF-8 is refused. Copied once: the
+        mapping reads it twice, and a file read in place each time is slower."""
         quote = lambda n: '"' + n.replace('"', '""') + '"'
         parts = [f"SELECT * FROM read_parquet(?) AS t({', '.join(map(quote, names(pq.read_schema(f).names)))})" for f in files]
         self.con.execute(f'CREATE OR REPLACE TABLE "{table}" AS ' + " UNION ALL BY NAME ".join(parts), [str(f) for f in files])
