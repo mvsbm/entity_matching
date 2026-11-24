@@ -236,6 +236,8 @@ def asked(engine, c: dict, record: str | None, values: dict | None, ids: list, u
             shown = [f"{k}={v}" for k, v in values.items() if v not in (None, "")]
             raise InputError(f"{', '.join(shown)}: read as missing, as a file's would be" if shown else "no value given",
                              fix="give a value a record holds: a name, a phone, a postal code")
+    view = next(s for s in statements((SQL / "fit.sql").read_text(encoding="utf-8")) if (m := WRITE.match(s)) and m.group(3) == "compared")
+    engine.run(scratched(view, temp))  # the columns score compares, of these records: fit.sql's view, as a temporary table
     score(engine, lookup=True, scratch=temp, until=until, outside=outside)
     return temp
 
@@ -471,11 +473,12 @@ def run_file(engine, path: Path, scratch: set | None = None, until: str | None =
 
 
 WRITE = re.compile(r"^((?:\s*--[^\n]*\n)*\s*)(CREATE OR REPLACE TEMP TABLE|CREATE OR REPLACE TABLE|CREATE TABLE IF NOT EXISTS|"
-                   r"INSERT INTO|DELETE FROM|UPDATE)\s+(\w+)", re.I)
+                   r"CREATE OR REPLACE VIEW|INSERT INTO|DELETE FROM|UPDATE)\s+(\w+)", re.I)
 
 
 def scratched(sql: str, temp: set) -> str | None:
-    """`sql` as a lookup runs it, so that it never writes the run: a table it makes, a temporary one (added to `temp`);
+    """`sql` as a lookup runs it, so that it never writes the run: a table or a view it makes, a temporary table (added
+    to `temp`: BigQuery's views read the run's tables, never a session's);
     one it would make if missing, skipped where `temp` holds it already (a run's table copied first: lookup's
     asked); a table it changes, refused unless `temp` holds it. A statement reads a temporary table before the run's
     of the same name, on both engines."""

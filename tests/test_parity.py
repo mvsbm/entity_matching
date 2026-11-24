@@ -7,6 +7,7 @@ A change that moves any is a change of results: say so in its pull request, and 
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -102,7 +103,9 @@ def test_a_lookup_writes_none_of_the_run_s_tables_even_without_a_transaction(tmp
         yield
         for (t,) in engine.con.execute("SELECT table_name FROM duckdb_tables() WHERE temporary").fetchall():
             engine.con.execute(f'DROP TABLE temp."{t}"')
-    engine.scratch = session
+    engine.scratch, sent, run_sql = session, [], engine.run
+    engine.run = lambda sql, values=None: (sent.append(sql), run_sql(sql, values))[1]
     assert [nayose.lookup(engine, **a) for a in asks] == rolled_back and run() == before
+    assert not [s for s in sent if re.match(r"(?:\s*--[^\n]*\n)*\s*CREATE (OR REPLACE )?(VIEW|TABLE)", s)]  # every table made temporary: on BigQuery a view reads the run's
     with pytest.raises(ValueError, match="would write the run's scored"):
         nayose.scratched("INSERT INTO scored SELECT * FROM batch_scored", set())
