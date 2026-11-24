@@ -62,15 +62,15 @@ Billed, rows and calls: `scripts/estimate_cost.py` on 1M generated records. Wall
 
 | Stage | Billed | Rows | JavaScript calls | Wall clock |
 |---|---|---|---|---|
-| records | 2,134 MB | 302M | 0 | 9.8 s |
-| fit | 1,137 MB | 517M | 0.41M | 6.0 s |
-| score | 4,674 MB | 635M | 1.11M | 14.8 s |
+| records | 2,144 MB | 302M | 0 | 9.4 s |
+| fit | 1,167 MB | 517M | 0.41M | 5.5 s |
+| score | 4,684 MB | 640M | 1.11M | 9.0 s |
 | decide (the build's) | 161 MB | 15M | 0 | 0.18 s |
-| **build** | **8,106 MB** | **1,470M** | **1.52M** | **30.9 s** |
+| **build** | **8,156 MB** | **1,474M** | **1.52M** | **24.1 s** |
 | match at `keep_from` | 199 MB | 4.1M | 205k | 0.6 s, as its own job |
 
 ```
-dollars(build) = 8,106 × 10⁶ B / 2⁴⁰ × $6.25 = 0.0074 TiB × $6.25 ≈ $0.05
+dollars(build) = 8,156 × 10⁶ B / 2⁴⁰ × $6.25 = 0.0074 TiB × $6.25 ≈ $0.05
 dollars(match) =    199 × 10⁶ B / 2⁴⁰ × $6.25 = 0.0002 TiB × $6.25 ≈ $0.001
 ```
 
@@ -91,7 +91,7 @@ A lookup reads the key index by its keys, and the records it touches by ID. Of a
 
 ## Memory and disk
 
-The run's tables are DuckDB's. Past `memory_limit` (`--compute memory_limit=8GB`), DuckDB spills to `temp_directory`. Python holds only small results: the fit's counts, the model and report.txt's numbers. Peak memory and `run.duckdb`'s size at 1M: 6.7 GB and 1.28 GB at 1,039,995 records, 0.75 GB of it the key index (`every_key`, `rule_keys`: 43.5M rows; about 1.7 TB at 1B in BigQuery's bytes). For files of growing size, `scripts/benchmark.py` builds each one in a process of its own and writes `reports/benchmark.md`: [reports/benchmark.md](../reports/benchmark.md): a build grows like N^0.5 between 13,019 and 1,039,995 records, 3.8 s to 30.9 s, 1.25 GB to 6.7 GB at peak.
+The run's tables are DuckDB's. Past `memory_limit` (`--compute memory_limit=8GB`), DuckDB spills to `temp_directory`. Python holds only small results: the fit's counts, the model and report.txt's numbers. Peak memory and `run.duckdb`'s size at 1M: 6.4 GB and 1.28 GB at 1,039,995 records, 0.75 GB of it the key index (`every_key`, `rule_keys`: 43.5M rows; about 1.7 TB at 1B in BigQuery's bytes). For files of growing size, `scripts/benchmark.py` builds each one in a process of its own and writes `reports/benchmark.md`: [reports/benchmark.md](../reports/benchmark.md): a build grows like N^0.35 between 13,019 and 1,039,995 records, 5.1 s to 24.1 s, 1.29 GB to 6.4 GB at peak. A small file's build is mostly the fit's u sample, about ten million pairs at any size.
 
 ## What keeps the cost down
 
