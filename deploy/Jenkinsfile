@@ -85,8 +85,16 @@ pipeline {
       steps {
         withCredentials([file(credentialsId: 'nayose-prod-runtime', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
           sh '''
+            set +x  # a lookup's ARGS may hold a record's values: the console shows no command
             python3 -m venv .venv
             .venv/bin/python -m pip install --quiet -r requirements.txt -r deploy/requirements.txt
+            if [ "$JOB" = lookup ]; then  # typed values mapped, and the run's method checked, with prod's mapping
+              trap 'rm -f mapping.sql' EXIT
+              export CLOUDSDK_CONFIG="$WORKSPACE/.gcloud-run"
+              gcloud auth login --cred-file="$GOOGLE_APPLICATION_CREDENTIALS" --quiet
+              gcloud secrets versions access latest --secret=nayose-mapping --project="$PROD_PROJECT" > mapping.sql
+              export NAYOSE_MAPPING="$PWD/mapping.sql"
+            fi
             .venv/bin/python deploy/run.py "$PROD_PROJECT.nayose" "$JOB" $ARGS > report.txt
           '''
           archiveArtifacts artifacts: 'report.txt', allowEmptyArchive: true  // build's and update's: no record's value in it

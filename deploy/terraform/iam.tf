@@ -1,5 +1,6 @@
 # Who does what, each with the least it needs (both are Jenkins', deploy/Jenkinsfile):
-#   nayose-runtime    the jobs (deploy/run.py): reads the bucket's inputs, writes the run's tables, calls its procedures
+#   nayose-runtime    the jobs (deploy/run.py): reads the bucket's inputs, writes the run's tables, calls its procedures,
+#                     reads the column mapping (a lookup's)
 #   nayose-deployer   the deploy (deploy/deploy.py): makes the run's functions and procedures, reads the column mapping
 
 resource "google_service_account" "runtime" {
@@ -64,6 +65,12 @@ resource "google_secret_manager_secret_iam_member" "deployer" {
   secret_id = google_secret_manager_secret.mapping.id
   role      = "roles/secretmanager.secretAccessor"
   member    = google_service_account.deployer.member
+}
+
+resource "google_secret_manager_secret_iam_member" "runtime" {  # a lookup maps typed values as prod's builds do
+  secret_id = google_secret_manager_secret.mapping.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = google_service_account.runtime.member
 }
 
 resource "google_bigquery_dataset_iam_member" "runtime_sandbox" {
