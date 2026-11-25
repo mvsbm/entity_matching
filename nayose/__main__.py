@@ -184,7 +184,6 @@ def update(a: argparse.Namespace) -> dict:
                 raise InputError(f"{a.given}: no new record to add ({', '.join(f'{n:,} {r}' for r, n in aside)})",
                                  fix="give the records set aside IDs, one per record")
             raise NothingNew(dict(records=before, added=0, seconds=round(sum(steps.values()), 1), steps=steps))
-        timed(steps, "fit", nayose.fit, engine, False)
         timed(steps, "score", nayose.score, engine)
         timed(steps, "decide", nayose.decide, engine, [])
         report(engine, out, steps, "update")

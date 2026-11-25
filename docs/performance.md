@@ -30,14 +30,13 @@ What a run costs, and how each figure is measured. BigQuery bills in one of two 
 |---|---|---|---|
 | records | `records.sql` | O(Δ·L) + O(N) | each record of the batch is read and standardized; placeholders are counted over the whole run |
 | fit (a build) | `fit.sql`, `em.py` | O(n + P_em·K) + O(N + S·K) | EM learns on a fixed sample. u is counted exactly for the equality and one-edit levels (by value counts, never pair by pair) and sampled for the rest |
-| fit (an update) | `fit.sql` | O(N) + O(S·K) for a stale comparison | the build's model is kept; u is counted again exactly, and the file is sampled only when a comparison has gone stale |
 | score | `score.sql` | O(Δ·L + N·L) + O(Δ·b + C_Δ·K·L²) | the batch's keys, and those of the records made again, join the key index; the index is scanned for the blocks the batch's keys name; then those blocks are joined and their pairs compared |
 | decide | `decide.sql` | O(D + N) | connected components over the match decisions; then every record placed |
 | match | `match.sql` | O(C + P·F) | a scan of the scored pairs; those kept are joined to their records |
 | lookup | `lookup.sql` | O(G) + O(G·b + C·K·L²) | the record's keys made alone; the key index read by them; the record scored against its blocks' records alone |
 | report | `report.sql` | O(N·F) + O(C) | each field's fill; the batch's pairs by band |
 
-A build is O(N·L + n + S·K + ΣP + C·K·L²): linear in N while each key's pairs per record stay flat as the file grows (report.txt's BLOCKS shows them). An update's expensive work grows with its batch. Its O(N) part is scans: the run's records for the placeholders and u, and every record's keys.
+A build is O(N·L + n + S·K + ΣP + C·K·L²): linear in N while each key's pairs per record stay flat as the file grows (report.txt's BLOCKS shows them). An update's expensive work grows with its batch. Its O(N) part is scans: the run's records for the placeholders, and the key index for the blocks its keys name.
 
 ## Measuring BigQuery's cost on DuckDB
 
@@ -115,4 +114,4 @@ Every speed-up keeps every table the same: `tests/test_parity.py` holds each job
 - **On DuckDB, its own functions** where both strings are one byte per character, and a comparison told its threshold stops once the answer is known (`cl_*_cut`). BigQuery computes it in full.
 - **Each distinct name scored once** by the name model, however many records share it.
 - **A row a function reads comes from a narrow table:** `compared`, or a match's own columns. BigQuery may bill a row passed whole as every column of its table (`records` has 37), so `tests/test_sql.py` refuses a row of `records` passed to a function.
-- **An update touches its batch:** only the pairs touching it are scored, and the file is sampled for u only when a comparison has gone stale: and a batch that brings no new placeholder reads no record to make again: a 1% update at 1M bills 3,982 MB, not 4,691, and makes 20,653 comparison calls, not 352,909; 7.5 s on DuckDB, not 10.0. A statement an update needn't run says so (`-- when:`), and isn't run, since BigQuery bills a statement's scans whatever it returns.
+- **An update touches its batch:** only the pairs touching it are scored, with the model the build left (the fit doesn't run), and a batch that brings no new placeholder reads no record to make again: a 1% update at 1M bills about 3,460 MB, makes 35,584 comparison calls and takes 3.4 s on DuckDB. A statement an update needn't run says so (`-- when:`), and isn't run, since BigQuery bills a statement's scans whatever it returns.

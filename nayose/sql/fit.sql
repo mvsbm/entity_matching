@@ -5,27 +5,26 @@
 -- function on both engines) learns the model from the counts. Every count is an exact integer. The comparisons are
 -- functions.sql's. O(n + P_prior + P_em·K) on the sample of n records, and O(N + max_pairs·K) for u on each scope.
 --
--- An update (@refit false) keeps the model that the run's build fitted, so it draws no sample and runs no EM. It
--- measures u again on the run's records, and fit_model starts from the stored fit. It samples a comparison's u again
--- only once the comparison has gone stale.
+-- A build runs this stage; an update doesn't, and scores with the model the build left. A build given a model
+-- (@refit false: scripts/benchmark.py's, fitted on another file) draws no sample and runs no EM, and measures that
+-- model's u on its records.
 --
 -- A statement that follows a `-- when: <condition>` line runs only if the condition holds: run_file checks it
 -- locally, and the deployed procedure wraps the statement in IF … END IF.
 --
--- Reads: records, levels (functions.sql), and on an update fit and u_sampled as the last job left them.
+-- Reads: records, levels (functions.sql), and with @refit false the model given (fit).
 -- Values: @fit_rows, @seed, @fit_u_max_pairs, @u_max_pairs and @settings come from config.toml [fit]. @fit_rows is the
 -- sample's size, in records. @seed seeds the hash that draws u's sampled pairs. @fit_u_max_pairs and @u_max_pairs are
 -- about how many pairs u samples on the sample and on the file. @settings is all of [fit] as JSON, for fit_model.
--- @refit is true for a build, which learns the model again.
+-- @refit is false for a build given a model, which learns none.
 -- Writes:
 --   compared     a view of the columns that the fit and the scores read of a record
---   fit_sample   the sample, empty on an update
+--   fit_sample   the sample, empty for a build given a model
 --   u_records    a view of each scope's records
---   u_sampled    the sampled pairs' levels, counted. An update keeps the last job's unless it samples again.
 --   model        each level's m and u as fitted on the sample, its file_m and file_u on the file, and its bits,
 --                log2(file_m / file_u), which a score adds
 --   fit          λ (probability), the sample's size, the file's size, prior_bits (the prior in bits at the file's
---                size), the notes the report reads, and fitted (fit_model's whole answer, which an update starts from)
+--                size), the notes the report reads, and fitted (fit_model's whole answer)
 
 CREATE TABLE IF NOT EXISTS fit (probability FLOAT64, fit_rows INT64, records INT64, prior_bits FLOAT64, notes STRING,
                                 fitted STRING);
@@ -50,7 +49,7 @@ SELECT compared.* FROM compared
 JOIN (SELECT id FROM records ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_rows) USING (id);
 
 -- when: NOT @refit
--- An update learns nothing, so its sample is empty.
+-- A build given a model learns none, so its sample is empty.
 CREATE OR REPLACE TABLE fit_sample AS SELECT * FROM compared WHERE FALSE;
 
 
@@ -256,8 +255,7 @@ FROM u_records GROUP BY scope;
 --     and the levels are counted. A comparison isn't sampled if all its levels are counted exactly. That happens if
 --     its exact and one-edit levels both hold pairs, and some pairs are left for its else level. u_plan tells, for
 --     each scope, whether phone, cif and birth are sampled. The other comparisons have fuzzy levels, so they are
---     always sampled. An update samples only if refresh would sample some comparison again (em.py's stale, asked
---     through resampled). Otherwise its sample would go unused.
+--     always sampled.
 --     A comparison that no record of a scope fills has no exact count (u_counted), so it is sampled, and its u is
 --     the bound, as em.py gives a level that no pair reached. The joins are LEFT, so a scope that fills none of
 --     phone, cif and birth keeps its row, and its other comparisons' pairs are still sampled.
@@ -275,24 +273,8 @@ LEFT JOIN u_counted AS c ON c.scope = o.scope AND c.comparison = o.comparison AN
 LEFT JOIN u_near AS n ON n.scope = o.scope AND n.comparison = o.comparison
 GROUP BY o.scope;
 
--- when: NOT @refit
-CREATE OR REPLACE TEMP TABLE u_again AS  -- an update samples these comparisons again. Mostly there are none.
-SELECT resampled(TO_JSON_STRING(STRUCT(
-  (SELECT ARRAY_AGG(t) FROM levels AS t) AS levels, (SELECT ARRAY_AGG(t) FROM u_outside AS t) AS outside,
-  (SELECT ARRAY_AGG(t) FROM u_counted AS t) AS counted, (SELECT ARRAY_AGG(t) FROM u_near AS t) AS near,
-  (SELECT ARRAY_AGG(t) FROM u_filled AS t) AS filled, (SELECT ARRAY_AGG(t) FROM u_plan AS t) AS plan
-)), @settings, (SELECT fitted FROM fit)) AS comparisons;
-
--- when: @refit
-CREATE OR REPLACE TEMP TABLE u_again AS  -- a build always samples (em.py's learn needs it), so it lists them all
-SELECT 'name,company,address,phone,cif,birth' AS comparisons;
-
--- u_sampled starts empty if no job has drawn a sample yet.
-CREATE TABLE IF NOT EXISTS u_sampled (scope STRING, comparison STRING, gamma INT64, pairs INT64);
-
 -- k records make k(k−1)/2 pairs, so about max_pairs pairs take k = (√(8·max_pairs + 1) + 1) / 2 of a scope's n
 -- records. Each scope draws the share k / n, as Splink does, and all its records if the share is 1 or more.
--- when: (SELECT comparisons FROM u_again) <> ''
 CREATE OR REPLACE TEMP TABLE u_drawn AS
 WITH share AS (
   SELECT 'sample' AS scope,
@@ -306,7 +288,6 @@ WHERE share >= 1 OR MOD(er_hash(id || '_' || @seed), 1000000000) < GREATEST(1, R
 
 -- Each pattern of levels that the drawn pairs make is counted as the pairs are made, so no pair is stored. A
 -- comparison that u_plan doesn't sample is NULL.
--- when: (SELECT comparisons FROM u_again) <> ''
 CREATE OR REPLACE TEMP TABLE u_patterns AS
 WITH paired AS (  -- a pair keeps its two records whole, and name_score runs once a pair for name_level
   SELECT l.scope, l, r, name_score(l, r) AS s_name
@@ -320,8 +301,7 @@ SELECT
 FROM paired AS p JOIN u_plan AS plan ON plan.scope = p.scope
 GROUP BY 1, 2, 3, 4, 5, 6, 7;
 
--- when: (SELECT comparisons FROM u_again) <> ''
-CREATE OR REPLACE TABLE u_sampled AS
+CREATE OR REPLACE TEMP TABLE u_sampled AS
 SELECT scope, 'name' AS comparison, name AS gamma, SUM(pairs) AS pairs FROM u_patterns GROUP BY scope, name
 UNION ALL SELECT scope, 'company', company, SUM(pairs) FROM u_patterns GROUP BY scope, company
 UNION ALL SELECT scope, 'address', address, SUM(pairs) FROM u_patterns GROUP BY scope, address
@@ -330,8 +310,8 @@ UNION ALL SELECT scope, 'cif', cif, SUM(pairs) FROM u_patterns WHERE cif IS NOT 
 UNION ALL SELECT scope, 'birth', birth, SUM(pairs) FROM u_patterns WHERE birth IS NOT NULL GROUP BY scope, birth;
 
 
--- 5. fit_model learns the model from every count above, passed as one JSON text, and returns it as one JSON text. An
---    update also passes the stored fit, which fit_model starts from. The answer holds each level's m and u as fitted
+-- 5. fit_model learns the model from every count above, passed as one JSON text, and returns it as one JSON text. A
+--    build given a model passes it (fit), which fit_model keeps. The answer holds each level's m and u as fitted
 --    on the sample, its file_m and file_u on the file, and its bits from those, which the scores add.
 CREATE OR REPLACE TEMP TABLE learned AS
 SELECT fit_model(TO_JSON_STRING(STRUCT(

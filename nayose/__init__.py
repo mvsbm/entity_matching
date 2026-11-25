@@ -6,7 +6,7 @@ BigQuery runs the SQL as written. DuckDB, on a laptop or in CI, runs it after sq
 
 The jobs:
     build(engine, files)            make a run from its first batch: records, fit, score, decide
-    update(engine, files)           add a batch: its records, u measured again, the pairs touching it scored, decide
+    update(engine, files)           add a batch: its records, its pairs scored with the build's model, decide
     decide(engine, files)           store people's decisions and make the entities from them (decide.sql)
     match(engine, threshold)        list the pairs at a threshold for people, less those they said differ (match.sql)
     lookup(engine, record|values)   find the entities a record would join, as an update of it alone, writing nothing
@@ -218,7 +218,7 @@ def values_of(name: str, refit: bool = True, lookup: bool = False) -> dict:
     """Return the values stage `name` reads as @name, from config.toml.
 
     A run here passes them as query parameters; a BigQuery procedure declares them (engines.procedures). `refit` is
-    True for a build, False for an update, which keeps the model. With `lookup`, the batch is a record asked about.
+    True for a build, False for a build given a model, which keeps it. With `lookup`, the batch is a record asked about.
     match's @threshold, and the values of lookup.sql and report.sql, come from their jobs.
     """
     c = config()
@@ -257,7 +257,7 @@ def values_of(name: str, refit: bool = True, lookup: bool = False) -> dict:
 def fit(engine, refit: bool = True) -> None:
     """Run stage 2 on `engine`, after records: fit.sql, with config.toml's [fit].
 
-    With `refit` False (an update), the build's model is kept and its u measured again on the run's records.
+    With `refit` False (a build given a model), the model in the table fit is kept and its u measured on the records.
     O(n + S·K) on the sample of n records, S sampled pairs and K comparisons, and O(N + S·K) on the file.
     """
     stage(engine, "functions")
@@ -506,7 +506,7 @@ def build(engine, files: list, model: str | None = None, timed=run_stage) -> Non
                    "CAST(NULL AS INT64) AS fit_rows, CAST(NULL AS INT64) AS records, "
                    "CAST(NULL AS FLOAT64) AS prior_bits, "
                    "CAST(NULL AS STRING) AS notes, @fitted AS fitted",
-                   {"fitted": json.dumps({**json.loads(model), "basis": None})})
+                   {"fitted": model})
     timed("fit", fit, engine, model is None)
     timed("score", score, engine)
     timed("decide", decide, engine, [])
@@ -516,14 +516,13 @@ def build(engine, files: list, model: str | None = None, timed=run_stage) -> Non
 def update(engine, files: list) -> None:
     """Add a batch to the run on `engine`.
 
-    The batch's records are made (one already in the run is set aside), the build's model has its u measured again on
-    every record, the pairs touching the batch are scored, and the entities are made again.
-    O(Δ·(L + b) + C_Δ·K·L²), plus O(N) scans of the run's records and keys.
+    The batch's records are made (one already in the run is set aside), the pairs touching the batch are scored with
+    the model the build left, and the entities are made again. O(Δ·(L + b) + C_Δ·K·L²), plus O(N) scans of the run's
+    records and keys.
     """
     unchanged(engine, "build the run again with them (python -m nayose build FILE --out RUN --overwrite), "
                       "or update with the code the build ran")
     records(engine, files)
-    fit(engine, refit=False)
     score(engine)
     decide(engine, [])
 
@@ -750,11 +749,10 @@ def report_steps(counts, notes: dict, steps: dict[str, float], job: str) -> list
     def n(column: str) -> str:
         return number(counts[column])
 
-    kept = " · the build's model" if job != "build" else ""
     facts = dict(
         records=f"records {n('added')} · set_aside {n('set_aside')} · companies {n('companies')} · "
                 f"persons {n('persons')} · not sure {n('unsure')}",
-        fit=f"fit_rows {notes['fit_rows']:,}{kept} · sampled_again {len(notes.get('sampled_again', [])):,}",
+        fit=f"fit_rows {notes['fit_rows']:,}",
         score=f"candidates {n('candidates')} · stored {n('scored')} · rule pairs {n('ruled')} · "
               f"oversized_kept {n('oversized_kept')} · oversized_skipped {n('oversized_skipped')}",
         decide=f"decided {n('decided')} · entities {n('entities')}")
@@ -774,8 +772,11 @@ def report_model(engine, notes: dict) -> list[str]:
     levels = engine.frame("SELECT comparison, label, file_m, file_u, bits FROM model ORDER BY position, gamma DESC")
     prior = json.loads(fit_row["fitted"])["prior_bits"]
     skipped = f"; learned nothing about {', '.join(notes['skipped'])}" if notes.get("skipped") else ""
-    head = (f"MODEL  (prior {prior:.2f} bits at {number(fit_row['records'])} records; "
+    head = (f"MODEL  (prior {prior:.2f} bits at the build's {number(fit_row['records'])} records; "
             f"fitted on {number(fit_row['fit_rows'])} records{skipped})")
+    grown = engine.value("SELECT COUNT(*) FROM records") / max(int(fit_row["records"]), 1) - 1
+    if grown >= float(config()["fit"]["rebuild_after"]):  # a pair drifts k·log2(1 + grown) bits: k exact levels
+        head += f"\n  the run has grown {grown:.0%} since its build, whose u it scores with: build again"
     em = []
     if notes.get("em_pairs"):
         em.append("  EM learned from: " + " · ".join(f"{k} {v:,} pairs" for k, v in notes["em_pairs"].items()))

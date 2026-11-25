@@ -133,7 +133,7 @@ An exact address would defeat F2's purpose, which is address typos. The first th
 - **Counted** for a one-edit level right after them on the same column: the CIF ID, the phone and the birth date "one digit off". The distinct values are joined on their one-deletion keys, so these three comparisons need no sample at all.
 - **Sampled** for the other levels of the name, the company and the address, from 10⁷ random pairs, every one of them used.
 
-The gate on oversized blocks and the scores both use these u. The fit costs O(n + S·K + P_em·K) and u on the file O(N + S·K): fixed, apart from the O(N) counts. A run fits on the file it resolves, then scores the whole file, with λ rescaled to the file's size ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)). An update keeps the build's model and measures u again on all the run's records before it scores its batch: the counted levels are counted again, and a sampled comparison is sampled again only once its drift outgrows its sampling error.
+The gate on oversized blocks and the scores both use these u. The fit costs O(n + S·K + P_em·K) and u on the file O(N + S·K): fixed, apart from the O(N) counts. A run fits on the file it resolves, then scores the whole file, with λ rescaled to the file's size ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)). An update scores its batch with the build's model, as a saved model is reused; report.txt says to build again once the run has grown by a tenth, which measures u on the run as it is.
 
 **Not chosen, to keep TF-IDF:**
 
@@ -249,7 +249,7 @@ On train, every true pair that could reach the threshold shares a key, at its si
 - `nayose/config.toml` `[score]`: `keys` (the generators a run uses, by name), `oversized` (64), `search_floor` (0 bits), `keep_from` (0 bits: the pairs a run keeps)
 - `nayose/sql/records.sql`, 6. The copies: the fields behind the compound keys (`any_name__initial`, `postal_code__first3`, `address__address_first3`, `person_name__kana_fold_long_vowel_last3`)
 - `nayose/sql/fit.sql`: 1. The sample (`fit_sample`, whole postal areas by hash); 4. u: 4b `u_counted` (the leading exact levels, from value counts), 4c `u_near` (a one-edit level after them, through one-deletion keys), 4e `u_drawn` and `u_patterns` (the rest sampled), 4d `u_filled` (what bounds a level no sampled pair reached); `config.toml` `[fit]`: `fit_rows`, `fit_u_max_pairs`, `u_max_pairs`
-- `nayose/em.py`: `exact_u`, `sampled_u`, `u_bound`, `assemble` (u on the file), `refresh` and `stale_u` (an update's u)
+- `nayose/em.py`: `exact_u`, `sampled_u`, `u_bound`, `assemble` (u on the file)
 - `scripts/benchmark.py`: `cost`, whole builds on generated files from 13,000 to a million records
 
 ## Further reading

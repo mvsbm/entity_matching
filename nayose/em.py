@@ -10,12 +10,11 @@ The model has three kinds of number:
         share a key, each session starting from what the sessions before it learned. A level's m is the median.
 
 After learning, u is measured again on the file to be scored: in a bigger file, a field whose values grow with it
-agrees by chance less often. An update keeps the model and measures u again on the run's records (refresh): every
-level counted exactly is counted again, and a sampled comparison is sampled again only once its drift outweighs its
-sampling error.
+agrees by chance less often. An update scores with the model as the build left it, as a saved model is reused;
+building again measures u on the run as it has grown.
 
-fit() and resampled() are pure functions, JSON in and JSON out, using the standard library only. fit.sql calls them
-as fit_model and resampled, on BigQuery as Python UDFs (engines.functions) and on DuckDB alike. Cost:
+fit() is a pure function, JSON in and JSON out, using the standard library only. fit.sql calls it as fit_model, on
+BigQuery as a Python UDF (engines.functions) and on DuckDB alike. Cost:
 O(rounds · patterns · K) for K comparisons.
 """
 import copy
@@ -45,20 +44,17 @@ def fit(counts: str, settings: str, stored: str | None = None) -> str:
 
     `counts` holds fit.sql's tables, each a list of rows; `settings` is config.toml's [fit]. Without `stored` (a build),
     the model is learned on the sample (learn) and its u measured on the file (assemble). With `stored`, what fit
-    returned for an earlier job, there are two cases. If it has a basis (an update), the model is kept and its u
-    measured again on the run's records (refresh). If its basis is None (a model fitted on another file, as
-    scripts/benchmark.py fits one on a train split), the model is kept and its u measured on this file whole.
+    returned for another file (as scripts/benchmark.py fits one on a train split), the model is kept and its u
+    measured on this file whole.
 
     The result holds each level with m and u as fitted and as measured on the file (file_m, file_u, and bits: what a
-    score adds), λ and its bits at the file's size (prior_bits), the sample's size, the notes the report reads, and
-    what an update needs: the model as fitted and each comparison's basis (u_basis).
+    score adds), λ and its bits at the file's size (prior_bits), the sample's size, the notes the report reads, and the
+    model as fitted.
     """
     tables, config = json.loads(counts), json.loads(settings)
     levels = sorted(tables["levels"], key=in_order)
     measures = measured(tables, config)
     kept = json.loads(stored) if stored is not None else None
-    if kept is not None and kept["basis"] is not None:
-        return refresh(kept, measures["file"])
     if kept is not None:
         model = kept["model"]
     else:
@@ -66,103 +62,24 @@ def fit(counts: str, settings: str, stored: str | None = None) -> str:
     file = measures["file"]
     exact = exact_u(levels, file)
     sampled = sampled_u(levels, file, [x for x in comparisons(levels) if ELSE not in exact.get(x, {})])
-    basis = u_basis(file, sampled, exact, comparisons(levels))
-    return fitted(model, assemble(model, file, sampled), file["n"], basis, [])
+    return fitted(model, assemble(model, file, sampled), file["n"])
 
 
-def refresh(stored: dict, counts: dict) -> str:
-    """Return an update's model: the stored one, with its u measured again on the run's records.
-
-    Every level counted exactly is counted again. A comparison is sampled again only once stale_u finds it stale; the
-    others keep their sample. O(K) on the counts.
-    """
-    model, basis = stored["model"], stored["basis"]
-    levels, n = model["levels"], counts["n"]
-    exact = exact_u(levels, counts)
-    again, check = stale(levels, basis, exact, n)
-    basis = {**basis, **u_basis(counts, sampled_u(levels, counts, again), exact, again)}
-    for name, x in check.items():
-        basis[name]["last_check"] = {k: v if math.isfinite(v) else None for k, v in x.items()}
-    scoring = assemble(model, counts, {name: b["sampled"] for name, b in basis.items()})
-    return fitted(model, scoring, n, basis, [dict(comparison=x, **basis[x]["last_check"]) for x in again])
-
-
-def stale(levels: list[dict], basis: dict, exact: dict, n: int) -> tuple[list[str], dict]:
-    """Return the comparisons an update samples again, and stale_u's check of every comparison.
-
-    A comparison is sampled again when stale_u finds it stale and its else level isn't counted exactly.
-    """
-    check = stale_u(levels, basis, exact, n)
-    again = [x for x in comparisons(levels)
-             if check[x]["drift_bits"] > check[x]["se_bits"] and ELSE not in exact.get(x, {})]
-    return again, check
-
-
-def resampled(counts: str, settings: str, stored: str | None = None) -> str:
-    """Return the comparisons whose u an update's fit samples, comma-separated, from fit.sql's exact counts alone.
-
-    For an update, these are the comparisons refresh will sample again (stale). For a build given a model, they are
-    the comparisons not counted to their else level. An empty string means the sample would go unused, so fit.sql
-    draws none. A build that fits its own model always samples, so it doesn't call this.
-    """
-    tables, config = json.loads(counts), json.loads(settings)
-    file = measured(tables, config)["file"]
-    if stored is not None and (kept := json.loads(stored))["basis"] is not None:
-        levels = kept["model"]["levels"]
-        return ",".join(stale(levels, kept["basis"], exact_u(levels, file), file["n"])[0])
-    levels = sorted(tables["levels"], key=in_order)
-    exact = exact_u(levels, file)
-    return ",".join(x for x in comparisons(levels) if ELSE not in exact.get(x, {}))
-
-
-def fitted(model: dict, scoring: dict, n: int, basis: dict, again: list[dict]) -> str:
+def fitted(model: dict, scoring: dict, n: int) -> str:
     """Return what fit gives back, as JSON: the model as scored on a file of `n` records."""
     # λ is a per-pair rate, so it is rescaled to the file's size (score.sql's weights rescale it the same way)
     lam = min(model["probability"] * (model["fit_rows"] - 1) / max(n - 1, 1), 1 - 1e-9)
     levels = [dict(lv, file_m=f["m"], file_u=f["u"], bits=bits(f["m"], f["u"]))
               for lv, f in zip(model["levels"], scoring["levels"])]
-    notes = dict(model["notes"], file_adjusted=scoring["notes"]["adjusted"], sampled_again=again)
+    notes = dict(model["notes"], file_adjusted=scoring["notes"]["adjusted"])
     return json.dumps(dict(levels=levels, probability=model["probability"], fit_rows=model["fit_rows"], records=n,
-                           prior_bits=math.log2(lam / (1 - lam)), notes=notes, model=model, basis=basis))
-
-
-def u_basis(counts: dict, sampled: dict, exact: dict, names: list[str]) -> dict:
-    """Return what a later update needs to tell whether these comparisons' sampled u went stale.
-
-    That is the sampled u, the u counted exactly alongside, the record count, and how many sampled pairs had the
-    comparison filled.
-    """
-    return {x: dict(sampled=sampled.get(x, {}), exact=exact.get(x, {}), n=counts["n"], pairs=filled_pairs(counts, x))
-            for x in names}
+                           prior_bits=math.log2(lam / (1 - lam)), notes=notes, model=model))
 
 
 def filled_pairs(counts: dict, name: str) -> float:
     """Return about how many sampled pairs have the comparison filled on both sides."""
     n = counts["n"]
     return min(counts["max_pairs"], n * (n - 1) / 2) * (counts["filled"][name] / n if n else 0.0) ** 2
-
-
-def stale_u(levels: list[dict], basis: dict, exact_now: dict, n: int) -> dict[str, dict[str, float]]:
-    """Return, for each comparison, how far its sampled u have likely drifted, and how precise its sample was.
-
-    drift_bits is the drift of the comparison's leading exact level, counted exactly now and then; without one, it is
-    log2(N now / N then), as an equality level can't fall faster than that. se_bits is the sampling error of its most
-    precise sampled level, 1/(ln 2·√hits). Once drift > se, staleness outweighs the sample's own noise. A comparison
-    never sampled has an infinite drift.
-    """
-    out = {}
-    for name in comparisons(levels):
-        b = basis.get(name)
-        if b is None:
-            out[name] = dict(drift_bits=math.inf, se_bits=0.0)
-            continue
-        lead = next(iter(b["exact"]), None)
-        now = exact_now.get(name, {}).get(lead) if lead else None
-        drift = abs(math.log2(now / b["exact"][lead])) if now else math.log2(max(n, 2) / max(b["n"], 2))
-        hits = [u * b["pairs"] for label, u in b["sampled"].items() if label != ELSE and label not in b["exact"]]
-        se = min((1 / (math.log(2) * math.sqrt(h)) for h in hits if h >= 1), default=math.inf)
-        out[name] = dict(drift_bits=drift, se_bits=se)
-    return out
 
 
 def bits(m: float, u: float) -> float:
@@ -176,7 +93,7 @@ def measured(tables: dict, config: dict) -> dict[str, dict]:
     """Return fit.sql's u counts by scope (sample, file), with each scope's max_pairs: what its sample drew from."""
     out = {}
     for scope, most in (("sample", float(config["fit_u_max_pairs"])), ("file", float(config["u_max_pairs"]))):
-        def rows_of(table: str) -> list[dict]:  # a missing table has no rows (resampled runs before sampling)
+        def rows_of(table: str) -> list[dict]:
             return [r for r in tables.get(table) or [] if r["scope"] == scope]
         filled = next(iter(rows_of("filled")), {"records": 0})
         out[scope] = dict(n=filled["records"], max_pairs=most, filled=filled, plan=next(iter(rows_of("plan")), {}),

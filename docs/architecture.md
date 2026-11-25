@@ -100,7 +100,7 @@ the BigQuery functions and procedures from the same files.*
 | `nayose/__init__.py` | one function per stage and job (`records`, `fit`, `score`, `decide`, `match`, `lookup`, `build`, `update`), `values_of` (what each stage reads from `config.toml`), `stage` (a file's statements in order) and `report_text` |
 | `nayose/engines.py` | `DuckDB` and `BigQuery`, which answer the same verbs (`run`, `rows`, `value`, `frame`, `put`, `read_parquet`); the translation (`duckdb_sql`, `AVOID`); the deploy's statements (`functions`, `procedures`) |
 | `nayose/sql/*.sql` | the method. Each header says what the stage does, its cost, and the tables it reads and writes |
-| `nayose/em.py`, `nayose/entities.py` | `fit_model`, `resampled` and `entities_of`: pure functions, JSON in and JSON out |
+| `nayose/em.py`, `nayose/entities.py` | `fit_model` and `entities_of`: pure functions, JSON in and JSON out |
 | `nayose/strings.js` | the character-level comparisons as BigQuery runs them |
 | `nayose/config.toml`, `nayose/mapping.sql` | the values, and the input's columns ([4](#4--values-and-columns)) |
 | `deploy/` | `deploy.py`, `run.py`, `smoke.py`, the Jenkinsfile and the Terraform ([10](#10--on-bigquery)) |
@@ -114,13 +114,13 @@ flowchart TB
   values[/"config.toml: each stage's values"/]
   names[/"name_weights: config/kind_names.npz"/]
   records["records.sql: set aside, standardize, tell the kind,<br/>read placeholders as missing, make the copies<br/>O(Δ·L) + O(N)"]
-  fit["fit.sql + fit_model (em.py): sample, λ, EM, u on the sample and the file;<br/>an update keeps the build's model and measures u again<br/>O(n + P·K) + O(N + max_pairs·K)"]
+  fit["fit.sql + fit_model (em.py): sample, λ, EM, u on the sample and the file;<br/>an update doesn't run it: it scores with the build's model<br/>O(n + P·K) + O(N + max_pairs·K)"]
   score["score.sql: rules, the keys' candidates, the gate on big blocks,<br/>the bound, the scores of the pairs touching the batch<br/>O(Δ·b + C·K·L²) + O(N·L)"]
   decide["decide.sql + entities_of (entities.py): decisions stored,<br/>entities by connected components<br/>O(D + N)"]
   report["report.sql: the run's numbers, no record's value<br/>O(N·F + C)"]
   match["match.sql (the match job): the pairs at a threshold,<br/>less those people said differ<br/>O(C + P·F)"]
   t_records[("records · set_aside · placeholders")]
-  t_fit[("fit_sample · u_sampled · model · fit")]
+  t_fit[("fit_sample · model · fit")]
   t_score[("rule_keys · every_key (the key index)<br/>cands · scored")]
   t_decide[("decisions · gold")]
   t_matched[("matched")]
@@ -209,7 +209,7 @@ job loads:
 | Stage | Tables |
 |---|---|
 | records | `records` (a record a row: its fields, kind, copies and `batch`), `set_aside`, `placeholders`, `name_weights` |
-| fit | `fit_sample` (read by the view `u_records`), `u_sampled`, `model`, `fit` (λ, sizes, notes, and `fitted`: the model whole, which an update starts from) |
+| fit | `fit_sample` (read by the view `u_records`), `model`, `fit` (λ, sizes, notes, and `fitted`: the model whole, which an update scores with) |
 | score | `rule_keys` and `every_key` (each record's keys: the index lookups read), `cands` (the last batch's candidates, which `scripts/key_quality.py` reads), `scored` (each pair once: `id_l`, `id_r`, its levels, `match_weight`, `match_probability`, `rule`, `sources`) |
 | decide | `decisions` (every decision that changed its pair, the latest flagged), `gold` (each record's `cluster_id`, its kind and its customer's) |
 | match | `matched` (on BigQuery; here the job writes it to a file) |
@@ -241,11 +241,12 @@ names the latest. An update (`nayose.update`) runs the build's stages on a new b
 - **records**: the batch's records join the run's. A record already in the run is set aside, so a batch given twice
   adds nothing. Placeholders are counted again over all records, and a run's record holding a new placeholder is
   made again with that value read as missing. A batch that brings none reads no record to make again.
-- **fit** with `@refit` false: the build's model is kept (`fit.fitted`), so there is no sample and no EM. u is
-  measured again on the run's records. A level counted exactly is counted again. A sampled comparison is sampled
-  again only once its drift outweighs its sampling error (`em.stale`). That test runs on the exact counts first
-  (`resampled`, a Python function like `fit_model`), so an update with none stale draws no sample at all, and
-  `u_sampled` keeps the last sample drawn, which nothing reads until one is drawn again.
+- **fit** doesn't run: the update scores with the model the build left (`model`, `fit`), as a saved model is
+  reused. Only the prior follows the run's size. An exact level's u falls as the run grows, by about log2(1 + growth)
+  bits, so a pair's points fall by about k·log2(1 + growth), k the exact levels it agrees on: 0.014 a level for a 1%
+  batch. report.txt says to build again once the run has grown by `[fit] rebuild_after` (a tenth: 0.14 a level)
+  since its build, which measures u on the run as it is. On generated data no true match was lost up to a tenth;
+  at a quarter, 5 of 130 were.
 - **score**: the keys of the batch and of the records made again join the key index, and only the pairs touching the batch are scored, and added to `scored`.
 - **decide**: the entities are made again.
 
@@ -332,7 +333,6 @@ Where sqlglot's translation answers otherwise, `as_bigquery` rewrites the node t
 | `nfkc` | `NORMALIZE(x, NFKC)` | Arrow's `utf8_normalize` |
 | `one_byte_hash` | SQL UDF over code points | numpy |
 | `fit_model` | Python UDF, `em.py` | `em.fit` |
-| `resampled` | Python UDF, `em.py` | `em.resampled` |
 | `entities_of` | Python UDF, `entities.py` | `entities.of` |
 
 `tests/test_functions.py` runs the JavaScript in V8 against the DuckDB twins, score for score.

@@ -245,7 +245,6 @@ class DuckDB:
         # EM and decide's components: the same Python as BigQuery's Python UDFs
         three = ["VARCHAR", "VARCHAR", "VARCHAR"]
         self.con.create_function("fit_model", em.fit, three, "VARCHAR", null_handling="special")
-        self.con.create_function("resampled", em.resampled, three, "VARCHAR", null_handling="special")
         self.con.create_function("entities_of", entities.of, ["VARCHAR"], "VARCHAR")
 
     def run(self, sql: str, values: dict | None = None) -> None:
@@ -311,7 +310,7 @@ def functions(dataset: str) -> list[str]:
 
     They are: each comparison of FUNCTIONS, as cl_<name> and cl_<name>_cut (the same score; the threshold isn't read),
     in JavaScript or over BigQuery's own function (BUILT_IN); the portable hash er_hash; nfkc; one_byte_hash; and the
-    Python UDFs, EM's fit_model and resampled (nayose/em.py) and decide's entities_of (nayose/entities.py).
+    Python UDFs, EM's fit_model (nayose/em.py) and decide's entities_of (nayose/entities.py).
     """
     library = STRINGS.read_text(encoding="utf-8")
     out = []
@@ -334,7 +333,6 @@ def functions(dataset: str) -> list[str]:
                "(CODE_POINTS_TO_STRING(ARRAY(SELECT 33 + MOD(c, 94) "
                "FROM UNNEST(TO_CODE_POINTS(x)) AS c WITH OFFSET AS i ORDER BY i)))")
     python_udfs = ((em, "fit_model", "counts STRING, settings STRING, stored STRING", "fit"),
-                   (em, "resampled", "counts STRING, settings STRING, stored STRING", "resampled"),
                    (entities, "entities_of", "pairs STRING", "of"))
     for module, name, args, entry in python_udfs:
         source = Path(module.__file__).read_text(encoding="utf-8")  # python-3.11 there, and the standard library only
@@ -350,7 +348,7 @@ def functions(dataset: str) -> list[str]:
 JOBS = {
     "build": [("functions", {}), ("mapping", {}), ("records", {}), ("fit", {"refit": True}), ("score", {}),
               ("decide", {}), ("report", {})],
-    "update": [("functions", {}), ("mapping", {}), ("records", {}), ("fit", {"refit": False}), ("score", {}),
+    "update": [("functions", {}), ("mapping", {}), ("records", {}), ("score", {}),
                ("decide", {}), ("report", {})],
     "decide": [("functions", {}), ("decide", {})],
     "match": [("functions", {}), ("match", {})],
@@ -500,7 +498,7 @@ class BigQuery:
     name = "bigquery"
     # a call of the method's JavaScript, Python and portable functions, which functions() makes
     CALLS = calls_of([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc", "one_byte_hash", "fit_model",
-                      "resampled", "entities_of"], re.I)
+                      "entities_of"], re.I)
 
     def __init__(self, dataset: str, client: object = None, bigquery: object = None) -> None:
         self.bigquery = bigquery or importlib.import_module("google.cloud.bigquery")
