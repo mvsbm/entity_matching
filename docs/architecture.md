@@ -190,7 +190,8 @@ how many records hold each value, and is sampled elsewhere. It is measured once 
 because in a bigger file a field agrees by chance less often. The `model` table gives each level its bits,
 `log2(file_m / file_u)`.
 
-**score.sql · `O(Δ·b + C·K·L²) + O(N·L)`.** The batch's records are scored against all of the run's.
+**score.sql · `O(Δ·b + C·K·L²) + O(N·L)`.** The batch's records, and the run's records made again, are scored against
+all of the run's.
 
 1. The rules, in order, give the certain pairs (`rule_pairs`, in `batch_pairs`). A rule ignores a key value held by `oversized` records
    or more.
@@ -258,7 +259,7 @@ names the latest. An update (`nayose.update`) runs the build's stages on a new b
   batch. report.txt says to build again once the run has grown by `[fit] rebuild_after` (a tenth: 0.14 a level)
   since its build, which measures u on the run as it is. On generated data no true match was lost up to a tenth;
   at a quarter, 5 of 130 were.
-- **score**: the keys of the batch and of the records made again join the key index, and only the pairs touching the batch are scored, and added to `scored`.
+- **score**: the keys of the batch and of the records made again join the key index. Only the pairs touching the batch or a record made again are scored, and added to `scored`. A record made again first leaves `scored` with its pairs, so they are scored again with its values as they are now: a dummy phone no longer counts as the phone agreeing. On BigQuery that DELETE bills `scored` whole, as the index's bill the index, and only an update that finds a new placeholder runs them.
 - **decide**: the entities are made again.
 
 An update costs `O(Δ·(L + b) + C_Δ·K·L²)`, plus `O(N)` scans of the run's records and keys.

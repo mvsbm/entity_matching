@@ -144,20 +144,42 @@ def test_a_build_runs_on_a_file_where_a_compared_field_is_never_filled(tmp_path,
     assert bits == {"birth": 0.0, "cif": 0.0}  # learned nothing about them: every level weighs nothing
 
 
-def test_an_update_leaves_the_key_index_a_build_of_the_same_records_makes(tmp_path, population):
-    df = population.df
+@pytest.fixture(scope="module")
+def made_again(tmp_path_factory, population) -> tuple:
+    """A run built on half the population, two of its records sharing the phone 4321, then updated with the rest and
+    70 records more of that phone, which makes it a placeholder: the two are made again. Returns the run, the folder
+    of its files (all.parquet: every record) and the two records' IDs."""
+    df, tmp = population.df, tmp_path_factory.mktemp("made_again")
     first, rest = df.iloc[: len(df) // 2].copy(), df.iloc[len(df) // 2:].copy()
-    first.loc[first.index[:2], "PHONE_NUM_4"] = "4321"  # the batch makes this phone a placeholder: both made again
+    first.loc[first.index[:2], "PHONE_NUM_4"] = "4321"
     many = df.head(70).assign(CONT_ID=[f"9{i:09d}" for i in range(70)], PHONE_NUM_4="4321", CIF_ID=None)
-    first.to_parquet(tmp_path / "first.parquet", index=False)
-    pd.concat([rest, many]).to_parquet(tmp_path / "batch.parquet", index=False)
-    pd.concat([first, rest, many]).to_parquet(tmp_path / "all.parquet", index=False)
-    updated, built = DuckDB(), DuckDB()
-    nayose.build(updated, [tmp_path / "first.parquet"])
-    nayose.update(updated, [tmp_path / "batch.parquet"])
-    nayose.build(built, [tmp_path / "all.parquet"])
-    remade = updated.value("SELECT COUNT(*) FROM records WHERE id IN UNNEST(@ids) AND phone IS NULL",
-                           {"ids": list(first["CONT_ID"].head(2))})
+    first.to_parquet(tmp / "first.parquet", index=False)
+    pd.concat([rest, many]).to_parquet(tmp / "batch.parquet", index=False)
+    pd.concat([first, rest, many]).to_parquet(tmp / "all.parquet", index=False)
+    updated = DuckDB()
+    nayose.build(updated, [tmp / "first.parquet"])
+    nayose.update(updated, [tmp / "batch.parquet"])
+    return updated, tmp, list(first["CONT_ID"].head(2))
+
+
+def test_an_update_leaves_the_key_index_a_build_of_the_same_records_makes(made_again):
+    updated, tmp, two = made_again
+    built = DuckDB()
+    nayose.build(built, [tmp / "all.parquet"])
+    remade = updated.value("SELECT COUNT(*) FROM records WHERE id IN UNNEST(@ids) AND phone IS NULL", {"ids": two})
     index = lambda engine: {t: engine.con.execute(f"SELECT * FROM {t} ORDER BY ALL").fetchall()
                             for t in ("every_key", "rule_keys")}
     assert remade == 2 and index(updated) == index(built)
+
+
+def test_each_scored_pair_has_the_levels_its_records_give_now_a_record_made_again_s_too(made_again):
+    updated, _, two = made_again
+    pairs = updated.frame("SELECT s.*, name_level(x, y, name_score(x, y)) AS now_name, gamma_company(x, y) AS now_company, "
+                          "gamma_address(x, y) AS now_address, gamma_phone(x, y) AS now_phone, gamma_cif(x, y) AS now_cif, "
+                          "gamma_birth(x, y) AS now_birth "
+                          "FROM scored AS s JOIN compared AS x ON x.id = s.id_l JOIN compared AS y ON y.id = s.id_r")
+    theirs = pairs[pairs["id_l"].isin(two) | pairs["id_r"].isin(two)]
+    assert len(theirs) and set(theirs["gamma_phone"]) == {-1}  # the placeholder phone is missing from each of their pairs
+    levels = ["name", "company", "address", "phone", "cif", "birth"]
+    assert not pairs.duplicated(["id_l", "id_r"]).any()  # each pair once, though scored again
+    assert (pairs[[f"gamma_{c}" for c in levels]].to_numpy() == pairs[[f"now_{c}" for c in levels]].to_numpy()).all()

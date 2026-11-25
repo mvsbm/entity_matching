@@ -1,5 +1,6 @@
 -- Stage 3, score. This stage finds the pairs worth scoring and scores them. It pairs the records of the run's latest
--- batch with all the run's records. In a build, every record is the batch's.
+-- batch, and the run's records that records.sql made again, with all the run's records. In a build, every record is
+-- the batch's.
 -- The pairs come from the rules and from the keys. Every pair that a key lists is a candidate. If a key's block holds
 -- @oversized records or more, the stage first scores a sample of the block's pairs, and lists the block's pairs only if
 -- the sample holds a pair at @search_floor points or more. Each pair gets its level of each comparison (functions.sql)
@@ -11,6 +12,8 @@
 -- It costs O(Δ·b) for the batch's pairs, with Δ the batch's records and b the pairs one record's keys list, plus
 -- O(Δ·L) to make the changed records' keys, L a value's length (Δ counts the records made again too), and a scan of
 -- the index for the blocks the batch's keys name. The scores cost O(C·K·L²) for C candidates and K comparisons (6).
+-- An update that makes records again also deletes their keys and their pairs, and on BigQuery a DELETE bills its
+-- table whole: the index and scored.
 --
 -- A statement that follows a `-- when: <condition>` line runs only if the condition holds: run_file checks it locally,
 -- and the deployed procedure wraps the statement in IF … END IF.
@@ -31,22 +34,31 @@
 --   cands                     the pairs the batch's keys list, each with the generators that listed it
 --   scored                    every pair kept
 -- scored holds every batch's pairs. Each batch adds the pairs that touch its records, a rule's pair with its rule.
+-- The pairs of a record made again leave it, and are scored again with the record's values as they are now.
 
--- 0. The batch's records, the generators and the rules.
-CREATE OR REPLACE TEMP TABLE batch_records AS SELECT id FROM records WHERE batch = (SELECT batch FROM this_batch);
-
+-- 0. The records this job pairs, the generators and the rules.
 -- changed holds the records whose keys this job makes: the batch's, and the run's records that records.sql made again
 -- (redone), with redone TRUE. Every other record's keys are as the last job left them, since a record's keys change
--- only when the record does. A record made again gets its keys made again, and the scored pairs it already had stay
--- as they were scored: only the batch's pairs are scored.
+-- only when the record does.
 -- when: NOT @lookup
 CREATE OR REPLACE TEMP TABLE changed AS
-SELECT id, FALSE AS redone FROM batch_records UNION ALL SELECT id, TRUE FROM redone;
+SELECT id, FALSE AS redone FROM records WHERE batch = (SELECT batch FROM this_batch)
+UNION ALL SELECT id, TRUE FROM redone;
 
 -- A lookup's records table holds only the records the lookup read, and its index starts empty, so it makes the keys
 -- of every record it holds.
 -- when: @lookup
 CREATE OR REPLACE TEMP TABLE changed AS SELECT id, FALSE AS redone FROM records;
+
+-- batch_records holds the records this job pairs with all the run's records, which the statements below call the
+-- batch's (in_batch). They are the batch's own records and the records made again, whose pairs are scored again
+-- with their values as they are now: in an update or a build, changed whole.
+-- when: NOT @lookup
+CREATE OR REPLACE TEMP TABLE batch_records AS SELECT id FROM changed;
+
+-- A lookup pairs the record it looks up alone, the one record of its batch.
+-- when: @lookup
+CREATE OR REPLACE TEMP TABLE batch_records AS SELECT id FROM records WHERE batch = (SELECT batch FROM this_batch);
 
 -- The generators and the rules are listed by name, in order. The statements below name each one, and read its
 -- position from these lists. A generator's position (g) is its bit in a pair's mask, which cands turns into its
@@ -429,7 +441,7 @@ SELECT pairs.l, pairs.r, generator_names.generators FROM pairs JOIN generator_na
 -- 6. The scores. Each candidate that the bound keeps, and every rule pair, gets its levels and its points. The pairs
 --    with @keep_from points or more are kept, and so is every rule pair. named is true if a name was compared, the
 --    person's or the company's. The batch's pairs are added to the run's scored. Each pair is scored once, in the
---    batch that brings its later record.
+--    batch that brings its later record, and again in each job that makes one of its records again.
 CREATE OR REPLACE TEMP TABLE batch_pairs AS  -- each of the batch's candidates and rule pairs appears once
 WITH rule_hits AS (
   SELECT a.i AS rule_rank, rules.rule, LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r
@@ -480,5 +492,12 @@ FROM weighed
 WHERE points >= @keep_from OR rule IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS scored AS SELECT * FROM batch_scored WHERE FALSE;
+
+-- The pairs a record made again had leave scored, as batch_scored holds them scored again. A pair that its keys or
+-- rules no longer find, or that now scores under @keep_from, is not kept. On BigQuery this DELETE bills scored whole,
+-- so only an update that finds a new placeholder runs it.
+-- when: EXISTS (SELECT 1 FROM changed WHERE redone)
+DELETE FROM scored
+WHERE id_l IN (SELECT id FROM changed WHERE redone) OR id_r IN (SELECT id FROM changed WHERE redone);
 
 INSERT INTO scored SELECT * FROM batch_scored;
