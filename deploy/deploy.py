@@ -1,7 +1,8 @@
 """Deploy nayose into one BigQuery dataset, the run's. It makes:
-- the functions (engines.functions): the comparisons, in JavaScript or over BigQuery's own EDIT_DISTANCE; EM and the
-  entities, in Python; the hash;
-- the method's SQL functions, and one procedure a job, declaring the values config.toml gives (engines.procedures);
+- the functions (nayose.procedures.functions): the comparisons, in JavaScript or over BigQuery's own EDIT_DISTANCE;
+  EM and the entities, in Python; the hash;
+- the method's SQL functions, and one procedure a job, declaring the values config.toml gives
+  (nayose.procedures.procedures);
 - the name model the records read (the table name_weights).
 Each statement is CREATE OR REPLACE, so a deploy run again makes the same.
 
@@ -18,7 +19,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # this checkout's nayose
 
 import nayose  # noqa: E402
-from nayose.engines import BigQuery, functions, procedures  # noqa: E402
+from nayose.engines import BigQuery  # noqa: E402
+from nayose.procedures import functions, procedures  # noqa: E402
 
 
 def main(argv: list[str] | None = None, client: object = None, bigquery: object = None) -> int:

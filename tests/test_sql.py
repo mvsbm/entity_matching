@@ -98,9 +98,9 @@ def test_a_config_written_with_an_older_key_is_refused_with_its_name_now(tmp_pat
 
 
 def test_the_fingerprint_follows_the_functions_the_deploy_makes(monkeypatch):  # em.py, strings.js, the hash
-    import nayose.engines
+    import nayose.procedures
     before = nayose.fingerprint()
-    monkeypatch.setattr(nayose.engines, "functions", lambda dataset: ["CREATE FUNCTION another"])
+    monkeypatch.setattr(nayose.procedures, "functions", lambda dataset: ["CREATE FUNCTION another"])
     assert nayose.fingerprint() != before
 
 
