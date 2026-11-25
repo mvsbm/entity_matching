@@ -61,7 +61,7 @@ A value held by too many records to be one customer's, such as a dummy phone, is
 
 - it is held by at least `min_block` records (64), or by `spread` (10) times the field's records per value if that is more;
 - it is held by at least `crowd` (64) customers, counted by customer ID, else by record ID;
-- its pairs outnumber those of all the values below that line together.
+- its pairs outnumber, together, those of every value of the field that isn't crowded.
 
 A `customer_id` value is one when it passes the first test alone. Placeholders are counted over the run's records and the batch's together, and they stay with the run (the table `placeholders`). A batch is read with them as missing, and a run record holding a value newly found to be a placeholder is made again without it. report.txt's SUMMARY notes each field's. A lookup adds none.
 

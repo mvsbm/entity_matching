@@ -1,29 +1,36 @@
--- The lookup job: the entities a record asked about would be compared with, as an update of it alone compares it
--- (records.sql and score.sql ran on it, the run's model as it stands), best first, in temporary tables of the run's
--- names holding its blocks' records alone (nayose.lookup), so a lookup writes nothing. Each entity at @at_least
--- points or more, or joined by a rule, with its best record, its points, each comparison's level, the rule that would
--- join it and the keys that listed it; and what was looked up, key by key. O(G·b + C·K·L²) for the record's C
--- candidates.
+-- The lookup job. It finds the entities that a record asked about would be compared with, best first, as an update of
+-- that record alone would compare it. records.sql and score.sql have already run on the record, with the run's model
+-- as it stands. They ran in temporary tables named like the run's, which hold only the records of the record's blocks
+-- (nayose.lookup), so a lookup writes nothing. The job gives each entity with @at_least points or more, or joined by a
+-- rule, with its best record, its points, each comparison's level, the rule that would join it and the keys that
+-- listed it. It also gives what was looked up, key by key.
+-- O(G·b + C·K·L²) for the record's C candidates.
 --
--- Reads: fresh (the record asked about), batch_scored and batch_rule_pairs (score.sql: every candidate scored,
--- keep_from aside), gold (each stored record's entity), records, model (each level's label), generators, rules,
--- key_blocks, gated, rule_keys.
--- Values: @at_least (points), @likely_from (points: a pair from here up whose names were compared is likely, as
--- people review), @oversized, @stored (the record asked about is a stored one, looked up as if it were new).
+-- Reads: fresh (the record asked about), batch_scored and batch_rule_pairs (score.sql, which scores every candidate
+-- of a lookup whatever keep_from says), gold (each stored record's entity), records, model (each level's label),
+-- generators, rules, key_blocks, gated, rule_keys.
+-- Values:
+--   @at_least      an entity with this many points or more is shown
+--   @likely_from   a pair with this many points or more, whose names were compared, counts as likely
+--                  (config.toml's [lookup] likely_from)
+--   @oversized     a block of this many records or more is oversized (score.sql)
+--   @stored        true if the record asked about is a stored one, looked up as if it were new
 -- Writes (temporary, read by the job): candidates, entities, checked.
 
 CREATE OR REPLACE TEMP TABLE candidates AS
 WITH paired AS (
-  SELECT s.*, IF(s.id_l = a.id, s.id_r, s.id_l) AS other FROM batch_scored AS s JOIN fresh AS a ON a.id = s.id_l OR a.id = s.id_r
+  SELECT s.*, IF(s.id_l = a.id, s.id_r, s.id_l) AS other
+  FROM batch_scored AS s JOIN fresh AS a ON a.id = s.id_l OR a.id = s.id_r
 ),
-shown AS (  -- each comparison's level as people read it, a missing side's 'missing': match.sql's shown, its bits aside
+shown AS (  -- this is match.sql's shown without the bits, so a missing side's level reads 'missing'
   SELECT comparison, gamma, label FROM model UNION ALL SELECT DISTINCT comparison, -1, 'missing' FROM model
 )
 SELECT
   p.other AS id, g.cluster_id AS entity, p.match_weight AS points, p.rule, r.i AS rule_rank, p.sources,
   p.match_weight >= @likely_from AND (p.gamma_name >= 0 OR p.gamma_company >= 0) AS likely,
-  n.label AS level_name, c.label AS level_company, d.label AS level_address, h.label AS level_phone, i.label AS level_cif,
-  b.label AS level_birth, x.full_name, x.person_name, x.company_name, x.address, x.postal_code, x.phone, x.birth_date, x.customer_id
+  n.label AS level_name, c.label AS level_company, d.label AS level_address, h.label AS level_phone,
+  i.label AS level_cif, b.label AS level_birth,
+  x.full_name, x.person_name, x.company_name, x.address, x.postal_code, x.phone, x.birth_date, x.customer_id
 FROM paired AS p
 JOIN gold AS g ON g.id = p.other
 JOIN records AS x ON x.id = p.other
@@ -35,25 +42,29 @@ JOIN shown AS h ON h.comparison = 'phone' AND h.gamma = p.gamma_phone
 JOIN shown AS i ON i.comparison = 'cif' AND i.gamma = p.gamma_cif
 JOIN shown AS b ON b.comparison = 'birth' AND b.gamma = p.gamma_birth;
 
--- each entity once: its best record (most points, then the lowest ID), the first rule in order that joins any of its
--- records, and how many of its records are candidates; shown from @at_least points up, or when a rule joins it
+-- entities holds each entity once, with its best record (the most points, then the lowest ID), the first rule in
+-- order that joins any of its records, and how many of its records are candidates. An entity is shown if it has
+-- @at_least points or more, or if a rule joins it.
 CREATE OR REPLACE TEMP TABLE entities AS
 WITH ranked AS (
-  SELECT *, ROW_NUMBER() OVER (PARTITION BY entity ORDER BY points DESC, id) AS k, COUNT(*) OVER (PARTITION BY entity) AS records
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY entity ORDER BY points DESC, id) AS k,
+         COUNT(*) OVER (PARTITION BY entity) AS records
   FROM candidates
 ),
 joined AS (
   SELECT entity, rule FROM (
-    SELECT entity, rule, ROW_NUMBER() OVER (PARTITION BY entity ORDER BY rule_rank) AS k FROM candidates WHERE rule IS NOT NULL
+    SELECT entity, rule, ROW_NUMBER() OVER (PARTITION BY entity ORDER BY rule_rank) AS k
+    FROM candidates WHERE rule IS NOT NULL
   ) WHERE k = 1
 )
 SELECT r.* EXCEPT (k, rule, rule_rank, likely), j.rule, r.likely OR j.rule IS NOT NULL AS likely
 FROM ranked AS r LEFT JOIN joined AS j USING (entity)
 WHERE r.k = 1 AND (r.points >= @at_least OR j.rule IS NOT NULL);
 
--- what was looked up: each key the run uses, how many records its normal blocks hold (a stored record asked about
--- among them), whether the record lacks it, and its oversized blocks with the gate's decision; then each rule whose
--- value is on @oversized records or more (untrusted: how many)
+-- checked reports what was looked up. For each key the run uses, it gives how many records the record's blocks of
+-- normal size hold (found), whether the record lacks the key (lacks), and the record's oversized blocks with the
+-- gate's decision (big). found counts a stored record asked about, but not a typed one. Then, for each rule whose
+-- key value is held by @oversized records or more, untrusted gives how many records hold it.
 CREATE OR REPLACE TEMP TABLE checked AS
 WITH mine AS (
   SELECT g, k, n FROM key_blocks WHERE id IN (SELECT id FROM fresh)
