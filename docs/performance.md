@@ -16,7 +16,7 @@ What a run costs, and how each figure is measured. BigQuery bills in one of two 
 | S | the pairs u is sampled on (`u_max_pairs`, about 10⁷ on the file; `fit_u_max_pairs`, 10⁶ on the sample) |
 | L | the characters in a name or an address |
 | K | the comparisons in the model (6) |
-| b | the records in one key block |
+| b | the pairs one record's keys list: the records of its blocks, every key's together |
 | G | the keys a record has (one a generator, and L + 1 a deletion generator: 22 generators, 4 of them deletion ones) |
 | ΣP | the pairs inside every generator's blocks, before they are deduplicated |
 | C, C_Δ | the candidate pairs; those touching the batch |
@@ -33,7 +33,7 @@ What a run costs, and how each figure is measured. BigQuery bills in one of two 
 | score | `score.sql` | O(Δ·L + N·L) + O(Δ·b + C_Δ·K·L²) | the batch's keys, and those of the records made again, join the key index; the index is scanned for the blocks the batch's keys name; then those blocks are joined and their pairs compared |
 | decide | `decide.sql` | O(D + N) | connected components over the match decisions; then every record placed |
 | match | `match.sql` | O(C + P·F) | a scan of the scored pairs; those kept are joined to their records |
-| lookup | `lookup.sql` | O(G) + O(G·b + C·K·L²) | the record's keys made alone; the key index read by them; the record scored against its blocks' records alone |
+| lookup | `lookup.sql` | O(G) + O(b + C·K·L²) | the record's keys made alone; the key index read by them; the record scored against its blocks' records alone |
 | report | `report.sql` | O(N·F) + O(C) | each field's fill; the batch's pairs by band |
 
 A build is O(N·L + n + S·K + ΣP + C·K·L²): linear in N while each generator's pairs per record stay flat as the file grows (report.txt's BLOCKS shows them). An update's expensive work grows with its batch. Its O(N) part is scans: the run's records for the placeholders, and the key index for the blocks its keys name.

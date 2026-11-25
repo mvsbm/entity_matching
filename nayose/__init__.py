@@ -378,8 +378,9 @@ def lookup(engine: Engine, record: str | None = None, values: dict | None = None
     (asked_keys), the run's key index read by those keys (read_index), and the record scored against those records
     alone (score_asked). Each step works in temporary tables that end with it (engine.scratch). Each statement of a
     SQL file goes through for_lookup, which refuses any write to a run's table. The lookup's own statements write
-    temporary tables alone: copy_for_lookup's make them, and add_asked_record's two, run directly, make this_batch and
-    give the stored record asked about its batch in the copy of records. O(G) for its keys + O(G·b + C·K·L²).
+    temporary tables alone: copy_for_lookup's make them, and add_asked_record's three, run directly, make this_batch and
+    give a stored record asked about its batch in the copy of records, or make a typed record's input. O(G) for its
+    G keys + O(b + C·K·L²): b the pairs its keys list, C its candidates, K the comparisons, L a value's length.
     """
     c = config()
     at_least = float(c["lookup"]["at_least"] if at_least is None else at_least)
@@ -761,9 +762,13 @@ def when(sql: str) -> str | None:
         return WHEN.findall(BLOCK.sub(lambda m: " " if m[0].startswith("/*") else m[0], text))
 
     conditions = lines(re.match(LEAD, sql, re.S)["lead"])
-    if len(conditions) > 1 or (conditions and TEMP_FUNCTION.match(sql)) or len(lines(sql)) > len(conditions):
-        raise ValueError("a statement holds one condition, in its leading comments, and a function none: "
-                         f"{sql.strip()[:80]}")
+    start = sql.strip()[:80]  # the statement's start, for a refusal
+    if len(conditions) > 1:
+        raise ValueError(f"a statement holds one condition at most: {start}")
+    if conditions and TEMP_FUNCTION.match(sql):
+        raise ValueError(f"a function holds no condition, as the deploy makes functions apart from procedures: {start}")
+    if len(lines(sql)) > len(conditions):
+        raise ValueError(f"a statement's condition stands in its leading comments: {start}")
     if not conditions:
         return None
     return conditions[0].split("--")[0].strip() or None
@@ -828,5 +833,5 @@ def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
     return digest.hexdigest()
 
 
-# report.txt is reporting.py's; the package names it too, as report.sql and deploy/run.py do (nayose.report_text)
+# report.txt is reporting.py's; the package names it too, as __main__ and deploy/run.py call it (nayose.report_text)
 from nayose.reporting import report, report_text  # noqa: F401

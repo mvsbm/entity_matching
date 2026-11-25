@@ -9,8 +9,9 @@
 -- (@refit false: scripts/benchmark.py's, fitted on another file) draws no sample and runs no EM, and measures that
 -- model's u on its records.
 --
--- A statement that follows a `-- when: <condition>` line runs only if the condition holds: run_file checks it
--- locally, and the deployed procedure wraps the statement in IF … END IF.
+-- @refit acts on the data, not by skipping a statement (no statement here has a `-- when:` line). With @refit false,
+-- fit_sample is empty, so the sample's counts and EM's pairs are empty too, and learned's one IF hands fit's model to
+-- fit_model, which keeps it.
 --
 -- Reads: records, levels (functions.sql), and with @refit false the model given (fit).
 -- Values: @fit_records, @seed, @fit_u_max_pairs, @u_max_pairs and @settings come from config.toml [fit]. @fit_records

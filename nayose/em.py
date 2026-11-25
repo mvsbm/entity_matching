@@ -279,12 +279,14 @@ def session(model: dict, patterns: list[tuple], names: list[str], s: dict, lam: 
     """
     learns = [i for i, name in enumerate(names) if all(p[i] is not None for p in patterns)]  # its field fixed the rest
     order = [names[i] for i in learns]
-    start = odds(lam)
+    # λ among the session's pairs, from their prior odds: λ's odds times the evidence m/u of each exact level the
+    # field guarantees, prior_odds = λ/(1 − λ) · Π m/u, so λ_s = prior_odds / (1 + prior_odds)
+    prior_odds = odds(lam)
     for name, label in s["start"]:
         lv = next(x for x in model["levels"] if x["comparison"] == name and x["label"] == label)
         evidence = first_m(model, name, lv["gamma"], trained) / lv["u"] if lv["u"] != 0 else math.inf
-        start = evidence * start
-    lam_s = start / (1 + start)
+        prior_odds = evidence * prior_odds
+    lam_s = prior_odds / (1 + prior_odds)
     u = {(lv["comparison"], lv["gamma"]): lv["u"] for lv in model["levels"] if lv["comparison"] in order}
     label_of = {(lv["comparison"], lv["gamma"]): lv["label"] for lv in model["levels"]}
     m: dict[tuple[str, int], float | None] = {key: first_m(model, key[0], key[1], trained) for key in u}

@@ -3,7 +3,8 @@
     report(engine, steps, job)        run report.sql after a build or an update, and return report.txt
     report_text(engine, steps, job)   report.txt from report.sql's tables (deploy/run.py, after a BigQuery procedure)
 
-The package names both too (nayose.report, nayose.report_text), as report.sql and deploy/run.py call them.
+The package names both too: __main__.report calls nayose.report, and deploy/run.py nayose.report_text (report.sql
+only names it, in a comment).
 """
 import json
 import math

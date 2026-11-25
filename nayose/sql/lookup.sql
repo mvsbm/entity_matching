@@ -4,7 +4,8 @@
 -- (nayose.lookup), so a lookup writes nothing. The job gives each entity with @at_least points or more, or joined by a
 -- rule, with its best record, its points, each comparison's level, the rule that would join it and the generators
 -- whose keys listed it. It also gives what was looked up, generator by generator.
--- O(G·b + C·K·L²) for the record's C candidates.
+-- It costs O(b + C·K·L²): b the pairs the record's keys list, C its candidates, K the comparisons (6) and L a value's
+-- length.
 --
 -- Reads: batch_records (the record asked about), batch_scored (score.sql, which scores every candidate
 -- of a lookup whatever keep_from says), gold (each stored record's entity), records, model (each level's label),
@@ -64,7 +65,9 @@ WHERE rk.nth = 1 AND (rk.points >= @at_least OR j.rule IS NOT NULL);
 -- checked reports what was looked up. For each generator the run uses, it gives how many records the record's blocks
 -- of normal size hold (in_blocks), whether the record lacks its key (lacks), and the record's oversized blocks with
 -- the gate's verdict (oversized). in_blocks counts a stored record asked about, but not a typed one. Then, for each
--- rule whose key value is held by @oversized records or more, untrusted gives how many records hold it.
+-- rule whose key value is held by @oversized records or more, untrusted gives how many records hold it. A rule's
+-- position is 100 + its rank, past every generator's (0 to 21), so checked lists the generators first and the rules
+-- after, each in its order.
 CREATE OR REPLACE TEMP TABLE checked AS
 WITH mine AS (
   SELECT g, key, n FROM key_blocks WHERE id IN (SELECT id FROM batch_records)
