@@ -227,12 +227,12 @@ rate AS (  -- λ is a per-pair rate, so it is rescaled to the run's size, as em.
   SELECT LEAST(f.probability * (f.fit_records - 1) / GREATEST(size.run_records - 1, 1), lambda_cap()) AS rate
   FROM fit AS f, size
 ),
-prior_bits AS (  -- the prior is fit's own if the run has as many records as when fit ran, else the rescaled λ's bits
+prior AS (  -- the prior is fit's own if the run has as many records as when fit ran, else the rescaled λ's bits
   SELECT IF(f.records = size.run_records, f.prior_bits, LOG(rate.rate / (1 - rate.rate), 2)) AS prior_bits
   FROM fit AS f, size, rate
 )
 SELECT
-  (SELECT prior_bits FROM prior_bits) AS prior_bits,
+  (SELECT prior_bits FROM prior) AS prior_bits,
   ARRAY_CONCAT([CAST(0 AS FLOAT64)], ARRAY(SELECT bits FROM model WHERE comparison = 'name' ORDER BY gamma)) AS name,
   ARRAY_CONCAT([CAST(0 AS FLOAT64)], ARRAY(SELECT bits FROM model WHERE comparison = 'company' ORDER BY gamma)) AS company,
   ARRAY_CONCAT([CAST(0 AS FLOAT64)], ARRAY(SELECT bits FROM model WHERE comparison = 'address' ORDER BY gamma)) AS address,

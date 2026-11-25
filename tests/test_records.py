@@ -77,7 +77,9 @@ def test_the_mapping_parses_as_bigquery_and_translates(path):
                                  "CREATE OR REPLACE TEMP TABLE Placeholders AS SELECT 'x' AS v;",
                                  "CREATE OR REPLACE TEMP TABLE given AS SELECT 1 AS v;  -- decide.sql's, people's decisions",
                                  "CREATE OR REPLACE TEMP TABLE helper AS SELECT 1 AS x;  # a note",
-                                 "SELECT 1 AS x;\n# the end"])
+                                 "SELECT 1 AS x;\n# the end",
+                                 "/* a note;\n*/\nSELECT 1 AS x;",  # its ';' ends the statement inside the comment
+                                 "/* reads @x */ SELECT 1 AS x;"])  # an @name in a /* */ comment: a value read
 def test_a_mapping_that_makes_more_than_temporary_tables_of_its_own_is_refused_by_the_deploy_and_by_a_job(tmp_path, monkeypatch, bad):
     from nayose.engines import procedures
     given = tmp_path / "mapping.sql"

@@ -52,7 +52,7 @@ FROM records;
 -- (no_letters), and the values' mean and longest length.
 CREATE OR REPLACE TEMP TABLE report_fields AS
 WITH sample AS (SELECT * FROM records ORDER BY er_hash(id) LIMIT @sample_records),
-v AS (
+sampled_values AS (
   SELECT 'full_name' AS field, full_name AS v FROM sample UNION ALL SELECT 'person_name', person_name FROM sample
   UNION ALL SELECT 'given_name', given_name FROM sample UNION ALL SELECT 'company_name', company_name FROM sample
   UNION ALL SELECT 'any_name', any_name FROM sample UNION ALL SELECT 'address', address FROM sample
@@ -63,14 +63,14 @@ v AS (
 ),
 top AS (
   SELECT field, MAX(n) / SUM(n) AS top_value
-  FROM (SELECT field, v, COUNT(*) AS n FROM v WHERE v IS NOT NULL GROUP BY field, v)
+  FROM (SELECT field, v, COUNT(*) AS n FROM sampled_values WHERE v IS NOT NULL GROUP BY field, v)
   GROUP BY field
 )
 SELECT
   field, AVG(CAST(REGEXP_CONTAINS(v, JSON_VALUE(@looks, CONCAT('$.', field))) AS INT64)) AS looks_right,
   ANY_VALUE(top.top_value) AS top_value, AVG(CAST(NOT REGEXP_CONTAINS(v, r'[\pL\pN]') AS INT64)) AS no_letters,
   AVG(LENGTH(v)) AS length, MAX(LENGTH(v)) AS longest
-FROM v LEFT JOIN top USING (field)
+FROM sampled_values LEFT JOIN top USING (field)
 GROUP BY field;
 
 -- report_scores counts the batch's pairs by band. A pair scored at 0 points or more is in band k if k of @edges are

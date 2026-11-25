@@ -288,12 +288,12 @@ CREATE OR REPLACE TEMP FUNCTION records_for_pairs(max_pairs FLOAT64) AS (
 -- to the nearest billionth, and at least one billionth.
 CREATE OR REPLACE TEMP TABLE u_drawn AS
 WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared),
-share AS (
+shares AS (
   SELECT 'sample' AS scope, records_for_pairs(@fit_u_max_pairs) / GREATEST((SELECT COUNT(*) FROM fit_sample), 1) AS share
   UNION ALL
   SELECT 'file', records_for_pairs(@u_max_pairs) / GREATEST((SELECT COUNT(*) FROM records), 1)
 )
-SELECT u_records.* FROM u_records JOIN share USING (scope)
+SELECT u_records.* FROM u_records JOIN shares USING (scope)
 WHERE share >= 1 OR MOD(er_hash(id || '_' || @seed), 1000000000) < GREATEST(1, ROUND(share * 1000000000));
 
 -- Each pattern of levels that the drawn pairs make is counted as the pairs are made, so no pair is stored. A

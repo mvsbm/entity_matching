@@ -63,6 +63,18 @@ def test_each_job_is_a_procedure_of_its_stages_with_every_value_it_reads_declare
     assert "DROP TABLE" not in jobs["update"] and "fit_model(" not in jobs["update"]  # an update scores with the build's model
 
 
+def test_the_deploy_sends_the_functions_bodies_as_written():  # qualified names the calls of the SQL alone
+    from nayose.engines import qualified
+    assert [qualified(sql, "p.run") for sql in functions("p.run")] == functions("p.run")
+
+
+def test_a_procedure_reads_each_value_as_its_variable_outside_strings_alone():  # as run_file reads them
+    from nayose.engines import in_procedure
+    sql = "-- when: @a  -- the run's @b\nSELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, @x AS v FROM t"
+    assert in_procedure(sql, "p.run") == ("IF v_a THEN\n-- when: v_a  -- the run's v_b\n"
+                                          "SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, v_x AS v FROM t;\nEND IF")
+
+
 def test_a_value_is_declared_as_bigquery_reads_it():
     assert bigquery_literal("a\\b'c\td") == "'a\\\\b\\'c\\U00000009d'"
     assert bigquery_literal(["x", "y"]) == "ARRAY<STRING>['x', 'y']" and bigquery_literal([1.5]) == "ARRAY<FLOAT64>[CAST(1.5 AS FLOAT64)]"

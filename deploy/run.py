@@ -211,9 +211,9 @@ def lookup(engine: BigQuery, dataset: str, given: list[str]) -> int:
         answer = nayose.lookup(engine, record=record, values=values)
     except nayose.InputError as e:
         return say(2, error=str(e), fix=e.fix)
-    engine.run("CREATE TABLE IF NOT EXISTS looked_up (asked STRING, at TIMESTAMP, answer STRING)")
+    engine.run("CREATE TABLE IF NOT EXISTS looked_up (asked STRING, asked_at TIMESTAMP, answer STRING)")
     asked = json.dumps(dict(record=record, values=values), ensure_ascii=False)
-    engine.run("INSERT INTO looked_up (asked, at, answer) SELECT @asked, CURRENT_TIMESTAMP(), @answer",
+    engine.run("INSERT INTO looked_up (asked, asked_at, answer) SELECT @asked, CURRENT_TIMESTAMP(), @answer",
                {"asked": asked, "answer": json.dumps(answer, ensure_ascii=False)})
     return say(0, job="lookup", dataset=dataset, into=f"{dataset}.looked_up", entities=len(answer["entities"]))
 
