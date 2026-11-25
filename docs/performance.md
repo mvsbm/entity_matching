@@ -84,17 +84,17 @@ Measured on a BigQuery sandbox (`deploy/bigquery_check.py --plans`, asia-northea
 procedure's wall clock and BigQuery's own sums over the statements it ran; the update adds the second half of the
 file. These are the parity scenario's runs (two crowds of 70, a placeholder the update finds):
 
-| Records (build → after update) | build: wall clock, slot time, billed | update: wall clock, slot time, billed | decide |
-|---|---|---|---|
-| 386 → 702 | 206 s, 259 slot-s, 1,248 MB | 143 s, 169 slot-s, 1,070 MB | 29 s |
-| 2,734 → 5,198 | 210 s, 233 slot-s, 1,248 MB | 146 s, 206 slot-s, 1,070 MB | 30 s |
-| 37,619 → 75,169 | 246 s, 321 slot-s, 1,318 MB | 154 s, 265 slot-s, 1,145 MB | 34 s |
+| Records (build → after update) | build: wall clock, statements, billed | update: wall clock, statements, billed | decide | match |
+|---|---|---|---|---|
+| 386 → 702 | 185 s (3 runs: 181–188), 81, 1,227 MB | 124 s (122–127), 56, 1,049 MB | 29 s | 6 s |
+| 2,734 → 5,198 | 201 s, 79, 1,216 MB | 127 s, 54, 1,038 MB | 25 s | 6 s |
+| 37,619 → 75,169, with 94 and 70 statements | 246 s, 1,318 MB | 154 s, 1,145 MB | 34 s | 8 s |
 
-Up to 75k records, a job's cost hardly depends on its size: it is the fixed cost of each statement.
+The last row's procedures ran more statements (94 in a build, 70 in an update), about 1.2 s each. Up to 75k records,
+a job's cost hardly depends on its size: it is the fixed cost of each statement.
 
-- **Each statement waits about 1.2 s** to be scheduled, besides its own run: 113 of the build's 246 s, for 94
-  statements (each `IF` condition and refusal check is one). An update of a few records still takes about 2.5
-  minutes.
+- **Each statement waits about 1.2 s** to be scheduled, besides its own run: 113 of a build's 246 s, for 94
+  statements. An update of a few records takes about 2 minutes.
 - **A statement that calls the JavaScript comparisons costs 20–30 slot-seconds** whatever it compares: the update's
   `gated` read one row for 26. Past that, a scored pair costs about 1.6 ms (`batch_scored`, 16,298 pairs in 27
   slot-seconds). On-demand billing charges bytes, not slots.
