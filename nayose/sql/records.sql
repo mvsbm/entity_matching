@@ -152,7 +152,9 @@ judged AS (
   LEFT JOIN name_sums AS n ON n.t = LOWER(s.any_name)
 ),
 scored AS (  -- name_p is the chance that the name is a company's, or NULL if the model can read no name.
-  SELECT *, IF(written, CAST(1 AS FLOAT64), 1 / (1 + EXP(-logit))) AS name_p
+  -- The logistic takes two forms so that EXP never gets a large argument, which BigQuery refuses as an overflow.
+  SELECT *, IF(written, CAST(1 AS FLOAT64),
+               IF(logit >= 0, 1 / (1 + EXP(-logit)), EXP(logit) / (1 + EXP(logit)))) AS name_p
   FROM judged
 ),
 sure AS (  -- sure_kind is the engine's kind if the engine is sure (2 company, 1 person), and 0 if it isn't.

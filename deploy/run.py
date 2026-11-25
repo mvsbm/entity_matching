@@ -14,7 +14,7 @@ A job is all or nothing, though BigQuery takes no DDL in a transaction:
 - It first makes the table job_running, holding the job and the dataset's tables. A second job finds it and refuses
   (exit 75).
 - It then clones each table (before__<table>): a clone bills no bytes, and shares its storage until either changes.
-- A job that fails is undone: each table is made again from its clone, and each table it made is dropped.
+- A job that fails is undone: each table is made again from its clone, and each table it made is dropped. It exits 1.
 - A job whose process died is undone by `undo`, once no query of its session still runs: BigQuery carries on a
   procedure its caller left. So is a job interrupted while its procedure runs (an interrupt, a client's timeout): it
   exits 75 with what stopped it, and `undo` puts the tables back once the procedure ends.
@@ -118,7 +118,8 @@ def still_running(engine: BigQuery, dataset: str, session: str) -> bool:
 
 
 def main(argv: list[str] | None = None, client: object = None, bigquery: object = None) -> int:
-    """Run the job the arguments name, and return its exit code: 0, 2 for a mistake, 75 to try again later."""
+    """Run the job the arguments name, and return its exit code: 0, 1 if the job failed, 2 for a mistake, 75 to try
+    again later."""
     args = sys.argv[1:] if argv is None else argv
     if len(args) < 2 or args[1] not in (*JOBS, "undo", "lookup") or (args[1] != "undo" and len(args) < 3):
         print(__doc__, file=sys.stderr)
@@ -136,7 +137,13 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
             return lookup(engine, dataset, given)
         if job == "undo":
             return undone(engine, dataset)
-        return marked(engine, dataset, job, given)
+        try:
+            return marked(engine, dataset, job, given)
+        except Exception as e:  # marked undid the job, or, if its undo failed, left the job marked
+            print(json.dumps(dict(severity="ERROR", job=job, dataset=dataset, error=str(e) or type(e).__name__,
+                                  fix=f"if a job is still marked, undo it (python deploy/run.py {dataset} undo), "
+                                      "then run this job again"), ensure_ascii=False), file=sys.stderr)
+            return 1
     finally:
         engine.close()
 

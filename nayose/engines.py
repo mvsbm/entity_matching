@@ -220,6 +220,7 @@ class DuckDB:
     temporary objects can be made.
     """
     name = "duckdb"
+    MISSING = (duckdb.CatalogException,)  # what a query of a table the run lacks raises
 
     def __init__(self, path: Path | None = None, compute: dict | None = None, read_only: bool = False) -> None:
         self.con = duckdb.connect(str(path) if path else ":memory:", read_only=read_only)
@@ -374,7 +375,7 @@ def in_dataset(sql: str, dataset: str) -> str:
 def stage_statements(stage: str, mapping: Path | None) -> list[str]:
     """Return a stage's statements: its file's, or, for the stage mapping, the deployment's mapping, checked."""
     if stage == "mapping":
-        return nayose.mapping_statements(mapping or nayose.HERE / "mapping.sql")
+        return nayose.mapping_statements(mapping or nayose.mapping())  # the one fingerprint() hashes
     return nayose.statements((nayose.SQL / f"{stage}.sql").read_text(encoding="utf-8"))
 
 
@@ -504,6 +505,10 @@ class BigQuery:
         self.bigquery = bigquery or importlib.import_module("google.cloud.bigquery")
         self.client = client or self.bigquery.Client(project=dataset.split(".")[0])
         self.dataset, self.session = dataset, None
+        try:  # what a query of a table the dataset lacks raises; the client library brings it
+            self.MISSING = (importlib.import_module("google.api_core.exceptions").NotFound,)
+        except ImportError:  # a test's fake client, without the library: no such error to catch
+            self.MISSING = ()
 
     OWN = calls_of(method_functions())  # a call of the method's SQL functions: the deploy made each in the dataset
 

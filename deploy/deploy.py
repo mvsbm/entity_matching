@@ -7,7 +7,8 @@ Each statement is CREATE OR REPLACE, so a deploy run again makes the same.
 
     python deploy/deploy.py PROJECT.DATASET [--mapping mapping.sql]
 
---mapping: the deployment's own column mapping (its secret, nayose-mapping); without it, nayose/mapping.sql's.
+--mapping: the deployment's own column mapping (its secret, nayose-mapping); without it, NAYOSE_MAPPING's, else
+nayose/mapping.sql's.
 Runs as nayose-deployer (deploy/Jenkinsfile).
 """
 import argparse
@@ -23,7 +24,7 @@ from nayose.engines import BigQuery, functions, procedures  # noqa: E402
 def main(argv: list[str] | None = None, client: object = None, bigquery: object = None) -> int:
     p = argparse.ArgumentParser(prog="deploy/deploy.py", description="nayose made in a BigQuery dataset")
     p.add_argument("dataset", help="PROJECT.DATASET: the run's")
-    p.add_argument("--mapping", type=Path, help="the deployment's mapping.sql (default: nayose/mapping.sql)")
+    p.add_argument("--mapping", type=Path, help="the deployment's mapping.sql (else NAYOSE_MAPPING's, or nayose's)")
     a = p.parse_args(argv)
     engine = BigQuery(a.dataset, client=client, bigquery=bigquery)
     try:
