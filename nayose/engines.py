@@ -7,9 +7,9 @@
                strings are one byte a character (native), else rapidfuzz; Arrow's utf8_normalize for nfkc; numpy for
                one_byte_hash; a macro for er_hash.
 
-Both answer the same verbs: run (a statement, nothing back), rows, value, frame (small results only: a step's
-tables stay in the engine); put (a small frame as a table, such as the model EM learns); read_parquet (input files
-as a table).
+Both answer the same verbs (nayose.Engine): run (a statement, nothing back), rows, value, frame (small results only:
+a step's tables stay in the engine); put (a small frame as a table, such as the model EM learns); read_parquet (input
+files as a table).
 
 Here too are the statements the deploy runs: functions() and procedures().
 """
@@ -66,13 +66,13 @@ def avoided(sql: str) -> list[str]:
     (write CAST(1.5 AS FLOAT64)).
     """
     out = [why for pattern, why in AVOID.items() if re.search(pattern, sql, flags=re.I)]
-    for tree in sqlglot.parse(sql, read="bigquery"):
-        for lit in tree.find_all(exp.Literal) if tree else ():
-            if lit.is_number and re.search(r"[.eE]", lit.this):
-                parent = lit.parent
-                if not (isinstance(parent, exp.Cast) and parent.to.this == exp.DataType.Type.DOUBLE):
-                    out.append(f"the decimal literal {lit.this}: DuckDB reads it as DECIMAL, BigQuery as FLOAT64; "
-                               f"write CAST({lit.this} AS FLOAT64)")
+    trees = [tree for tree in sqlglot.parse(sql, read="bigquery") if tree]
+    for lit in (lit for tree in trees for lit in tree.find_all(exp.Literal)):
+        decimal = lit.is_number and re.search(r"[.eE]", lit.this)
+        cast = isinstance(lit.parent, exp.Cast) and lit.parent.to.this == exp.DataType.Type.DOUBLE
+        if decimal and not cast:
+            out.append(f"the decimal literal {lit.this}: DuckDB reads it as DECIMAL, BigQuery as FLOAT64; "
+                       f"write CAST({lit.this} AS FLOAT64)")
     return out
 
 
@@ -88,13 +88,13 @@ def duckdb_sql(sql: str) -> str:
 def as_bigquery(node: exp.Expression) -> exp.Expression:
     """Return the node so that DuckDB answers it as BigQuery does, where sqlglot's translation would answer otherwise:
 
-    - DIV(a, b): DuckDB's a // b, each side and the whole in brackets (sqlglot writes DIV(x - y, 2) as x - y // 2);
+    - CLUSTER BY: BigQuery's storage order, what a filter on its columns prunes by; DuckDB keeps none, so it goes;
     - a function's ANY TYPE parameter (a record's row, say): untyped, as a DuckDB macro's (sqlglot types it VARIANT);
-    - UNNEST ... WITH OFFSET: counted from 0, as BigQuery counts (sqlglot writes DuckDB's WITH ORDINALITY, from 1);
     - array[OFFSET(i)] where i isn't a number: DuckDB's array[i + 1] (sqlglot moves a number's base only);
-    - REGEXP_EXTRACT: the group's match where the pattern has one (sqlglot reads groups with Python's re, which can't
-      read RE2's \\x{3000} or \\p{Nd}), and NULL where it doesn't match (DuckDB's gives '');
-    - CLUSTER BY: BigQuery's storage order, what a filter on its columns prunes by; DuckDB keeps none, so it goes."""
+    - UNNEST ... WITH OFFSET: counted from 0, as BigQuery counts (sqlglot writes DuckDB's WITH ORDINALITY, from 1);
+    - DIV(a, b): DuckDB's a // b, each side and the whole in brackets (sqlglot writes DIV(x - y, 2) as x - y // 2);
+    - REGEXP_EXTRACT: the group's match where the pattern has one, and NULL where it doesn't match
+      (regexp_as_bigquery)."""
     if isinstance(node, exp.ClusterProperty):
         return None
     kind = node.args.get("kind") if isinstance(node, exp.ColumnDef) else None
@@ -105,22 +105,41 @@ def as_bigquery(node: exp.Expression) -> exp.Expression:
         node.set("expressions", [exp.Add(this=exp.Paren(this=node.expressions[0]), expression=exp.Literal.number(1))])
         node.set("offset", 1)  # counted from 1 now, as DuckDB counts
         return node
-    if isinstance(node, exp.Select) and not node.args.get("bigquery"):
-        node.set("bigquery", True)
+    if isinstance(node, exp.Select) and first_visit(node):
         offsets_from_zero(node)
         return node
-    if isinstance(node, exp.IntDiv) and not node.args.get("bigquery"):
-        node.set("bigquery", True)  # done: transform visits it again inside the brackets
+    if isinstance(node, exp.IntDiv) and first_visit(node):
         node.set("this", exp.Paren(this=node.this))
         node.set("expression", exp.Paren(this=node.expression))
         return exp.Paren(this=node)
-    if isinstance(node, (exp.RegexpExtract, exp.RegexpExtractAll)) and not node.args.get("bigquery"):
-        pattern = node.expression
-        if (pattern.is_string or isinstance(pattern, exp.RawString)) and groups(pattern.name) == 1:
-            node.set("group", exp.Literal.number(1))
-        node.set("bigquery", True)  # done: transform visits it again inside the IF
-        if isinstance(node, exp.RegexpExtract):
-            return exp.If(this=exp.RegexpLike(this=node.this.copy(), expression=pattern.copy()), true=node)
+    if isinstance(node, (exp.RegexpExtract, exp.RegexpExtractAll)) and first_visit(node):
+        return regexp_as_bigquery(node)
+    return node
+
+
+def first_visit(node: exp.Expression) -> bool:
+    """Return whether as_bigquery meets `node` for the first time, and mark it met.
+
+    A node met before is left as it is, should transform meet it again inside what replaced it (DIV's brackets,
+    REGEXP_EXTRACT's IF): wrapped twice, or a SELECT's offsets shifted twice, it would answer otherwise.
+    """
+    if node.args.get("bigquery"):
+        return False
+    node.set("bigquery", True)
+    return True
+
+
+def regexp_as_bigquery(node: exp.RegexpExtract | exp.RegexpExtractAll) -> exp.Expression:
+    """Return REGEXP_EXTRACT(_ALL) as BigQuery answers it: its group's match, and NULL where nothing matches.
+
+    Where the pattern has one group, the match is that group's: sqlglot counts groups with Python's re, which can't
+    read RE2's \\x{3000} or \\p{Nd} (groups()). REGEXP_EXTRACT gives NULL where it doesn't match; DuckDB's gives ''.
+    """
+    pattern = node.expression
+    if (pattern.is_string or isinstance(pattern, exp.RawString)) and groups(pattern.name) == 1:
+        node.set("group", exp.Literal.number(1))
+    if isinstance(node, exp.RegexpExtract):
+        return exp.If(this=exp.RegexpLike(this=node.this.copy(), expression=pattern.copy()), true=node)
     return node
 
 
@@ -249,15 +268,19 @@ class DuckDB:
         self.con.create_function("entities_of", entities.of, ["VARCHAR"], "VARCHAR")
 
     def run(self, sql: str, values: dict | None = None) -> None:
+        """Run a statement, translated (duckdb_sql), with `values` as its @parameters."""
         self.con.execute(duckdb_sql(sql), values or None)
 
     def rows(self, sql: str, values: dict | None = None) -> list[tuple]:
+        """Return a query's rows, as tuples."""
         return self.con.execute(duckdb_sql(sql), values or None).fetchall()
 
     def value(self, sql: str, values: dict | None = None) -> object:
+        """Return a query's first row's first value."""
         return self.rows(sql, values)[0][0]
 
     def frame(self, sql: str, values: dict | None = None) -> pd.DataFrame:
+        """Return a query's rows as a frame: a small result only."""
         return self.con.execute(duckdb_sql(sql), values or None).df()
 
     def columns(self, table: str) -> list[tuple[str, str]]:
@@ -301,6 +324,7 @@ class DuckDB:
             self.run("ROLLBACK")
 
     def close(self) -> None:
+        """Close the database, and remove the spill folder this engine made."""
         self.con.close()
         if self.spill:
             shutil.rmtree(self.spill, ignore_errors=True)
@@ -382,51 +406,74 @@ def stage_statements(stage: str, mapping: Path | None) -> list[str]:
 def procedures(dataset: str, mapping: Path | None = None) -> list[str]:
     """Return the statements the deploy runs in `dataset` (project.dataset), after functions().
 
-    First, the method's own SQL functions: each stage file's CREATE TEMP FUNCTION, made as one of the dataset's. Then
-    one procedure a job (JOBS): its stages' statements in order, with the values they read (@name, from
-    nayose.values_of) declared at its top as v_name. `mapping` is the deployment's mapping.sql. Every call of the
-    method's functions names the dataset, where the deploy made them.
+    First, the method's own SQL functions (sql_functions). Then one procedure a job (JOBS): its stages' statements in
+    order, with the values they read (@name, from nayose.values_of) declared at its top as v_name. `mapping` is the
+    deployment's mapping.sql. Every call of the method's functions names the dataset, where the deploy made them.
     """
-    sql_functions: dict[str, str] = {}  # the method's SQL functions by name, as the deploy makes them, in the order met
-    jobs = {job: job_statements(job, stages, dataset, mapping, sql_functions) for job, stages in JOBS.items()}
-    own = calls_of(sql_functions)
     fingerprint = bigquery_literal(nayose.fingerprint(mapping_file=mapping))  # what an update needs unchanged
-    return [*(qualified(sql, own, dataset) for sql in sql_functions.values()),
-            *(procedure(job, *parts, dataset, fingerprint, own) for job, parts in jobs.items())]
+    out = sql_functions(dataset, mapping)
+    for job, stages in JOBS.items():
+        body, declared, written = job_statements(job, stages, dataset, mapping)
+        out.append(procedure(job, body=body, declared=declared, written=written, dataset=dataset,
+                             fingerprint=fingerprint))
+    return out
 
 
-def job_statements(job: str, stages: list, dataset: str, mapping: Path | None,
-                   sql_functions: dict[str, str]) -> tuple[list[str], dict, list[str]]:
+def sql_functions(dataset: str, mapping: Path | None) -> list[str]:
+    """Return each stage file's CREATE TEMP FUNCTION made a function of `dataset`, in the order the jobs meet them."""
+    made = {}
+    for stage in dict.fromkeys(stage for stages in JOBS.values() for stage, _ in stages):
+        for sql in stage_statements(stage, mapping):
+            if function := TEMP_FUNCTION.match(sql):
+                rest = sql[function.end():]
+                made.setdefault(function["name"],
+                                f"{function['lead']}CREATE OR REPLACE FUNCTION `{dataset}`.{function['name']}{rest}")
+    return [qualified(sql, dataset) for sql in made.values()]
+
+
+def job_statements(job: str, stages: list, dataset: str, mapping: Path | None) -> tuple[list[str], dict, list[str]]:
     """Return one job's statements for its procedure, the values they read, and the run's tables they write.
 
-    A CREATE TEMP FUNCTION goes to `sql_functions` instead, made as a function of the dataset. Each @name becomes
-    v_name. A statement with a `-- when:` condition is wrapped in IF ... END IF. A view names its tables with their
-    dataset (in_dataset). The tables written are the run's (not temporary, and not KEPT), in the order first written.
+    Each statement is as the procedure runs it (in_procedure). A CREATE TEMP FUNCTION is left out: sql_functions makes
+    it a function of the dataset. The tables written are the run's (run_table_written), in the order first written.
     """
     body, declared, written = [], {}, {}
     for stage, told in stages:
         declared |= nayose.values_of(stage, **told)
         for sql in stage_statements(stage, mapping):
-            if function := TEMP_FUNCTION.match(sql):
-                def in_the_dataset(x: re.Match) -> str:
-                    return f"{x['lead']}CREATE OR REPLACE FUNCTION `{dataset}`.{x['name']}"
-                made = TEMP_FUNCTION.sub(in_the_dataset, sql, count=1)
-                sql_functions.setdefault(function["name"], made)
+            if TEMP_FUNCTION.match(sql):
                 continue
-            sql = nayose.PARAMETER.sub(r"v_\1", sql)  # in comments too: a -- when: condition is read from them
-            guard = nayose.when(sql)  # read before in_dataset, whose SQL keeps no comment
-            head = WRITE.match(sql)
-            if head and "VIEW" in head["verb"].upper():
-                sql = in_dataset(sql, dataset)
-            elif head and "TEMP" not in head["verb"].upper() and head["table"] not in KEPT:
-                written.setdefault(head["table"])
-            body.append(f"IF {guard} THEN\n{sql};\nEND IF" if guard else sql)
+            body.append(in_procedure(sql, dataset))
+            if table := run_table_written(sql):
+                written.setdefault(table)
     arguments = ARGUMENTS.get(job, {})
     return body, {k: v for k, v in declared.items() if k not in arguments}, list(written)
 
 
-def procedure(job: str, body: list[str], declared: dict, written: list[str], dataset: str, fingerprint: str,
-              own: re.Pattern) -> str:
+def in_procedure(sql: str, dataset: str) -> str:
+    """Return a stage's statement as its procedure runs it.
+
+    Each @name becomes v_name. A view names its tables with their dataset (in_dataset). A statement with a `-- when:`
+    condition is wrapped in IF ... END IF.
+    """
+    sql = nayose.PARAMETER.sub(r"v_\1", sql)  # in comments too: a -- when: condition is read from them
+    guard = nayose.when(sql)  # read before in_dataset, whose SQL keeps no comment
+    head = WRITE.match(sql)
+    if head and "VIEW" in nayose.verb_of(head):
+        sql = in_dataset(sql, dataset)
+    return f"IF {guard} THEN\n{sql};\nEND IF" if guard else sql
+
+
+def run_table_written(sql: str) -> str | None:
+    """Return the run's table a statement writes, or None: a view, a temporary table and KEPT's tables aren't."""
+    head = WRITE.match(sql)
+    if not head:
+        return None
+    verb = nayose.verb_of(head)
+    return None if "VIEW" in verb or "TEMP" in verb or head["table"] in KEPT else head["table"]
+
+
+def procedure(job: str, body: list[str], declared: dict, written: list[str], dataset: str, fingerprint: str) -> str:
     """Return the CREATE PROCEDURE statement of one job, from its statements (job_statements).
 
     The procedure declares its values, then sets the dataset as the default. A build first drops every table it
@@ -442,7 +489,7 @@ def procedure(job: str, body: list[str], declared: dict, written: list[str], dat
         body = [*body, nayose.METHOD.replace("@fingerprint", fingerprint)]
     if job == "update":
         head.append(nayose.UNCHANGED.replace("@fingerprint", fingerprint))
-    statements = ";\n".join([*head, *(qualified(sql, own, dataset) for sql in body)])
+    statements = ";\n".join([*head, *(qualified(sql, dataset) for sql in body)])
     return f"CREATE OR REPLACE PROCEDURE `{dataset}`.{job}({arguments})\nBEGIN\n{statements};\nEND"
 
 
@@ -457,12 +504,18 @@ def calls_of(names, flags: int = 0) -> re.Pattern:
     return re.compile(r"(?<![\w.`])(" + "|".join(sorted(names, key=len, reverse=True)) + r")\s*\(", flags)
 
 
-def qualified(sql: str, own: re.Pattern, dataset: str) -> str:
+# a call of the method's JavaScript, Python and portable functions, which functions() makes
+CALLS = calls_of([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc", "one_byte_hash", "fit_model",
+                  "entities_of"], re.I)
+OWN = calls_of(method_functions())  # a call of the method's SQL functions: the deploy made each in the dataset
+
+
+def qualified(sql: str, dataset: str) -> str:
     """Return `sql` with each call of the method's functions named with `dataset`, where the deploy made them.
 
-    That is its SQL functions (`own`), and its JavaScript and Python ones (BigQuery.CALLS).
+    That is its SQL functions (OWN), and its JavaScript and Python ones (CALLS).
     """
-    return own.sub(lambda m: f"`{dataset}`.{m[1]}(", BigQuery.CALLS.sub(lambda m: f"`{dataset}`.{m[1]}(", sql))
+    return OWN.sub(lambda m: f"`{dataset}`.{m[1]}(", CALLS.sub(lambda m: f"`{dataset}`.{m[1]}(", sql))
 
 
 def bigquery_type(v: object) -> str:
@@ -497,9 +550,6 @@ class BigQuery:
     given; `bigquery` is the module its job configurations come from, imported when not given.
     """
     name = "bigquery"
-    # a call of the method's JavaScript, Python and portable functions, which functions() makes
-    CALLS = calls_of([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc", "one_byte_hash", "fit_model",
-                      "entities_of"], re.I)
 
     def __init__(self, dataset: str, client: object = None, bigquery: object = None) -> None:
         self.bigquery = bigquery or importlib.import_module("google.cloud.bigquery")
@@ -510,11 +560,9 @@ class BigQuery:
         except ImportError:  # a test's fake client, without the library: no such error to catch
             self.MISSING = ()
 
-    OWN = calls_of(method_functions())  # a call of the method's SQL functions: the deploy made each in the dataset
-
     def _job(self, sql: str, values: dict | None = None) -> object:
         """Run `sql` with its calls qualified, in the job's session (the first query makes it); return its result."""
-        text = qualified(sql, self.OWN, self.dataset)
+        text = qualified(sql, self.dataset)
         job = self.client.query(text, job_config=self._config(values))
         result = job.result()
         if self.session is None:
@@ -537,17 +585,21 @@ class BigQuery:
         return config
 
     def run(self, sql: str, values: dict | None = None) -> None:
+        """Run a statement in the job's session, with `values` as its @parameters; a temporary function isn't sent."""
         if TEMP_FUNCTION.match(sql):  # the deploy made it in the dataset (procedures): no need to make it again
             return
         self._job(sql, values)
 
     def rows(self, sql: str, values: dict | None = None) -> list[tuple]:
+        """Return a query's rows, as tuples."""
         return [tuple(r.values()) for r in self._job(sql, values)]
 
     def value(self, sql: str, values: dict | None = None) -> object:
+        """Return a query's first row's first value."""
         return self.rows(sql, values)[0][0]
 
     def frame(self, sql: str, values: dict | None = None) -> pd.DataFrame:
+        """Return a query's rows as a frame: a small result only."""
         return self._job(sql, values).to_dataframe()
 
     def columns(self, table: str) -> list[tuple[str, str]]:

@@ -6,7 +6,8 @@ nayose's method is SQL in BigQuery's dialect, one file per stage, in `nayose/sql
 BigQuery runs them as written. DuckDB, on a laptop or in CI, runs them after sqlglot translates them. A run is a set of
 tables: a BigQuery dataset in prod, and a DuckDB database file here. Python does four things only:
 
-- **the jobs** (`nayose/__main__.py`, `nayose/__init__.py`), which run each stage file's statements in order;
+- **the jobs** (`nayose/__main__.py`, `nayose/__init__.py`, `nayose/reporting.py`), which run each stage file's
+  statements in order and write report.txt;
 - **the engines** (`nayose/engines.py`), which translate the SQL for DuckDB and make the deploy's statements;
 - **EM** (`nayose/em.py`), which learns the model from the counts the SQL leaves;
 - **connected components** (`nayose/entities.py`), which make entities from people's decisions.
@@ -72,15 +73,19 @@ flowchart TB
   cli["The jobs, here: nayose/__main__.py<br/>python -m nayose build, update, match, decide, lookup:<br/>a run's folder, its lock, the JSON printed, the exit code"]
   deploy["The deploy: deploy/<br/>deploy.py: functions and procedures · run.py: a job called<br/>smoke.py: BigQuery against DuckDB · Jenkinsfile · terraform/"]
   tools["Design time: scripts/, design/<br/>synthetic data, the benchmark, the cost estimate,<br/>key quality, the name model's training"]
-  stages["Stages and jobs: nayose/__init__.py<br/>records, fit, score, decide, match, lookup, build, update:<br/>each stage file run with its values; report.txt"]
+  stages["Stages and jobs: nayose/__init__.py<br/>records, fit, score, decide, match, lookup, build, update:<br/>each stage file run with its values"]
+  reporting["report.txt: nayose/reporting.py<br/>report.sql run, then its tables on a page:<br/>no record's value in it"]
   engines["Engines: nayose/engines.py<br/>DuckDB: the SQL translated, the function twins<br/>BigQuery: the SQL as written, a session a job<br/>functions(), procedures(): the deploy's statements"]
   udfs["Python UDFs: nayose/em.py, nayose/entities.py<br/>fit_model: EM · entities_of: connected components<br/>standard library only, BigQuery's python-3.11"]
   sql[("The method: nayose/sql/*.sql, mapping.sql<br/>functions, records, fit, score, decide, match, lookup, report")]
   values[("The values: nayose/config.toml, config/kind_names.npz<br/>a section a stage; the name model")]
   js[("The comparisons in JavaScript: nayose/strings.js")]
   cli -->|"calls"| stages
+  cli -->|"report"| reporting
   deploy -->|"BigQuery, functions(), procedures()"| engines
-  deploy -->|"values, report_text"| stages
+  deploy -->|"values"| stages
+  deploy -->|"report_text"| reporting
+  reporting -->|"stage, values_of"| stages
   tools -->|"build, on DuckDB"| stages
   stages -->|"reads"| sql
   stages -->|"reads"| values
@@ -91,13 +96,15 @@ flowchart TB
 ```
 
 *python -m nayose calls the stages and jobs in nayose/__init__.py, which read the SQL files and config.toml and run
-each statement on an engine; the engines register the Python UDFs and embed the JavaScript comparisons; deploy/ makes
-the BigQuery functions and procedures from the same files.*
+each statement on an engine, and report.txt's code in nayose/reporting.py, which runs report.sql as a stage; the
+engines register the Python UDFs and embed the JavaScript comparisons; deploy/ makes the BigQuery functions and
+procedures from the same files.*
 
 | File | Holds |
 |---|---|
 | `nayose/__main__.py` | the jobs as a machine runs them here: the arguments, the run's folder, its lock, the JSON printed, the exit code |
-| `nayose/__init__.py` | one function per stage and job (`records`, `fit`, `score`, `decide`, `match`, `lookup`, `build`, `update`), `values_of` (what each stage reads from `config.toml`), `stage` (a file's statements in order) and `report_text` |
+| `nayose/__init__.py` | one function per stage and job (`records`, `fit`, `score`, `decide`, `match`, `lookup`, `build`, `update`), `values_of` (what each stage reads from `config.toml`), `stage` (a file's statements in order) and `Engine` (the verbs an engine answers) |
+| `nayose/reporting.py` | `report` and `report_text`: report.txt from report.sql's tables, with no record's value in it (the package names both too) |
 | `nayose/engines.py` | `DuckDB` and `BigQuery`, which answer the same verbs (`run`, `rows`, `value`, `frame`, `put`, `read_parquet`); the translation (`duckdb_sql`, `AVOID`); the deploy's statements (`functions`, `procedures`) |
 | `nayose/sql/*.sql` | the method. Each header says what the stage does, its cost, and the tables it reads and writes |
 | `nayose/em.py`, `nayose/entities.py` | `fit_model` and `entities_of`: pure functions, JSON in and JSON out |
@@ -298,8 +305,8 @@ record. It also reports, key by key, what was looked up and what the gate decide
 
 **BigQuery** runs the SQL as written, in one session per job, so the temporary tables die with the job. The run's
 dataset is the session's default, so statements name tables alone. Calls to the deploy's functions are qualified with
-the dataset (`BigQuery.CALLS`), and so are the method's own SQL functions, which the deploy made in the dataset
-(`BigQuery.OWN`): a statement that would make one again, Python's (a lookup's, the report's), isn't sent.
+the dataset (`engines.CALLS`), and so are the method's own SQL functions, which the deploy made in the dataset
+(`engines.OWN`): a statement that would make one again, Python's (a lookup's, the report's), isn't sent.
 
 **A statement that may not need to run** says when it does, in a comment: `-- when: <condition>`, a SQL condition
 on the job's values and tables. `run_file` asks the engine and skips the statement where it is false. The deploy

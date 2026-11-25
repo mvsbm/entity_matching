@@ -24,6 +24,7 @@ COMPARED = {"scored": "SELECT id_l, id_r, ROUND(match_weight, 9) AS w, rule, sou
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Build the file on BigQuery and on DuckDB, say whether the two runs agree (COMPARED), and return 0 if they do."""
     dataset, uri, local = sys.argv[1:4] if argv is None else argv
     if run.main([dataset, "build", uri]):
         return 1

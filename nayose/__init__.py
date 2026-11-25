@@ -15,6 +15,7 @@ The stages the jobs run:
     records(engine, files)          stage 1: read the input files, map them (mapping.sql), make records (records.sql)
     fit(engine)                     stage 2: learn the model on a sample, then u on the file (fit.sql, nayose/em.py)
     score(engine)                   stage 3: the rules' pairs, the keys' candidates and their scores (score.sql)
+    report(engine, steps, job)      after a build or an update: report.sql, then report.txt (nayose/reporting.py)
 
 Running SQL:
     stage(engine, name, **values)   run a stage file's statements in order, each given the values it names (@name)
@@ -22,19 +23,17 @@ Running SQL:
     fingerprint()                   hash what an update needs unchanged since its build: the SQL, the values, the
                                     mapping and the name model
 """
+import contextlib
 import functools
 import hashlib
 import json
 import math
 import os
-import platform
 import re
-import subprocess
 import tomllib
-from datetime import datetime
+import typing
 from pathlib import Path
 
-import duckdb
 import numpy as np
 import pandas as pd
 import sqlglot
@@ -49,6 +48,7 @@ KATAKANA = "".join(chr(c + 0x60) for c in range(0x3041, 0x3097))  # the katakana
 KATAKANA_BLOCK = "".join(map(chr, range(0x30A0, 0x3100)))
 ONE_BYTE = "".join(map(chr, range(1, 0x61)))  # one byte for each character of the katakana block: 0x01–0x60
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a column name config.toml may give
+MAPPED = ("input_rows", "mapped")  # the tables a mapping makes, for records.sql
 METHOD = "CREATE OR REPLACE TABLE method AS SELECT @fingerprint AS fingerprint"  # a build's last statement
 CHANGED = ("the method, its values or the mapping changed since the run was built: "
            "a batch or a lookup would be scored otherwise")
@@ -63,21 +63,48 @@ FIELDS = (  # a record's fields, as report.txt lists them
 
 # Reading a statement from its text: run_file, for_lookup and the deploy's procedures do.
 PARAMETER = re.compile(r"@(\w+)")  # a value a statement reads, by name: run_file passes it, the deploy declares it
-NOT_CODE = re.compile(r"--[^\n]*|'(?:[^'\\]|\\.)*'")  # a -- comment or a '…' string: the parts that aren't code
-QUOTED = re.compile(  # a -- comment, or any of BigQuery's strings and quoted names
+NOT_CODE = re.compile(  # a -- comment, or any of BigQuery's strings and quoted names: the parts that aren't code
     r"""--[^\n]*|'''.*?'''|\"\"\".*?\"\"\"|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`[^`]*`""", re.S)
 WHEN = re.compile(r"^\s*--\s*when:(.*)$", re.M | re.I)  # a `-- when: <condition>` line: see when()
 LEAD = r"(?P<lead>(?:\s*--[^\n]*\n|\s*/\*.*?\*/)*\s*)"  # a statement's leading comments
-WRITE = re.compile(  # a statement that writes a table: its leading comments, its verb, and the table it writes
-    rf"^{LEAD}(?P<verb>"
-    r"CREATE\s+OR\s+REPLACE\s+TEMP(?:ORARY)?\s+TABLE|CREATE\s+OR\s+REPLACE\s+TABLE|CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS|"
-    r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW|CREATE\s+TABLE|"
-    r"INSERT(?:\s+INTO)?|DELETE(?:\s+FROM)?|UPDATE|MERGE(?:\s+INTO)?|TRUNCATE\s+TABLE"
-    r")\s+`?(?P<table>\w+)`?", re.I | re.S)
-READ_OR_TEMP = re.compile(  # a statement that only reads, or makes a temporary table or function
+# A statement that writes a table: its leading comments, its verb, and the table it writes. The verbs are tried in
+# order and the first that fits wins, so a verb comes before any shorter one it starts with: CREATE TABLE IF NOT
+# EXISTS x before CREATE TABLE, which would read the table as IF.
+WRITE = re.compile(rf"^{LEAD}(?P<verb>" r"""
+      CREATE\s+OR\s+REPLACE\s+TEMP(?:ORARY)?\s+TABLE
+    | CREATE\s+OR\s+REPLACE\s+TABLE
+    | CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS
+    | CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW
+    | CREATE\s+TABLE
+    | INSERT(?:\s+INTO)?
+    | DELETE(?:\s+FROM)?
+    | UPDATE
+    | MERGE(?:\s+INTO)?
+    | TRUNCATE\s+TABLE
+    )\s+`?(?P<table>\w+)`?""", re.I | re.S | re.X)
+# A statement that only reads, or makes a temporary function, or makes a temporary table in a form WRITE doesn't
+# read: score.sql's CREATE TEMP TABLE IF NOT EXISTS block_size, which a lookup has made already (copy_for_lookup)
+READ_OR_TEMP = re.compile(
     rf"^{LEAD}(SELECT|WITH|CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+(?:FUNCTION|TABLE))\b", re.I | re.S)
 TEMP_FUNCTION = re.compile(  # a statement that makes a temporary function: its leading comments and the function's name
     rf"^{LEAD}CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+FUNCTION\s+(?P<name>\w+)", re.I | re.S)
+
+
+class Engine(typing.Protocol):
+    """What the jobs run SQL on, BigQuery's dialect: engines.DuckDB or engines.BigQuery, which answer alike."""
+
+    name: str  # "duckdb" or "bigquery"
+    MISSING: tuple[type[Exception], ...]  # what a query of a table the run lacks raises
+
+    def run(self, sql: str, values: dict | None = None) -> None: ...  # a statement, given its @values
+    def rows(self, sql: str, values: dict | None = None) -> list[tuple]: ...
+    def value(self, sql: str, values: dict | None = None) -> object: ...  # the first row's first value
+    def frame(self, sql: str, values: dict | None = None) -> pd.DataFrame: ...  # a small result only
+    def columns(self, table: str) -> list[tuple[str, str]]: ...  # a table's columns, as (name, type)
+    def put(self, table: str, frame: pd.DataFrame) -> None: ...  # a small frame made a table
+    def read_parquet(self, table: str, files: list, columns: list[str] = ()) -> None: ...  # input files as a table
+    def scratch(self) -> contextlib.AbstractContextManager: ...  # temporary tables that end with it
+    def close(self) -> None: ...
 
 
 class InputError(ValueError):
@@ -98,9 +125,6 @@ def mapping() -> Path:
     return Path(os.environ.get("NAYOSE_MAPPING") or HERE / "mapping.sql")
 
 
-MAPPED = ("input_rows", "mapped")  # the tables a mapping makes, for records.sql
-
-
 @functools.cache
 def method_tables() -> frozenset[str]:
     """Return, in lower case, every table the method's SQL names (a WITH's names aside) and every table Python makes."""
@@ -117,12 +141,14 @@ def mapping_statements(path: Path) -> list[str]:
     """Return a mapping's statements, or raise InputError unless every one keeps to a mapping's form.
 
     A mapping turns the input's columns into fields and keeps nothing. So each statement, as BigQuery parses it, must
-    be one query, or make one temporary table with a name the method doesn't use (in any case), and its comments must
-    start with --. The reasons:
+    be one query, or make one temporary table with a name the method doesn't use (in any case), and its comments
+    should start with --. A # comment is refused. A /* */ one is not, but nayose reads it as code (the last reason),
+    so it is refused only where that breaks the statement. The reasons:
     - a table of its own would be dropped by the next build, which makes again every table it writes;
     - a temporary table named like one of the method's would hide it, as a statement reads a temporary table first;
     - a function of its own would replace one of the method's on BigQuery, but not on DuckDB;
-    - nayose finds a statement's end, and the @values it reads, past -- comments alone (statements, run_file).
+    - nayose finds a statement's end, and the @values it reads, past -- comments alone (statements, run_file): in a
+      /* */ comment, a line ending in ';' ends the statement, and an @name is a value it reads.
     """
     try:
         out = statements(path.read_text(encoding="utf-8"))
@@ -130,31 +156,41 @@ def mapping_statements(path: Path) -> list[str]:
         raise InputError(f"{path.name}: {e}",
                          fix="end each statement with a line ending in ';', and start a comment with --") from e
     for sql in out:
-        said = " ".join(sql.split())[-100:]
-        if "#" in QUOTED.sub("", sql):
-            raise InputError(f"{path.name}: a comment starts with --, as in the method's files: {said}",
-                             fix="write each # comment as --")
-        try:
-            parsed = sqlglot.parse(sql, read="bigquery")
-            trees = [t for t in parsed if t is not None and not isinstance(t, exp.Semicolon)]  # a comment after ';' too
-        except sqlglot.errors.ParseError as e:
-            raise InputError(f"{path.name}: a statement doesn't parse as BigQuery's: {said}",
-                             fix=str(e).split("\n")[0]) from e
-        tree = trees[0] if len(trees) == 1 else None
-        is_temp_table = isinstance(tree, exp.Create) and tree.kind == "TABLE" and tree.find(exp.TemporaryProperty)
-        created = tree if is_temp_table else None
-        name = created and (created.this.this if isinstance(created.this, exp.Schema) else created.this).name
-        if isinstance(tree, exp.Create) and tree.kind == "FUNCTION":
-            raise InputError(f"{path.name}: a mapping makes no function of its own: {said}",
-                             fix="write it in place, or call one of functions.sql's")
-        if created is not None and name.lower() in method_tables():
-            raise InputError(f"{path.name}: the temporary table {name} has the name of one of the method's tables, "
-                             "which it would hide", fix="give it a name of its own")
-        if created is None and not isinstance(tree, exp.Query):
-            raise InputError(f"{path.name}: a mapping reads, and makes temporary tables alone, "
-                             f"one statement to a line ending in ';': {said}",
-                             fix="make it CREATE OR REPLACE TEMP TABLE <a name of its own> AS SELECT …")
+        check_mapping_statement(path.name, sql)
     return out
+
+
+def check_mapping_statement(file: str, sql: str) -> None:
+    """Raise InputError unless one statement of the mapping `file` keeps to a mapping's form (mapping_statements)."""
+    said = " ".join(sql.split())[-100:]
+    if "#" in NOT_CODE.sub("", sql):
+        raise InputError(f"{file}: a comment starts with --, as in the method's files: {said}",
+                         fix="write each # comment as --")
+    try:
+        parsed = sqlglot.parse(sql, read="bigquery")
+    except sqlglot.errors.ParseError as e:
+        raise InputError(f"{file}: a statement doesn't parse as BigQuery's: {said}", fix=str(e).split("\n")[0]) from e
+    trees = [t for t in parsed if t is not None and not isinstance(t, exp.Semicolon)]  # a comment after ';' too
+    tree = trees[0] if len(trees) == 1 else None
+    name = temp_table_name(tree)
+    if isinstance(tree, exp.Create) and tree.kind == "FUNCTION":
+        raise InputError(f"{file}: a mapping makes no function of its own: {said}",
+                         fix="write it in place, or call one of functions.sql's")
+    if name is not None and name.lower() in method_tables():
+        raise InputError(f"{file}: the temporary table {name} has the name of one of the method's tables, "
+                         "which it would hide", fix="give it a name of its own")
+    if name is None and not isinstance(tree, exp.Query):
+        raise InputError(f"{file}: a mapping reads, and makes temporary tables alone, "
+                         f"one statement to a line ending in ';': {said}",
+                         fix="make it CREATE OR REPLACE TEMP TABLE <a name of its own> AS SELECT …")
+
+
+def temp_table_name(tree: exp.Expression | None) -> str | None:
+    """Return the name of the temporary table a parsed statement makes, or None where it makes none."""
+    if not (isinstance(tree, exp.Create) and tree.kind == "TABLE" and tree.find(exp.TemporaryProperty)):
+        return None
+    made = tree.this.this if isinstance(tree.this, exp.Schema) else tree.this  # a column list wraps the name
+    return made.name
 
 
 def legal_pattern(section: dict) -> str:
@@ -184,7 +220,7 @@ def nulls_pattern(nulls: list[str]) -> str:
             r"|^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$")
 
 
-def records(engine, files: list | None, lookup: bool = False, scratch: set | None = None) -> None:
+def records(engine: Engine, files: list | None, lookup: bool = False, scratch: set | None = None) -> None:
     """Run stage 1 on `engine`: load the input files, then run mapping.sql and records.sql.
 
     The files become the table input, with every column mapping.sql reads that a file lacks, as missing; with
@@ -219,7 +255,7 @@ def values_of(name: str, refit: bool = True, lookup: bool = False) -> dict:
 
     A run here passes them as query parameters; a BigQuery procedure declares them (engines.procedures). `refit` is
     True for a build, False for a build given a model, which keeps it. With `lookup`, the batch is a record asked about.
-    match's @threshold, and the values of lookup.sql and report.sql, come from their jobs.
+    match's @threshold and lookup.sql's values come from their jobs.
     """
     c = config()
     if name == "mapping":
@@ -252,17 +288,25 @@ def values_of(name: str, refit: bool = True, lookup: bool = False) -> dict:
     return {}
 
 
-def fit(engine, refit: bool = True) -> None:
+def fit(engine: Engine, model: str | None = None) -> None:
     """Run stage 2 on `engine`, after records: fit.sql, with config.toml's [fit].
 
-    With `refit` False (a build given a model), the model in the table fit is kept and its u measured on the records.
-    O(n + S·K) on the sample of n records, S sampled pairs and K comparisons, and O(N + S·K) on the file.
+    With `model`, a model fitted elsewhere (what a fit returned), the table fit is made to hold it, and fit.sql keeps
+    it and measures only its u on the records. O(n + S·K) on the sample of n records, S sampled pairs and K
+    comparisons, and O(N + S·K) on the file.
     """
+    if model is not None:
+        engine.run("CREATE OR REPLACE TABLE fit AS SELECT CAST(NULL AS FLOAT64) AS probability, "
+                   "CAST(NULL AS INT64) AS fit_rows, CAST(NULL AS INT64) AS records, "
+                   "CAST(NULL AS FLOAT64) AS prior_bits, "
+                   "CAST(NULL AS STRING) AS notes, @fitted AS fitted",
+                   {"fitted": model})
     stage(engine, "functions")
-    stage(engine, "fit", **values_of("fit", refit=refit))
+    stage(engine, "fit", **values_of("fit", refit=model is None))
 
 
-def score(engine, lookup: bool = False, scratch: set | None = None, until: str | None = None, outside: int = 0) -> None:
+def score(engine: Engine, lookup: bool = False, scratch: set | None = None, until: str | None = None,
+          outside: int = 0) -> None:
     """Run stage 3 on `engine`, after fit: score.sql, with config.toml's [score].
 
     With `lookup`, every candidate is scored, whatever its points, in `scratch`'s temporary tables, up to the table
@@ -275,7 +319,7 @@ def score(engine, lookup: bool = False, scratch: set | None = None, until: str |
 
 # ---------- lookup ----------
 
-def lookup(engine, record: str | None = None, values: dict | None = None, at_least: float | None = None,
+def lookup(engine: Engine, record: str | None = None, values: dict | None = None, at_least: float | None = None,
            most: int | None = None) -> dict:
     """Return the entities a record would be compared with, as an update of it alone compares it, best first.
 
@@ -287,8 +331,10 @@ def lookup(engine, record: str | None = None, values: dict | None = None, at_lea
 
     A lookup writes nothing to the run, and reads only what it touches, in three steps: the record's own keys
     (asked_keys), the run's key index read by those keys (read_index), and the record scored against those records
-    alone (score_asked). Each step works in temporary tables that end with it (engine.scratch), and every statement
-    it runs goes through for_lookup, which refuses any write to a run's table. O(G) for its keys + O(G·b + C·K·L²).
+    alone (score_asked). Each step works in temporary tables that end with it (engine.scratch). Each statement of a
+    SQL file goes through for_lookup, which refuses any write to a run's table. The lookup's own statements write
+    temporary tables alone: copy_for_lookup's make them, and add_asked_record's two, run directly, make this_batch and
+    give the stored record asked about its batch in the copy of records. O(G) for its keys + O(G·b + C·K·L²).
     """
     c = config()
     at_least = float(c["lookup"]["at_least"] if at_least is None else at_least)
@@ -299,8 +345,7 @@ def lookup(engine, record: str | None = None, values: dict | None = None, at_lea
         raise InputError(f"{', '.join(unknown)}: no field reads that column",
                          fix=f"the columns a field reads: {', '.join(c['input']['columns'])}")
     asked_id = record if record is not None else QUERY
-    # the key index and the scores are the build's method's
-    unchanged(engine, "build the run again with them, or look up with the code the build ran")
+    unchanged(engine, build_again("look up"))  # the key index and the scores are the build's method's
     if record is not None and not engine.value("SELECT COUNT(*) FROM records WHERE id = @id", {"id": asked_id}):
         raise InputError(f"{record}: no record of the run has that ID",
                          fix="give a record ID the run holds, or the record's values")
@@ -311,7 +356,7 @@ def lookup(engine, record: str | None = None, values: dict | None = None, at_lea
     return lookup_answer(record, view, candidates, found, checked, at_least, most)
 
 
-def asked_keys(engine, record: str | None, values: dict | None, asked_id: str) -> dict[str, set]:
+def asked_keys(engine: Engine, record: str | None, values: dict | None, asked_id: str) -> dict[str, set]:
     """Return the keys of the record asked about, made from it alone: its every_key and rule_keys rows (step 1)."""
     with engine.scratch():
         score_in_scratch(engine, record, values, [asked_id] if record is not None else [], until="made_keys")
@@ -319,7 +364,7 @@ def asked_keys(engine, record: str | None, values: dict | None, asked_id: str) -
                 "rule_keys": set(engine.rows("SELECT i, k FROM made_rule_keys WHERE id = @id", {"id": asked_id}))}
 
 
-def read_index(engine, keys: dict[str, set], record: str | None, asked_id: str, big: int) -> tuple[set, dict]:
+def read_index(engine: Engine, keys: dict[str, set], record: str | None, asked_id: str, big: int) -> tuple[set, dict]:
     """Return the records the run's key index holds under the record's keys (step 2).
 
     That is every record of each rule key and of each block, but of an oversized block (`big` records or more) only
@@ -343,8 +388,8 @@ def read_index(engine, keys: dict[str, set], record: str | None, asked_id: str, 
     return ids | {i for _, read in blocks.values() for i in read}, blocks
 
 
-def score_asked(engine, record: str | None, values: dict | None, asked_id: str, ids: set, blocks: dict, run_size: int,
-                at_least: float) -> tuple:
+def score_asked(engine: Engine, record: str | None, values: dict | None, asked_id: str, ids: set, blocks: dict,
+                run_size: int, at_least: float) -> tuple:
     """Score the record against the records read, and return the record as compared and lookup.sql's tables (step 3).
 
     A block read in part is scored at its whole size. A big block that the gate keeps makes every pair of it a
@@ -352,33 +397,44 @@ def score_asked(engine, record: str | None, values: dict | None, asked_id: str, 
     more, and the loop ends once no block read in part is kept. The index is read outside the scratch, whose
     every_key is the lookup's own. Returns (the record as compared, candidates, entities, checked).
     """
-    c = config()
-    big = int(c["score"]["oversized"])
+    extra = 0 if record is not None else 1  # a typed record isn't in the index: its blocks hold one record more
     while True:
         with engine.scratch():
-            typed = 0 if record is not None else 1  # a typed record isn't in the index: its blocks hold one record more
-            sized = [(g, k, n + typed) for (g, k), (n, read) in blocks.items() if n > len(read)]
-            temp = score_in_scratch(engine, record, values, sorted(ids), outside=run_size - len(ids), sized=sized)
+            in_part = [(g, k, n + extra) for (g, k), (n, read) in blocks.items() if n > len(read)]
+            temp = score_in_scratch(engine, record, values, sorted(ids), outside=run_size - len(ids), sized=in_part)
             gate_kept = {(g, k) for g, k in engine.rows("SELECT g, value FROM gated WHERE decision = 'kept'")}
-            kept = gate_kept & {(g, k) for g, k, _ in sized}
-            if not kept:
-                stage(engine, "lookup", scratch=temp, at_least=at_least, likely_from=float(c["lookup"]["likely_from"]),
-                      oversized=big, stored=record is not None)
-                shown = ", ".join(SHOWN) + ("" if record is not None else ", kind")
-                return (engine.frame(f"SELECT {shown} FROM records WHERE id = @id", {"id": asked_id}).iloc[0],
-                        engine.frame("SELECT * FROM candidates ORDER BY points DESC, id"),
-                        engine.frame("SELECT * FROM entities "
-                                     "ORDER BY rule IS NULL, ROUND(points, 2) DESC, points DESC, id"),
-                        engine.frame("SELECT * FROM checked ORDER BY position"))
-        index = engine.rows("SELECT g, k, id FROM every_key WHERE k IN UNNEST(@ks)",
-                            {"ks": sorted({k for _, k in kept})})
-        for g, k, i in index:
-            if (g, k) in kept:
-                blocks[g, k][1].add(i)
-                ids.add(i)
+            to_read = gate_kept & {(g, k) for g, k, _ in in_part}  # a block read in part that the gate kept
+            if not to_read:
+                return lookup_tables(engine, temp, record, asked_id, at_least)
+        read_whole(engine, to_read, blocks, ids)
 
 
-def score_in_scratch(engine, record: str | None, values: dict | None, ids: list, until: str | None = None,
+def read_whole(engine: Engine, to_read: set, blocks: dict, ids: set) -> None:
+    """Add every record of the blocks `to_read`, as (g, k), to `blocks` and `ids`, from the run's key index."""
+    index = engine.rows("SELECT g, k, id FROM every_key WHERE k IN UNNEST(@ks)",
+                        {"ks": sorted({k for _, k in to_read})})
+    for g, k, i in index:
+        if (g, k) in to_read:
+            blocks[g, k][1].add(i)
+            ids.add(i)
+
+
+def lookup_tables(engine: Engine, temp: set, record: str | None, asked_id: str, at_least: float) -> tuple:
+    """Run lookup.sql on the scored temporary tables `temp`, and return the record as compared and lookup.sql's tables.
+
+    That is (the record as compared, candidates, entities, checked), as score_asked returns them.
+    """
+    c = config()
+    stage(engine, "lookup", scratch=temp, at_least=at_least, likely_from=float(c["lookup"]["likely_from"]),
+          oversized=int(c["score"]["oversized"]), stored=record is not None)
+    shown = ", ".join(SHOWN) + ("" if record is not None else ", kind")
+    return (engine.frame(f"SELECT {shown} FROM records WHERE id = @id", {"id": asked_id}).iloc[0],
+            engine.frame("SELECT * FROM candidates ORDER BY points DESC, id"),
+            engine.frame("SELECT * FROM entities ORDER BY rule IS NULL, ROUND(points, 2) DESC, points DESC, id"),
+            engine.frame("SELECT * FROM checked ORDER BY position"))
+
+
+def score_in_scratch(engine: Engine, record: str | None, values: dict | None, ids: list, until: str | None = None,
                      outside: int = 0, sized: list = ()) -> set:
     """Score the record asked about in temporary tables of the run's names, and return those tables' names.
 
@@ -394,7 +450,7 @@ def score_in_scratch(engine, record: str | None, values: dict | None, ids: list,
     return temp
 
 
-def copy_for_lookup(engine, ids: list, sized: list) -> set:
+def copy_for_lookup(engine: Engine, ids: list, sized: list) -> set:
     """Copy the run's tables a lookup reads into temporary tables of the same names, and return their names.
 
     records and gold hold `ids` alone, each read by ID (on BigQuery, from its clustering's blocks); placeholders is
@@ -415,7 +471,7 @@ def copy_for_lookup(engine, ids: list, sized: list) -> set:
     return temp
 
 
-def add_asked_record(engine, record: str | None, values: dict | None, temp: set) -> None:
+def add_asked_record(engine: Engine, record: str | None, values: dict | None, temp: set) -> None:
     """Make the record asked about a batch of its own in the temporary tables.
 
     A stored record (`record`) gets the next batch number. A typed one (`values`) is made a record by records.sql,
@@ -443,39 +499,52 @@ def add_asked_record(engine, record: str | None, values: dict | None, temp: set)
 def lookup_answer(record: str | None, view, candidates: pd.DataFrame, found: pd.DataFrame, checked: pd.DataFrame,
                   at_least: float, most: int) -> dict:
     """Return what a lookup gives back (docs/data.md, "A lookup's answer"), from lookup.sql's tables."""
-    def text(v) -> str | None:
-        return None if pd.isna(v) else str(v)
-
-    def shown(x) -> dict:
-        return {f: text(x[f]) for f in SHOWN}
-
-    entities = [dict(entity=x["entity"], record=x["id"], points=round(float(x["points"]), 2), likely=bool(x["likely"]),
-                     rule=text(x["rule"]), keys=sorted(x["sources"].split("+")) if text(x["sources"]) else [],
-                     compared={k: x[f"level_{k}"] for k in COMPARISONS}, records=int(x["records"]), shown=shown(x))
-                for _, x in found.iterrows()]
-    keys = []
-    for _, x in checked.iterrows():
-        key = dict(key=x["key"], found=int(x["found"]))
-        if x["lacks"]:
-            key["why"] = "the record has no value for it"
-        if not pd.isna(x["untrusted"]):
-            key["why"] = f"its value is on {int(x['untrusted']):,} records: the rule doesn't trust it"
-        if isinstance(x["big"], (list, np.ndarray)) and len(x["big"]):
-            key["big"] = [dict(records=int(b["records"]), sampled=int(b["sampled"]),
-                               best=None if b["best"] is None else round(float(b["best"]), 2), decision=b["decision"])
-                          for b in x["big"]]
-        keys.append(key)
+    entities = [entity_found(x) for _, x in found.iterrows()]
     near = candidates.iloc[0] if len(candidates) and not entities else None
     closest = None if near is None else dict(record=near["id"], entity=near["entity"],
-                                             points=round(float(near["points"]), 2), shown=shown(near))
-    return dict(record={"id": record, **{k: text(view[k]) for k in view.index}}, entities=entities[:most],
+                                             points=round(float(near["points"]), 2), shown=shown_fields(near))
+    return dict(record={"id": record, **{k: as_text(view[k]) for k in view.index}}, entities=entities[:most],
                 found=len(entities), at_least=at_least, candidates=len(candidates),
-                likely=sum(e["likely"] for e in entities), closest=closest, checked=keys)
+                likely=sum(e["likely"] for e in entities), closest=closest,
+                checked=[key_checked(x) for _, x in checked.iterrows()])
+
+
+def as_text(v) -> str | None:
+    """Return a cell as text, or None where it is missing."""
+    return None if pd.isna(v) else str(v)
+
+
+def shown_fields(x) -> dict:
+    """Return the fields a lookup shows of a record (SHOWN), from its row."""
+    return {f: as_text(x[f]) for f in SHOWN}
+
+
+def entity_found(x) -> dict:
+    """Return one entity of a lookup's answer, from its row of lookup.sql's entities."""
+    keys = sorted(x["sources"].split("+")) if as_text(x["sources"]) else []
+    return dict(entity=x["entity"], record=x["id"], points=round(float(x["points"]), 2), likely=bool(x["likely"]),
+                rule=as_text(x["rule"]), keys=keys, compared={k: x[f"level_{k}"] for k in COMPARISONS},
+                records=int(x["records"]), shown=shown_fields(x))
+
+
+def key_checked(x) -> dict:
+    """Return one key of a lookup's answer, from its row of lookup.sql's checked: what it found, and why not more."""
+    key = dict(key=x["key"], found=int(x["found"]))
+    if x["lacks"]:
+        key["why"] = "the record has no value for it"
+    if not pd.isna(x["untrusted"]):
+        key["why"] = f"its value is on {int(x['untrusted']):,} records: the rule doesn't trust it"
+    # a frame made from Arrow holds a list as an array, one made from rows as a list; a NULL (no big block) is neither
+    if isinstance(x["big"], (list, np.ndarray)) and len(x["big"]):
+        key["big"] = [dict(records=int(b["records"]), sampled=int(b["sampled"]),
+                           best=None if b["best"] is None else round(float(b["best"]), 2), decision=b["decision"])
+                      for b in x["big"]]
+    return key
 
 
 # ---------- the jobs ----------
 
-def unchanged(engine, fix: str) -> None:
+def unchanged(engine: Engine, fix: str) -> None:
     """Raise InputError (CHANGED, then `fix`) unless the run was built by this method: its fingerprint."""
     try:
         stored = engine.value("SELECT fingerprint FROM method")
@@ -485,12 +554,21 @@ def unchanged(engine, fix: str) -> None:
         raise InputError(CHANGED, fix=fix)
 
 
+def build_again(job: str, out: object = None) -> str:
+    """Return the fix where the method changed since the build (CHANGED): build again, or run `job` with its code.
+
+    Where the run's folder `out` is given, the fix gives the build's command too.
+    """
+    command = "" if out is None else f" (python -m nayose build FILE --out {out} --overwrite)"
+    return f"build the run again with them{command}, or {job} with the code the build ran"
+
+
 def run_stage(name: str, do, *args) -> None:
     """Run a stage of build as it is: build's default `timed`. The CLI passes one that times each stage."""
     do(*args)
 
 
-def build(engine, files: list, model: str | None = None, timed=run_stage) -> None:
+def build(engine: Engine, files: list, model: str | None = None, timed=run_stage) -> None:
     """Make a run from its first batch on `engine`, an empty run: its records, its model, its scores and its entities.
 
     With `model`, a model fitted elsewhere (what fit returned), the model is kept and only its u measured on these
@@ -499,33 +577,26 @@ def build(engine, files: list, model: str | None = None, timed=run_stage) -> Non
     candidates, L a value's length.
     """
     timed("records", records, engine, files)
-    if model is not None:
-        engine.run("CREATE OR REPLACE TABLE fit AS SELECT CAST(NULL AS FLOAT64) AS probability, "
-                   "CAST(NULL AS INT64) AS fit_rows, CAST(NULL AS INT64) AS records, "
-                   "CAST(NULL AS FLOAT64) AS prior_bits, "
-                   "CAST(NULL AS STRING) AS notes, @fitted AS fitted",
-                   {"fitted": model})
-    timed("fit", fit, engine, model is None)
+    timed("fit", fit, engine, model)
     timed("score", score, engine)
     timed("decide", decide, engine, [])
     engine.run(METHOD, {"fingerprint": fingerprint()})
 
 
-def update(engine, files: list) -> None:
+def update(engine: Engine, files: list) -> None:
     """Add a batch to the run on `engine`.
 
     The batch's records are made (one already in the run is set aside), the pairs touching the batch are scored with
     the model the build left, and the entities are made again. O(Δ·(L + b) + C_Δ·K·L²), plus O(N) scans of the run's
     records and keys.
     """
-    unchanged(engine, "build the run again with them (python -m nayose build FILE --out RUN --overwrite), "
-                      "or update with the code the build ran")
+    unchanged(engine, build_again("update", "RUN"))
     records(engine, files)
     score(engine)
     decide(engine, [])
 
 
-def decide(engine, files: list) -> None:
+def decide(engine: Engine, files: list) -> None:
     """Run the decide job on `engine`, after score: store people's decisions, then make the entities (decide.sql).
 
     `files` are Parquet: a match table filled in, or any file with id_l, id_r and decision (and why, kept where given).
@@ -552,296 +623,11 @@ def check_threshold(threshold: float) -> None:
                              "or lower [score] keep_from in config.toml and build the run again")
 
 
-def match(engine, threshold: float) -> None:
+def match(engine: Engine, threshold: float) -> None:
     """Run the match job on `engine`, after decide: match.sql at `threshold` points (check_threshold). O(C + P·F)."""
     check_threshold(threshold)
     stage(engine, "functions")
     stage(engine, "match", threshold=float(threshold))
-
-
-# ---------- report.txt ----------
-
-def report(engine, steps: dict[str, float], job: str) -> str:
-    """Run report.sql on `engine`, after a build or an update, and return report.txt (report_text)."""
-    stage(engine, "report", **values_of("report"))
-    return report_text(engine, steps, job)
-
-
-def report_text(engine, steps: dict[str, float], job: str) -> str:
-    """Return report.txt from report.sql's tables: the run on a page, with no record's value in it.
-
-    `steps` holds each stage's seconds. The page has a section each: what ran, the summary, each field's fill and look,
-    the input's columns no field reads, the batch's candidates by bits and each band's commonest patterns, the
-    entities' sizes, each stage, each key's pairs, the model and the largest blocks. O(F + C) over the report's tables.
-    """
-    c, values = config(), values_of("report")
-    counts = engine.frame("SELECT * FROM report_counts").iloc[0]
-    added = None if job == "build" else int(counts["added"])
-    fill = {f: counts[f] / max(counts["records"], 1) for f in FIELDS}
-    keys = engine.frame("SELECT * FROM report_keys ORDER BY pairs DESC, g")
-    notes = json.loads(engine.value("SELECT notes FROM fit"))
-    sections = [report_header(engine, steps, added), report_summary(engine, c, counts, added, fill),
-                report_fields(engine, fill), report_unmapped(engine, c, json.loads(values["patterns"])),
-                report_scores(engine, values["edges"]), report_patterns(engine, values["floor"]),
-                report_clusters(engine), report_steps(counts, notes, steps, job), report_keys(keys),
-                report_model(engine, notes), report_blocks(keys, counts)]
-    return "\n".join(line for section in sections for line in section) + "\n"
-
-
-def number(x) -> str:
-    """Return a count as people read it, with thousands separated: 12,345."""
-    return f"{int(x):,}"
-
-
-def percent(x) -> str:
-    """Return a share as report.txt prints it, or a dash where there is none."""
-    return "—" if x is None or pd.isna(x) else f"{x:.1%}"
-
-
-def text_table(df: pd.DataFrame) -> list[str]:
-    """Return `df` as the lines of a plain-text table: numbers right-aligned, text left, so the page stays narrow."""
-    if not len(df):
-        return ["  none"]
-    rows = [list(map(str, df.columns)), *([str(v) for v in r] for r in df.itertuples(index=False))]
-    columns = range(len(df.columns))
-    width = [max(len(r[i]) for r in rows) for i in columns]
-    numeric = [all(re.fullmatch(r"[-+]?[\d,.]+(%|e[-+]\d+)?|—", r[i]) for r in rows[1:]) for i in columns]
-    return ["  " + "  ".join(v.rjust(w) if right else v.ljust(w) for v, w, right in zip(r, width, numeric)).rstrip()
-            for r in rows]
-
-
-def report_header(engine, steps: dict[str, float], added: int | None) -> list[str]:
-    """Return the report's first lines: when, what ran, the code, the machine and the time taken."""
-    if engine.name == "duckdb":
-        threads, memory = engine.rows("SELECT current_setting('threads'), current_setting('memory_limit')")[0]
-    else:
-        threads, memory = "—", "—"
-    run = "full run" if added is None else f"increment of {added:,} new records"
-    machine = f"{platform.system()} {platform.machine()}"
-    return [f"RUN REPORT · {datetime.now():%Y-%m-%d %H:%M} · {run} · no record's value in it",
-            f"code {code_version()} · method {fingerprint()[:12]}",
-            f"python {platform.python_version()} · duckdb {duckdb.__version__} · {machine}",
-            f"{threads} threads · memory limit {memory} · took {sum(steps.values()):,.1f} s", ""]
-
-
-def report_summary(engine, c: dict, counts, added: int | None, fill: dict) -> list[str]:
-    """Return the SUMMARY section: records, candidates, entities, kinds, and notes on placeholders and empty fields."""
-    def n(column: str) -> str:
-        return number(counts[column])
-
-    placeholders = engine.rows("SELECT p.field, COUNT(*) FROM placeholders AS p GROUP BY p.field ORDER BY p.field")
-    without = {f: int(counts["records"] - counts[f]) for f, _ in placeholders if f in counts}
-    records_line = n("records") + (f", {added:,} of them new" if added is not None else "")
-    if counts["set_aside"]:
-        records_line += f"; {n('set_aside')} set aside (set_aside)"
-    in_batch = " in this batch" if added is not None else ""
-    section = c["records"]
-    summary = [
-        ("records", records_line),
-        ("candidates", f"{n('scored')} pairs scored{in_batch}, {n('ruled')} of them a rule's too: "
-                       "scored, which a match run reads at its threshold (python -m nayose match)"),
-        ("entities", f"{n('entities')}; {n('by_people')} records joined by people's decisions; "
-                     f"the largest holds {n('largest')} record{'s' * bool(counts['largest'] != 1)}"),
-        ("kinds", f"{n('companies')} × 2 company · {n('persons')} × 1 person · "
-                  f"{n('unsure')} × 0 not sure (records)"),
-        ("kinds", f"{n('company_customers')} × 2 company · {n('person_customers')} × 1 person · "
-                  f"{n('unsure_customers')} × 0 not sure (customers)"),
-    ]
-    if counts["flagged"]:
-        summary.append(("flagged", f"{n('flagged')} records the engine is sure of against the flag: "
-                                   "matched as the engine says (gold: kind_flagged)"))
-    summary.append(("kinds from", "the file's flag, as it is (trust_flag)" if section["trust_flag"]
-                    else f"a written legal form, or a name {section['name_line']:.0%} sure; else the flag"))
-    for f, k in placeholders:
-        if f in without:
-            owner = "one entity" if f == "customer_id" else "evidence"
-            summary.append(("note", f"{f}: {k:,} value{'s' * bool(k != 1)} held by {section['min_block']}+ records "
-                                    f"read as missing, a placeholder and not {owner}'s "
-                                    f"({without[f]:,} records without one)"))
-    summary += [("note", f"{f} only {x:.1%} filled: check its mapping") for f, x in fill.items() if x < 0.05]
-    return ["SUMMARY", *(f"  {what:<12} {value}" for what, value in summary), ""]
-
-
-def report_fields(engine, fill: dict) -> list[str]:
-    """Return the FIELDS section: each field's fill, and how its values look on a sample."""
-    shape = engine.frame("SELECT * FROM report_fields").set_index("field")
-    rows = []
-    for f in FIELDS:
-        length, longest = shape.at[f, "length"], shape.at[f, "longest"]
-        rows.append(dict(field=f, filled=percent(fill[f]), looks_right=percent(shape.at[f, "looks_right"]),
-                         top_value=percent(shape.at[f, "top_value"]), no_letters=percent(shape.at[f, "no_letters"]),
-                         length="" if pd.isna(length) else f"{length:.0f}",
-                         longest="" if pd.isna(longest) else number(longest)))
-    return ["FIELDS  (looks right, top value, no letters, length: on a sample of 10,000 records)",
-            *text_table(pd.DataFrame(rows)), ""]
-
-
-def report_unmapped(engine, c: dict, patterns: dict[str, str]) -> list[str]:
-    """Return the COLUMNS NOT MAPPED section, on DuckDB only, where the input's own columns can be read by name."""
-    columns = unmapped(engine, c, patterns) if engine.name == "duckdb" else None
-    if columns is None or not len(columns):
-        return []
-    shown = columns.head(30)
-    share = [percent(x) if f else "" for f, x in zip(shown["looks_like"], shown["share"])]
-    table = pd.DataFrame(dict(column=shown["column"], filled=shown["filled"].map(percent),
-                              distinct=shown["distinct"].map(percent), looks_like=shown["looks_like"], share=share))
-    more = [f"  and {len(columns) - len(shown):,} more"] if len(columns) > len(shown) else []
-    return ["COLUMNS NOT MAPPED  (no field reads them; filled, distinct and the field their values look most like: "
-            "on the first 10,000 records)", *text_table(table), *more, ""]
-
-
-def report_scores(engine, edges: list[float]) -> list[str]:
-    """Return the SCORES section: the candidates scored, by bands of bits between `edges`."""
-    scored = dict(engine.rows("SELECT band, pairs FROM report_scores"))
-
-    def label(i: int) -> str:
-        if i == -1:
-            return "below 0"
-        if i == 0:
-            return f"below {edges[0]:g}"
-        if i == len(edges):
-            return f"{edges[-1]:g} and up"
-        return f"{edges[i - 1]:g} to {edges[i]:g}"
-
-    rows = [dict(bits=label(i), candidates=f"{scored[i]:,}") for i in sorted(scored) if scored[i]]
-    return ["SCORES  (the candidates scored, by bits)", *text_table(pd.DataFrame(rows)), ""]
-
-
-def report_patterns(engine, floor: float) -> list[str]:
-    """Return the PATTERNS BY SCORE section: each band's 12 commonest patterns of levels, below and from `floor`."""
-    label_of = {(x, g): label for x, g, label in engine.rows("SELECT comparison, gamma, label FROM model")}
-    patterns = engine.frame("SELECT * FROM report_patterns ORDER BY up DESC, k")
-
-    def band(up: bool) -> str:
-        return f"{floor:g} and up" if up else f"0 to {floor:g}"
-
-    def level(x, k: str) -> str:
-        g = x[f"gamma_{k}"]
-        return "missing" if pd.isna(g) or g < 0 else label_of[k, int(g)]
-
-    rows = [dict(band=band(x["up"]), pairs=number(x["n"]), bits=f"{x['w']:.1f}",
-                 **{k: level(x, k) for k in COMPARISONS}) for _, x in patterns.iterrows()]
-    more = []  # a band with more than the 12 patterns shown: how many more, and their pairs
-    for up, g in patterns.groupby("up", sort=False):
-        if g["kinds"].iloc[0] > 12:
-            pairs = int(g["total"].iloc[0]) - int(g["n"].sum())
-            more.append(f"  {band(up)}: {int(g['kinds'].iloc[0]) - 12:,} patterns more, {pairs:,} pairs")
-    return ["PATTERNS BY SCORE  (the keys' pairs at 0 bits and up, below and from the review floor: "
-            "each band's 12 most common levels)", *text_table(pd.DataFrame(rows)), *more, ""]
-
-
-def report_clusters(engine) -> list[str]:
-    """Return the CLUSTERS section: how many entities hold each number of records."""
-    sizes = dict(engine.rows("SELECT size, entities FROM report_clusters"))
-    bins = [("1", 1, 1), ("2", 2, 2), ("3", 3, 3), ("4", 4, 4), ("5–9", 5, 9), ("10–49", 10, 49),
-            ("50+", 50, math.inf)]
-    counted = []
-    for name, low, high in bins:
-        if total := sum(v for k, v in sizes.items() if low <= k <= high):
-            counted.append(f"{name}: {total:,}")
-    return ["CLUSTERS  (size: how many)", "  " + " · ".join(counted), ""]
-
-
-def report_steps(counts, notes: dict, steps: dict[str, float], job: str) -> list[str]:
-    """Return the STEPS section: each stage's seconds, with what it made."""
-    def n(column: str) -> str:
-        return number(counts[column])
-
-    facts = dict(
-        records=f"records {n('added')} · set_aside {n('set_aside')} · companies {n('companies')} · "
-                f"persons {n('persons')} · not sure {n('unsure')}",
-        fit=f"fit_rows {notes['fit_rows']:,}",
-        score=f"candidates {n('candidates')} · stored {n('scored')} · rule pairs {n('ruled')} · "
-              f"oversized_kept {n('oversized_kept')} · oversized_skipped {n('oversized_skipped')}",
-        decide=f"decided {n('decided')} · entities {n('entities')}")
-    rows = [dict(step=s, seconds=f"{x:.2f}", facts=facts.get(s, "")) for s, x in steps.items()]
-    return ["STEPS", *text_table(pd.DataFrame(rows)), ""]
-
-
-def report_keys(keys: pd.DataFrame) -> list[str]:
-    """Return the KEYS section: the pairs each key lists, most first."""
-    table = pd.DataFrame(dict(key=keys["name"], pairs=keys["pairs"].map(number)))
-    return ["KEYS  (pairs each lists, most first)", *text_table(table), ""]
-
-
-def report_model(engine, notes: dict) -> list[str]:
-    """Return the MODEL section: the prior, what EM learned from, and each level's m, u and bits."""
-    fit_row = engine.frame("SELECT * FROM fit").iloc[0]
-    levels = engine.frame("SELECT comparison, label, file_m, file_u, bits FROM model ORDER BY position, gamma DESC")
-    prior = json.loads(fit_row["fitted"])["prior_bits"]
-    skipped = f"; learned nothing about {', '.join(notes['skipped'])}" if notes.get("skipped") else ""
-    head = (f"MODEL  (prior {prior:.2f} bits at the build's {number(fit_row['records'])} records; "
-            f"fitted on {number(fit_row['fit_rows'])} records{skipped})")
-    grown = engine.value("SELECT COUNT(*) FROM records") / max(int(fit_row["records"]), 1) - 1
-    if grown >= float(config()["fit"]["rebuild_after"]):  # a pair drifts k·log2(1 + grown) bits: k exact levels
-        head += f"\n  the run has grown {grown:.0%} since its build, whose u it scores with: build again"
-    em = []
-    if notes.get("em_pairs"):
-        em.append("  EM learned from: " + " · ".join(f"{k} {v:,} pairs" for k, v in notes["em_pairs"].items()))
-    table = pd.DataFrame(dict(comparison=levels["comparison"], level=levels["label"],
-                              m=levels["file_m"].map(lambda x: f"{x:.4f}" if x >= 1e-3 else f"{x:.2e}"),
-                              u=levels["file_u"].map(lambda x: f"{x:.2e}"),
-                              bits=levels["bits"].map(lambda x: f"{x:.2f}")))
-    adjusted = [f"  {k} {lv}: {why} (EM said {was:+.2f} bits)" for k, lv, why, was in notes.get("file_adjusted", [])]
-    return [head, *em, *text_table(table), *adjusted, ""]
-
-
-def report_blocks(keys: pd.DataFrame, counts) -> list[str]:
-    """Return the BLOCKS section: the keys with oversized blocks, and the six that list the most pairs a record."""
-    blocks = keys.assign(per_record=keys["pairs"] / max(int(counts["records"]), 1))
-    busiest = blocks.nlargest(6, "per_record")["name"]
-    shown = blocks[(blocks["oversized"] > 0) | blocks["name"].isin(busiest)]
-    shown = shown.sort_values("per_record", ascending=False, kind="stable")
-    table = pd.DataFrame(dict(kind="generator", name=shown["name"],
-                              per_record=shown["per_record"].map(lambda x: f"{x:.2f}"),
-                              largest=shown["largest"].map(number), oversized=shown["oversized"].map(number)))
-    return [f"BLOCKS  ({number(keys['pairs'].sum())} pairs the keys list, before dedupe)", *text_table(table)]
-
-
-def unmapped(engine, c: dict, patterns: dict[str, str]) -> pd.DataFrame | None:
-    """Return the input's columns that no field reads (config.toml's [input] columns), on its first 10,000 rows.
-
-    For each column: the share filled, the share of filled values held once, and the field whose look ([report]
-    patterns) its values have most, with that share; best fit first. DuckDB only: it reads the file's own columns by
-    their names. O(sample · columns · fields).
-    """
-    read = {x.casefold() for x in c["input"]["columns"]}
-    columns = [x for x, _ in engine.columns("input") if x.casefold() not in read]
-    if not columns:
-        return None
-
-    def quote(x: str) -> str:
-        return '"' + x.replace('"', '""') + '"'
-
-    con = engine.con
-    cast = ", ".join(f"CAST({quote(x)} AS VARCHAR) AS {quote(x)}" for x in columns)
-    con.execute(f"CREATE OR REPLACE TEMP TABLE nayose_sample AS SELECT {cast} FROM input LIMIT 10000")
-    n = max(1, con.execute("SELECT COUNT(*) FROM nayose_sample").fetchall()[0][0])
-    filled = "SELECT * FROM (UNPIVOT nayose_sample ON COLUMNS(*) INTO NAME c VALUE v) WHERE trim(v, ?) <> ''"
-    counted = con.execute(f"SELECT c, COUNT(*), COUNT(DISTINCT v) FROM ({filled}) GROUP BY c", [BLANK]).fetchall()
-    shape = {x: (k / n, d / max(1, k)) for x, k, d in counted}
-    fits = {x: {} for x in columns}
-    for field, pattern in patterns.items():
-        matched = con.execute(f"SELECT c, AVG(regexp_matches(v, ?)::INT) FROM ({filled}) GROUP BY c", [pattern, BLANK])
-        for x, share in matched.fetchall():
-            fits[x][field] = share
-    best = {x: max(fits[x].items(), key=lambda kv: kv[1], default=("", 0.0)) for x in columns}
-    rows = [dict(column=x, filled=shape.get(x, (0.0, 0.0))[0], distinct=shape.get(x, (0.0, 0.0))[1],
-                 looks_like=best[x][0] if best[x][1] > 0 else "", share=best[x][1]) for x in columns]
-    return pd.DataFrame(rows).sort_values(["share", "filled"], ascending=False, kind="stable", ignore_index=True)
-
-
-def code_version() -> str:
-    """Return the commit the code is at, with a + when this copy's tracked files differ from it."""
-    def git(*args: str) -> str:
-        done = subprocess.run(["git", "-C", str(HERE), *args], capture_output=True, text=True, timeout=10)
-        return done.stdout.strip()
-
-    try:
-        head, dirty = git("rev-parse", "--short", "HEAD"), git("status", "--porcelain", "--untracked-files=no")
-        return (head or "unknown") + ("+" if dirty else "")
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
 
 
 # ---------- running SQL ----------
@@ -865,16 +651,17 @@ def statements(text: str) -> list[str]:
 
 def statement_making(stage_name: str, table: str) -> str:
     """Return the statement of nayose/sql/<stage_name>.sql that makes `table`."""
-    return next(s for s in statements((SQL / f"{stage_name}.sql").read_text(encoding="utf-8"))
-                if (head := WRITE.match(s)) and head["table"] == table)
+    stage_file = (SQL / f"{stage_name}.sql").read_text(encoding="utf-8")
+    return next(s for s in statements(stage_file) if table_made(s) == table)
 
 
-def stage(engine, name: str, scratch: set | None = None, until: str | None = None, **values: object) -> None:
+def stage(engine: Engine, name: str, scratch: set | None = None, until: str | None = None, **values: object) -> None:
     """Run the stage nayose/sql/<name>.sql on `engine`, its statements in order (run_file)."""
     run_file(engine, SQL / f"{name}.sql", scratch=scratch, until=until, **values)
 
 
-def run_file(engine, path: Path, scratch: set | None = None, until: str | None = None, **values: object) -> None:
+def run_file(engine: Engine, path: Path, scratch: set | None = None, until: str | None = None,
+             **values: object) -> None:
     """Run the SQL file at `path` on `engine`, its statements in order.
 
     Each statement is given the values it names as @name, and only those: BigQuery refuses a parameter a statement
@@ -884,17 +671,35 @@ def run_file(engine, path: Path, scratch: set | None = None, until: str | None =
     after the statement that makes that table, whether or not it ran.
     """
     for sql in statements(path.read_text(encoding="utf-8")):
-        named = set(PARAMETER.findall(NOT_CODE.sub("", sql)))
-        guard = when(sql)
-        guard_values = set(PARAMETER.findall(guard)) if guard else set()
-        if missing := (named | guard_values) - set(values):
-            raise ValueError(f"{path.name} names @{', @'.join(sorted(missing))}, which no value gives")
-        if not guard or engine.value(f"SELECT {guard}", {k: values[k] for k in guard_values}):
-            runnable = for_lookup(sql, scratch) if scratch is not None else sql
-            if runnable is not None:
-                engine.run(runnable, {k: values[k] for k in named})
-        if until is not None and (head := WRITE.match(sql)) and head["table"] == until:
+        run_statement(engine, sql, values, scratch, path.name)
+        if until is not None and table_made(sql) == until:
             return
+
+
+def run_statement(engine: Engine, sql: str, values: dict, scratch: set | None, file: str) -> None:
+    """Run one statement of `file` with the values it names, unless its `-- when:` condition is false (run_file)."""
+    named = set(PARAMETER.findall(NOT_CODE.sub("", sql)))
+    guard = when(sql)
+    guard_values = set(PARAMETER.findall(guard)) if guard else set()
+    if missing := (named | guard_values) - set(values):
+        raise ValueError(f"{file} names @{', @'.join(sorted(missing))}, which no value gives")
+    if guard and not engine.value(f"SELECT {guard}", {k: values[k] for k in guard_values}):
+        return
+    runnable = sql if scratch is None else for_lookup(sql, scratch)
+    if runnable is None:  # a table the lookup holds already: for_lookup skips it
+        return
+    engine.run(runnable, {k: values[k] for k in named})
+
+
+def table_made(sql: str) -> str | None:
+    """Return the table a statement writes (WRITE), or None where it writes none."""
+    head = WRITE.match(sql)
+    return head["table"] if head else None
+
+
+def verb_of(head: re.Match) -> str:
+    """Return the verb of a statement WRITE matched, in capitals with single spaces: CREATE OR REPLACE TEMP TABLE."""
+    return " ".join(head["verb"].upper().split())
 
 
 def when(sql: str) -> str | None:
@@ -904,7 +709,7 @@ def when(sql: str) -> str | None:
     function holds one (the deploy makes functions apart from the procedures), or where one stands past the
     statement's leading comments.
     """
-    leading = re.match(r"\A(?:\s*--[^\n]*\n)*", sql)[0]
+    leading = re.match(LEAD, sql, re.S)["lead"]
     conditions = WHEN.findall(leading)
     if len(conditions) > 1 or (conditions and TEMP_FUNCTION.match(sql)) or len(WHEN.findall(sql)) > len(conditions):
         raise ValueError("a statement holds one condition, in its leading comments, and a function none: "
@@ -929,7 +734,7 @@ def for_lookup(sql: str, temp: set) -> str | None:
         if READ_OR_TEMP.match(sql):
             return sql
         raise ValueError(f"a lookup can't tell what this statement writes, so it isn't run: {sql.strip()[:80]}")
-    verb, table = " ".join(head["verb"].upper().split()), head["table"]
+    verb, table = verb_of(head), head["table"]
     if verb == "CREATE TABLE IF NOT EXISTS" and table in temp:
         return None
     if verb.startswith("CREATE"):
@@ -949,10 +754,10 @@ def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
     content, every function the deploy makes outside the SQL files (engines.functions: the comparisons, the hash,
     nfkc and the Python UDFs, em.py's and entities.py's whole source), and every value the stages read as the Python
     makes it from config.toml (values_of: the patterns, the kana maps, the name model's terms). Any byte counts, a
-    comment's too: a run built
-    before an edit is built again. DuckDB's twins of the comparisons are held to them by tests/test_functions.py. A
-    build stores the hash in the table method; an update or a lookup refuses a run whose hash differs. `root` is the
-    nayose folder to hash; `mapping_file` is the deployment's mapping, where the deploy has one.
+    comment's too: a run built before an edit is built again. DuckDB's twins of the comparisons are held to them by
+    tests/test_functions.py. A build stores the hash in the table method; an update or a lookup refuses a run whose
+    hash differs. `root` is the nayose folder to hash; `mapping_file` is the deployment's mapping, where the deploy
+    has one.
     """
     if root == HERE:
         config_file = Path(os.environ.get("NAYOSE_CONFIG") or HERE / "config.toml")
@@ -971,3 +776,7 @@ def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
     made = {stage: values_of(stage) for stage in ("mapping", "records", "fit", "score", "decide", "report")}
     digest.update(json.dumps(made, sort_keys=True, ensure_ascii=False, default=str).encode())  # the Python's part
     return digest.hexdigest()
+
+
+# report.txt is reporting.py's; the package names it too, as report.sql and deploy/run.py do (nayose.report_text)
+from nayose.reporting import report, report_text  # noqa: F401

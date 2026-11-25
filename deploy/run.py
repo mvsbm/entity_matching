@@ -33,13 +33,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # this checkout's 
 import nayose  # noqa: E402
 from nayose.engines import BigQuery, bigquery_literal  # noqa: E402
 
-JOBS = ("build", "update", "decide", "match")
+JOBS = tuple(nayose.engines.JOBS)  # the jobs with a procedure: build, update, decide, match
 MARK, BEFORE = "job_running", "before__"  # the running job's table, and the prefix of its clones
 DEPLOYED = ("name_weights",)  # the deploy's tables, no job's: an undo never brings back one a deploy has since replaced
+SEVERITY = {0: "INFO", 75: "WARNING"}  # what an exit code says, as a log reads it: any other is an ERROR
 
 
 class Running(Exception):
     """The marked job's procedure still runs in BigQuery: undoing it now would race it."""
+
+
+def say(code: int, **fields: object) -> int:
+    """Print one JSON line on stderr, `fields` with the severity of the exit code `code` (SEVERITY); return `code`."""
+    print(json.dumps({"severity": SEVERITY.get(code, "ERROR"), **fields}, ensure_ascii=False), file=sys.stderr)
+    return code
 
 
 def script(engine: BigQuery, statements: list[str]) -> None:
@@ -62,7 +69,8 @@ def begin(engine: BigQuery, dataset: str, job: str) -> bool:
     # a finished job's clones, left behind: dropped before the mark, so no undo reads them
     script(engine, [f"DROP TABLE `{dataset}`.{t}" for t in now if t.startswith(BEFORE)])
     held = [t for t in now if not t.startswith(BEFORE)]
-    # fails where another job made the mark first, which is then never undone here
+    # fails where another job made the mark first, which is then never undone here; an empty dataset's tables are
+    # written [''], never an empty array, and undo reads past the ''
     engine.run(f"CREATE TABLE `{dataset}`.{MARK} AS SELECT '{job}' AS job, CURRENT_TIMESTAMP() AS started, "
                f"{bigquery_literal(engine.session)} AS session, {bigquery_literal(held or [''])} AS tables")
     try:
@@ -121,7 +129,9 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
     """Run the job the arguments name, and return its exit code: 0, 1 if the job failed, 2 for a mistake, 75 to try
     again later."""
     args = sys.argv[1:] if argv is None else argv
-    if len(args) < 2 or args[1] not in (*JOBS, "undo", "lookup") or (args[1] != "undo" and len(args) < 3):
+    known = len(args) >= 2 and args[1] in (*JOBS, "undo", "lookup")
+    given_enough = known and (args[1] == "undo" or len(args) >= 3)  # undo takes nothing more, every other job some
+    if not given_enough:
         print(__doc__, file=sys.stderr)
         return 2
     dataset, job, given = args[0], args[1], args[2:]
@@ -129,36 +139,36 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
         try:
             nayose.check_threshold(float(given[0]))  # before any client, as the job does here
         except nayose.InputError as e:
-            print(json.dumps(dict(severity="ERROR", error=str(e), fix=e.fix)), file=sys.stderr)
-            return 2
+            return say(2, error=str(e), fix=e.fix)
     engine = BigQuery(dataset, client=client, bigquery=bigquery)
     try:
-        if job == "lookup":
-            return lookup(engine, dataset, given)
-        if job == "undo":
-            return undone(engine, dataset)
-        try:
-            return marked(engine, dataset, job, given)
-        except Exception as e:  # marked undid the job, or, if its undo failed, left the job marked
-            print(json.dumps(dict(severity="ERROR", job=job, dataset=dataset, error=str(e) or type(e).__name__,
-                                  fix=f"if a job is still marked, undo it (python deploy/run.py {dataset} undo), "
-                                      "then run this job again"), ensure_ascii=False), file=sys.stderr)
-            return 1
+        return dispatch(engine, dataset, job, given)
     finally:
         engine.close()
+
+
+def dispatch(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
+    """Run a lookup, an undo, or a job all or nothing (marked), and return its exit code: 1 if the job failed."""
+    if job == "lookup":
+        return lookup(engine, dataset, given)
+    if job == "undo":
+        return undone(engine, dataset)
+    try:
+        return marked(engine, dataset, job, given)
+    except Exception as e:  # marked undid the job, or, if its undo failed, left the job marked
+        return say(1, job=job, dataset=dataset, error=str(e) or type(e).__name__,
+                   fix=f"if a job is still marked, undo it (python deploy/run.py {dataset} undo), "
+                       "then run this job again")
 
 
 def undone(engine: BigQuery, dataset: str) -> int:
     """Undo a job whose process died, once its procedure has ended; return the exit code."""
     try:
-        said = dict(severity="INFO", job="undo", dataset=dataset, undone=undo(engine, dataset))
+        was_marked = undo(engine, dataset)
     except Running as e:
-        said = dict(severity="WARNING", error=f"the marked job's procedure still runs in BigQuery (session {e})",
-                    fix=f"undo once it ends: python deploy/run.py {dataset} undo")
-        print(json.dumps(said), file=sys.stderr)
-        return 75
-    print(json.dumps(said), file=sys.stderr)
-    return 0
+        return say(75, error=f"the marked job's procedure still runs in BigQuery (session {e})",
+                   fix=f"undo once it ends: python deploy/run.py {dataset} undo")
+    return say(0, job="undo", dataset=dataset, undone=was_marked)
 
 
 def marked(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
@@ -169,27 +179,23 @@ def marked(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
     """
     t = time.perf_counter()
     if not begin(engine, dataset, job):
-        print(json.dumps(dict(severity="WARNING", error=f"a job is marked running in {dataset} ({MARK})",
-                              fix="wait for it to finish; if none runs, its process died: "
-                                  f"python deploy/run.py {dataset} undo")), file=sys.stderr)
-        return 75
+        return say(75, error=f"a job is marked running in {dataset} ({MARK})",
+                   fix=f"wait for it to finish; if none runs, its process died: python deploy/run.py {dataset} undo")
     try:
         run(engine, dataset, job, given)
     except BaseException as stopped:
         try:
             undo(engine, dataset)
         except Running as e:  # stopped waiting mid-call: the procedure carries on, so its undo waits for it
-            print(json.dumps(dict(severity="WARNING", error=f"the job's procedure still runs in BigQuery (session {e})",
-                                  cause=str(stopped) or type(stopped).__name__,
-                                  fix=f"undo once it ends: python deploy/run.py {dataset} undo")), file=sys.stderr)
-            return 75
+            return say(75, error=f"the job's procedure still runs in BigQuery (session {e})",
+                       cause=str(stopped) or type(stopped).__name__,
+                       fix=f"undo once it ends: python deploy/run.py {dataset} undo")
         raise
     end(engine, dataset)
     seconds = round(time.perf_counter() - t, 1)
     if job in ("build", "update"):
         print(nayose.report_text(engine, {job: seconds}, job))
-    print(json.dumps(dict(severity="INFO", job=job, dataset=dataset, seconds=seconds)), file=sys.stderr)
-    return 0
+    return say(0, job=job, dataset=dataset, seconds=seconds)
 
 
 def lookup(engine: BigQuery, dataset: str, given: list[str]) -> int:
@@ -197,25 +203,19 @@ def lookup(engine: BigQuery, dataset: str, given: list[str]) -> int:
     record = given[1] if given[0] == "--record" and len(given) == 2 else None
     values = None if record else dict(w.split("=", 1) for w in given if "=" in w)
     if values is not None and len(values) != len(given):
-        print(json.dumps(dict(severity="ERROR", error="give --record ID, or COLUMN=VALUE words",
-                              fix="for example: lookup --record 1234")), file=sys.stderr)
-        return 2
+        return say(2, error="give --record ID, or COLUMN=VALUE words", fix="for example: lookup --record 1234")
     if MARK in tables(engine, dataset):
-        error = f"a job is marked running in {dataset} ({MARK}): its tables are half made"
-        print(json.dumps(dict(severity="WARNING", error=error, fix="look up once it ends")), file=sys.stderr)
-        return 75
+        return say(75, error=f"a job is marked running in {dataset} ({MARK}): its tables are half made",
+                   fix="look up once it ends")
     try:
         answer = nayose.lookup(engine, record=record, values=values)
     except nayose.InputError as e:
-        print(json.dumps(dict(severity="ERROR", error=str(e), fix=e.fix), ensure_ascii=False), file=sys.stderr)
-        return 2
+        return say(2, error=str(e), fix=e.fix)
     engine.run("CREATE TABLE IF NOT EXISTS looked_up (asked STRING, at TIMESTAMP, answer STRING)")
     asked = json.dumps(dict(record=record, values=values), ensure_ascii=False)
     engine.run("INSERT INTO looked_up (asked, at, answer) SELECT @asked, CURRENT_TIMESTAMP(), @answer",
                {"asked": asked, "answer": json.dumps(answer, ensure_ascii=False)})
-    print(json.dumps(dict(severity="INFO", job="lookup", dataset=dataset, into=f"{dataset}.looked_up",
-                          entities=len(answer["entities"]))), file=sys.stderr)
-    return 0
+    return say(0, job="lookup", dataset=dataset, into=f"{dataset}.looked_up", entities=len(answer["entities"]))
 
 
 def run(engine: BigQuery, dataset: str, job: str, given: list[str]) -> None:

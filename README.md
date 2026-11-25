@@ -71,7 +71,7 @@ procedures of the run's dataset, and Jenkins calls them ([operations](docs/opera
 | `nayose/sql/` | the method: functions, records, fit, score, decide, match, lookup, report |
 | `nayose/config.toml` | the values the SQL reads, a section a stage, and the keys and rules a run uses |
 | `nayose/mapping.sql` | the input's columns as fields (each deployment has its own) |
-| `nayose/__main__.py`, `__init__.py` | the jobs and the run's folder; each stage run with its values; report.txt |
+| `nayose/__main__.py`, `__init__.py`, `reporting.py` | the jobs and the run's folder; each stage run with its values; report.txt |
 | `nayose/engines.py` | DuckDB and BigQuery: the translation, the function twins, the deploy's statements |
 | `nayose/em.py`, `entities.py`, `strings.js` | EM and connected components (Python UDFs); the comparisons in JavaScript |
 | `config/` | `kind_names.npz` (the person-or-company name model), `generator.toml` (the synthetic data) |
