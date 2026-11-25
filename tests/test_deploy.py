@@ -311,6 +311,11 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
     done = Tables(before, made)
     code, said = ends(done)
     assert code == 0 and said["severity"] == "INFO" and "seconds" in said and done.tables == after  # no mark, no clone left
+    cloned = set(re.findall(r"CLONE `p\.run`\.(\w+)", "\n".join(done.sent)))
+    assert cloned == {"records", "scored", "decisions"}  # the tables a build writes: name_weights it never touches
+    matching = Tables({"records": 1, "scored": 1, "matched": 1, "name_weights": 1}, {"matched": 2})
+    assert ends(matching, ["p.run", "match", "8"])[0] == 0 and matching.tables["matched"] == 2
+    assert set(re.findall(r"CLONE `p\.run`\.(\w+)", "\n".join(matching.sent))) == {"matched"}  # its one table
     assert ends(done)[0] == 0 and done.tables == after  # and the next job runs as well
     failed = Tables(before, made, fail=["procedure"])
     code, said = ends(failed)

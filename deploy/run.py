@@ -13,7 +13,8 @@ It runs as nayose-runtime (deploy/Jenkinsfile's Run stage, from main).
 A job is all or nothing, though BigQuery takes no DDL in a transaction:
 - It first makes the table job_running (the mark), holding the job and the dataset's tables. A second job finds it
   and refuses (exit 75).
-- It then clones each table (before__<table>): a clone bills no bytes, and shares its storage until either changes.
+- It then clones each table it writes (before__<table>; nayose.procedures.changed): a clone bills no bytes, and
+  shares its storage until either changes.
 - A job that fails is undone: each table is made again from its clone, and each table it made is dropped. It exits 1.
 - A job whose process died is undone by `undo`, once no query of its session still runs: BigQuery carries on a
   query its caller left. So is a job interrupted while its clones are made or its procedure runs (an interrupt, a
@@ -52,7 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # this checkout's 
 
 import nayose  # noqa: E402
 from nayose.engines import BigQuery, bigquery_literal  # noqa: E402
-from nayose.procedures import JOBS as PROCEDURES  # noqa: E402
+from nayose.procedures import JOBS as PROCEDURES, changed  # noqa: E402
 
 JOBS = tuple(PROCEDURES)  # the jobs with a procedure: build, update, decide, match
 MARK, BEFORE = "job_running", "before__"  # the running job's table, and the prefix of its clones
@@ -100,22 +101,28 @@ def tables(engine: BigQuery, dataset: str) -> list[str]:
                                       "WHERE table_type IN ('BASE TABLE', 'CLONE') ORDER BY 1") if t not in DEPLOYED]
 
 
-def begin(engine: BigQuery, dataset: str, job: str) -> bool:
-    """Mark the dataset with the job and clone each of its tables; return False where another job's mark is there."""
+def begin(engine: BigQuery, dataset: str, job: str) -> list[str] | None:
+    """Mark the dataset with the job and clone each table the job writes; return those tables, or None where another
+    job's mark is there.
+
+    The mark lists every table, so an undo drops each table the job made; a table the job doesn't write is left as it
+    is, so it needs no clone: the job's procedure's tables (changed), and the table its file is loaded into (LOADS).
+    """
     now = tables(engine, dataset)
     if MARK in now:
-        return False
+        return None
     # a finished job's renamed mark and clones, left behind: dropped before the mark, so no undo reads them
     script(engine, [f"DROP TABLE `{dataset}`.{t}" for t in now if t.startswith(BEFORE)])
     held = [t for t in now if not t.startswith(BEFORE)]
     # fails where another job made the mark first, which is then never undone here
     engine.run(f"CREATE TABLE `{dataset}`.{MARK} AS SELECT '{job}' AS job, CURRENT_TIMESTAMP() AS started, "
                f"{bigquery_literal(engine.session)} AS session, {bigquery_literal(held or [NO_TABLE])} AS tables")
+    written = [t for t in held if t in changed(job) or t == LOADS.get(job)]
     try:
-        script(engine, [f"CREATE TABLE `{dataset}`.{BEFORE}{t} CLONE `{dataset}`.{t}" for t in held])
+        script(engine, [f"CREATE TABLE `{dataset}`.{BEFORE}{t} CLONE `{dataset}`.{t}" for t in written])
     except BaseException as stopped:
         undo_after(engine, dataset, stopped)
-    return True
+    return written
 
 
 def undo_after(engine: BigQuery, dataset: str, stopped: BaseException) -> None:
@@ -132,20 +139,19 @@ def undo_after(engine: BigQuery, dataset: str, stopped: BaseException) -> None:
     raise stopped
 
 
-LOADED = ("input", "given")  # the tables run() loads a job's files into, which only that job reads
+LOADS = {"build": "input", "update": "input", "decide": "given"}  # the table a job's file is loaded into, for it alone
 
 
-def end(engine: BigQuery, dataset: str) -> None:
-    """Rename the mark before__job_running, then drop it, the clones and the job's loaded files.
+def end(engine: BigQuery, dataset: str, job: str, cloned: list[str]) -> None:
+    """Rename the mark before__job_running, then drop it, the job's loaded file and the clones begin made (`cloned`).
 
     Once renamed, the mark is no mark: no job, undo or lookup finds it. A mark left by a DROP that failed would make
-    an undo take back what the job did. The loaded files (input, given) are the raw records and decisions: only the
-    job read them, so none outlives it. The next job drops what a failed DROP leaves of the clones.
+    an undo take back what the job did. The loaded file (input, given) is the raw records or decisions: only the job
+    read it, so it doesn't outlive the job. The next job drops what a failed DROP leaves of the clones.
     """
-    clones = [f"DROP TABLE `{dataset}`.{t}" for t in tables(engine, dataset) if t.startswith(BEFORE)]
-    loaded = [f"DROP TABLE IF EXISTS `{dataset}`.{t}" for t in LOADED]
+    loaded = [f"DROP TABLE IF EXISTS `{dataset}`.{LOADS[job]}"] if job in LOADS else []
     script(engine, [f"ALTER TABLE `{dataset}`.{MARK} RENAME TO {BEFORE}{MARK}", *loaded,  # the raw records go first
-                    f"DROP TABLE `{dataset}`.{BEFORE}{MARK}", *clones])
+                    f"DROP TABLE `{dataset}`.{BEFORE}{MARK}", *(f"DROP TABLE `{dataset}`.{BEFORE}{t}" for t in cloned)])
 
 
 def undo(engine: BigQuery, dataset: str) -> bool:
@@ -251,7 +257,7 @@ def all_or_nothing(engine: BigQuery, dataset: str, job: str, given: list[str]) -
     """
     t = time.perf_counter()
     try:
-        if not begin(engine, dataset, job):
+        if (cloned := begin(engine, dataset, job)) is None:
             return say(75, error=f"a job is marked running in {dataset} ({MARK})", fix="wait for it to finish; "
                        f"if none runs, its process died: python deploy/run.py {dataset} undo")
         try:
@@ -261,10 +267,10 @@ def all_or_nothing(engine: BigQuery, dataset: str, job: str, given: list[str]) -
     except Running as e:  # stopped waiting mid-query (its clones, its procedure): it carries on, so its undo waits
         return say(75, error=f"the job's query still runs in BigQuery (session {e})", cause=described(e.__cause__),
                    fix=f"undo once it ends: python deploy/run.py {dataset} undo")
-    return finished(engine, dataset, job, round(time.perf_counter() - t, 1))
+    return finished(engine, dataset, job, round(time.perf_counter() - t, 1), cloned)
 
 
-def finished(engine: BigQuery, dataset: str, job: str, seconds: float) -> int:
+def finished(engine: BigQuery, dataset: str, job: str, seconds: float, cloned: list[str]) -> int:
     """End a job whose procedure succeeded (end), print a build's or an update's report.txt, and return the exit code.
 
     Where either step fails, or is interrupted, the job is done all the same: it exits 1, saying so and never to run
@@ -274,7 +280,7 @@ def finished(engine: BigQuery, dataset: str, job: str, seconds: float) -> int:
     """
     step = "ending it (the mark and the clones)"
     try:
-        end(engine, dataset)
+        end(engine, dataset, job, cloned)
         step = "report.txt"
         if job in ("build", "update"):
             print(nayose.report_text(engine, {job: seconds}, job))
