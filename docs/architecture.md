@@ -230,8 +230,8 @@ The SQL text never changes between runs. What changes is given to it:
   the columns it reads, and a column the file lacks is read as missing.
 
 `report.txt` names the method's fingerprint (`nayose.fingerprint`), a hash of every stage file, `config.toml`, the
-mapping, the name model and the functions the deploy makes, any byte of them, so two reports show whether two runs
-ran the same method.
+mapping, the name model and the functions the deploy makes, any byte of them, and of every value the stages read as
+the Python makes it from `config.toml`, so two reports show whether two runs ran the same method.
 
 ## 5 · An increment
 

@@ -121,7 +121,10 @@ def exact_u(levels: list[dict], counts: dict) -> dict[str, dict[str, float]]:
             if (u := float(pairs) / outside if outside else 0.0) > 0:
                 out.setdefault(name, {})[lv["label"]] = u
         u_of = out.get(name, {})
-        if all(lv["label"] in u_of for lv in named) and (rest := 1 - sum(u_of.values())) > 0:
+        counted = 0.0
+        for u in u_of.values():  # added in turn: Python 3.12+'s sum() rounds otherwise, and BigQuery runs 3.11
+            counted += u
+        if all(lv["label"] in u_of for lv in named) and (rest := 1 - counted) > 0:
             u_of[ELSE] = rest  # every level counted: nothing is left to sample
     return out
 

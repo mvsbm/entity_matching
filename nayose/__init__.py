@@ -481,7 +481,7 @@ def unchanged(engine, fix: str) -> None:
     """Raise InputError (CHANGED, then `fix`) unless the run was built by this method: its fingerprint."""
     try:
         stored = engine.value("SELECT fingerprint FROM method")
-    except duckdb.CatalogException:  # no method table: a run this build didn't make
+    except engine.MISSING:  # no method table: a run this build didn't make
         stored = None
     if stored != fingerprint():
         raise InputError(CHANGED, fix=fix)
@@ -948,8 +948,10 @@ def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
     """Return the hash of what an update needs unchanged since its build.
 
     It covers every stage file, the values (config.toml), the input's mapping and the name model, each by name and
-    content, and every function the deploy makes outside the SQL files (engines.functions: the comparisons, the hash,
-    nfkc and the Python UDFs, em.py's and entities.py's whole source). Any byte counts, a comment's too: a run built
+    content, every function the deploy makes outside the SQL files (engines.functions: the comparisons, the hash,
+    nfkc and the Python UDFs, em.py's and entities.py's whole source), and every value the stages read as the Python
+    makes it from config.toml (values_of: the patterns, the kana maps, the name model's terms). Any byte counts, a
+    comment's too: a run built
     before an edit is built again. DuckDB's twins of the comparisons are held to them by tests/test_functions.py. A
     build stores the hash in the table method; an update or a lookup refuses a run whose hash differs. `root` is the
     nayose folder to hash; `mapping_file` is the deployment's mapping, where the deploy has one.
@@ -968,4 +970,6 @@ def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
         digest.update(f.name.encode() + b"\0" + f.read_bytes() + b"\0")
     from nayose.engines import functions  # engines imports this module, so not at its top
     digest.update("\0".join(functions("dataset.d")).encode() + b"\0")  # as the deploy makes them, any dataset alike
+    made = {stage: values_of(stage) for stage in ("mapping", "records", "fit", "score", "decide", "report")}
+    digest.update(json.dumps(made, sort_keys=True, ensure_ascii=False, default=str).encode())  # the Python's part
     return digest.hexdigest()

@@ -182,15 +182,12 @@ def test_a_job_on_bigquery_is_all_or_nothing(monkeypatch):
     assert run.main(build, client=done, bigquery=MODULE) == 0 and done.tables == after  # no mark, no clone left
     assert run.main(build, client=done, bigquery=MODULE) == 0 and done.tables == after  # and the next job runs as well
     failed = Tables(before, made, fail="procedure")
-    with pytest.raises(RuntimeError, match="partway"):
-        run.main(build, client=failed, bigquery=MODULE)
+    assert run.main(build, client=failed, bigquery=MODULE) == 1  # a JSON line says it failed, and how to go on
     assert failed.tables == before  # each table from its clone, the one dropped too; the input and the new table dropped
     left = Tables(before, made, fail="DROP TABLE `p.run`.before__records")  # a job done, its mark gone, a clone left behind
-    with pytest.raises(RuntimeError, match="failed"):
-        run.main(build, client=left, bigquery=MODULE)
+    assert run.main(build, client=left, bigquery=MODULE) == 1
     left.job, left.fail = {"records": 3}, "CREATE TABLE `p.run`.before__records"  # the next job fails cloning
-    with pytest.raises(RuntimeError, match="failed"):
-        run.main(build, client=left, bigquery=MODULE)
+    assert run.main(build, client=left, bigquery=MODULE) == 1
     assert left.tables == after  # the left clone was dropped first, so nothing older came back
     cut = Tables(before, made, fail="interrupted")  # stopped waiting mid-call: no undo while its procedure runs on
     assert run.main(build, client=cut, bigquery=MODULE) == 75 and cut.tables["records"] == 2 and "job_running" in cut.tables

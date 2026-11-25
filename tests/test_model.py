@@ -40,9 +40,10 @@ def test_the_model_is_as_recorded(tmp_path, population, monkeypatch, sizes):
     assert said == json.loads(EXPECTED.read_text(encoding="utf-8"))[key]
 
 
-def test_em_is_a_python_3_11_module_of_the_standard_library_alone():  # BigQuery's Python UDF: python-3.11, no packages
+@pytest.mark.parametrize("module", ["em.py", "entities.py"])
+def test_each_python_udf_is_a_python_3_11_module_of_the_standard_library_alone(module):  # BigQuery's: 3.11, no packages
     import ast
     import sys
-    tree = ast.parse((nayose.HERE / "em.py").read_text(encoding="utf-8"), feature_version=(3, 11))
+    tree = ast.parse((nayose.HERE / module).read_text(encoding="utf-8"), feature_version=(3, 11))
     imported = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in getattr(n, "names", [])}
     assert imported <= sys.stdlib_module_names, imported - sys.stdlib_module_names
