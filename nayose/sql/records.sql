@@ -291,10 +291,14 @@ SELECT * FROM known UNION ALL SELECT * FROM found;
 --    first3 and last3 keep a value's first or last three characters, and initial keeps its first character.
 --    long_vowel writes a long vowel one way, so サトウ, サトオ and サトー read alike (kana_fold has made ー into ウ).
 
--- redone lists the run's records that hold a placeholder this batch found.
+-- redone holds the run's records that hold a placeholder this batch found: their fields, without their copies. The
+-- INSERT below makes their copies again, with the batch's.
 -- when: EXISTS (SELECT 1 FROM found)
 CREATE OR REPLACE TEMP TABLE redone AS
-SELECT id FROM records
+SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
+       birth_date, kind, kind_p, kind_by, kind_flagged, full_name, person_name,
+       company_name, batch
+FROM records
 WHERE person_name IN (SELECT value FROM found WHERE field = 'person_name')
    OR company_name IN (SELECT value FROM found WHERE field = 'company_name')
    OR address_code IN (SELECT value FROM found WHERE field = 'address_code')
@@ -303,22 +307,9 @@ WHERE person_name IN (SELECT value FROM found WHERE field = 'person_name')
    OR birth_date IN (SELECT value FROM found WHERE field = 'birth_date')
    OR customer_id IN (SELECT value FROM found WHERE field = 'customer_id');
 
--- If the batch found no placeholder, redone is empty and no record is made again.
+-- If the batch found no placeholder, redone is empty, with the same columns, and no record is made again.
 -- when: NOT EXISTS (SELECT 1 FROM found)
-CREATE OR REPLACE TEMP TABLE redone AS SELECT id FROM records WHERE FALSE;
-
--- redone_fields holds the fields of the records made again, without their copies. The INSERT below makes their
--- copies again, with the batch's.
--- when: EXISTS (SELECT 1 FROM redone)
-CREATE OR REPLACE TEMP TABLE redone_fields AS
-SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
-       birth_date, kind, kind_p, kind_by, kind_flagged, full_name, person_name,
-       company_name, batch
-FROM records WHERE id IN (SELECT id FROM redone);
-
--- If no record is made again, redone_fields is empty, with the same columns.
--- when: NOT EXISTS (SELECT 1 FROM redone)
-CREATE OR REPLACE TEMP TABLE redone_fields AS
+CREATE OR REPLACE TEMP TABLE redone AS
 SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
        birth_date, kind, kind_p, kind_by, kind_flagged, full_name, person_name,
        company_name, batch
@@ -339,7 +330,7 @@ WITH made AS (
   SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
          birth_date, kind, kind_p, kind_by, kind_flagged, full_name, person_name,
          company_name, batch
-  FROM redone_fields
+  FROM redone
 ),
 -- Every placeholder is read as missing. A person_name placeholder also blanks full_name, given_name and any_name,
 -- and a company_name placeholder also blanks any_name, since those fields come from the same columns.
