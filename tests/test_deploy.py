@@ -193,7 +193,8 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                 tail = s.split("AS session, ")
                 self.mark = {"session": re.findall(r"'(\w*)'", tail[0])[-1], "tables": re.findall(r"'(\w*)'", tail[1])}
             elif s.startswith("DROP TABLE"):
-                del self.tables[name[0]], self.kind[name[0]]
+                if name[0] in self.tables or "IF EXISTS" not in s:  # IF EXISTS: a table that isn't there is no error
+                    del self.tables[name[0]], self.kind[name[0]]
             elif s.startswith("CALL `p.run`."):
                 if self.fails[:1] == ["changed"]:  # UNCHANGED: refused before the procedure writes anything
                     self.fails.pop(0)
@@ -233,7 +234,7 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
     build = ["p.run", "build", "gs://b/x.parquet"]
     before = {"records": 1, "scored": 1, "decisions": 1, "name_weights": 1}
     made = {"records": 2, "scored": None, "report_steps": 2}  # what the procedure leaves: one replaced, one dropped, one new
-    after = {"records": 2, "decisions": 1, "name_weights": 1, "report_steps": 2, "input": "loaded"}
+    after = {"records": 2, "decisions": 1, "name_weights": 1, "report_steps": 2}  # the loaded input dropped too
 
     def ends(client, argv=build) -> tuple[int, dict]:  # the exit code, and the JSON line said last
         code = run.main(argv, client=client, bigquery=MODULE)
