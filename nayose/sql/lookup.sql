@@ -6,7 +6,7 @@
 -- listed it. It also gives what was looked up, key by key.
 -- O(G·b + C·K·L²) for the record's C candidates.
 --
--- Reads: fresh (the record asked about), batch_scored and batch_rule_pairs (score.sql, which scores every candidate
+-- Reads: fresh (the record asked about), batch_scored (score.sql, which scores every candidate
 -- of a lookup whatever keep_from says), gold (each stored record's entity), records, model (each level's label),
 -- generators, rules, key_blocks, gated, rule_keys.
 -- Values:
