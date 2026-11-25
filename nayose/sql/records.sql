@@ -17,7 +17,6 @@
 --   as the run's own records are, but none of their values becomes a placeholder, and every table is written as a
 --   temporary table.
 -- Writes:
---   this_batch, the batch's number;
 --   set_aside, the batch's rows that are set aside, each with its reason;
 --   placeholders, the run's placeholders and the new ones this batch brings;
 --   records, one row per record with its fields, its kind, its copies and its batch.
@@ -40,7 +39,7 @@ CREATE TABLE IF NOT EXISTS records (
 
 CREATE TABLE IF NOT EXISTS placeholders (field STRING, value STRING, n INT64);
 
-CREATE OR REPLACE TABLE this_batch AS SELECT COALESCE(MAX(batch) + 1, 0) AS batch FROM records;
+CREATE OR REPLACE TEMP TABLE this_batch AS SELECT COALESCE(MAX(batch) + 1, 0) AS batch FROM records;
 
 
 -- 1. This section sets aside the rows that can't be resolved. Rows identical in every column count once (mapping.sql's
@@ -62,14 +61,6 @@ WHERE nayose_id IS NULL
    OR nayose_id IN (SELECT nayose_id FROM input_rows WHERE nayose_id IS NOT NULL
                     GROUP BY nayose_id HAVING COUNT(*) > 1);
 
-CREATE OR REPLACE TEMP TABLE kept AS  -- Each record that isn't set aside is kept once.
-SELECT DISTINCT m.*
-FROM mapped AS m
-WHERE m.id IS NOT NULL
-  AND NOT blank(m.id)
-  AND m.id NOT IN (SELECT id FROM records)
-  AND m.id NOT IN (SELECT nayose_id FROM input_rows WHERE nayose_id IS NOT NULL
-                   GROUP BY nayose_id HAVING COUNT(*) > 1);
 
 
 -- 2. Each field is standardized by its chain of steps, in order. A value that its chain leaves empty is missing.
@@ -82,6 +73,15 @@ WHERE m.id IS NOT NULL
 --    kana_fold writes voiced kana as unvoiced, small kana as large, and ー as ウ (@kana_fold_from to @kana_fold_to).
 
 CREATE OR REPLACE TEMP TABLE standardized AS
+WITH kept AS (  -- Each record that isn't set aside is kept once.
+  SELECT DISTINCT m.*
+  FROM mapped AS m
+  WHERE m.id IS NOT NULL
+    AND NOT blank(m.id)
+    AND m.id NOT IN (SELECT id FROM records)
+    AND m.id NOT IN (SELECT nayose_id FROM input_rows WHERE nayose_id IS NOT NULL
+                     GROUP BY nayose_id HAVING COUNT(*) > 1)
+)
 SELECT
   id,
   NULLIF(REGEXP_REPLACE(TRANSLATE(nfkc(full_name), @hiragana, @katakana), r'[\s\x{3000}]+', ''), '') AS full_name,
@@ -113,23 +113,32 @@ FROM kept;
 --    With trust_flag, the flag decides every record.
 --    A record's side is its kind, or, if its kind is 0, the kind it leans to.
 
--- Each distinct name is scored once, since many records share a name. As in the model's training, each n-gram counts
--- once however often the name holds it, and an n-gram the model doesn't know adds nothing.
-CREATE OR REPLACE TEMP TABLE name_sums AS
-SELECT g.t, SUM(w.w) AS s
-FROM (
-  SELECT DISTINCT t, SUBSTR(t, i, n) AS term
-  FROM (SELECT DISTINCT LOWER(any_name) AS t FROM standardized WHERE any_name IS NOT NULL),
-    UNNEST(GENERATE_ARRAY(1, @ngram)) AS n,
-    UNNEST(GENERATE_ARRAY(1, LENGTH(t) - n + 1)) AS i
-) AS g
-JOIN name_weights AS w ON w.term = g.term
-GROUP BY g.t;
 
-CREATE OR REPLACE TEMP TABLE told AS
+
+
+-- 4. A name counts once, even if it is in two fields. If a person field and the company field hold the same name
+--    once kana_fold is applied, as they do when one column is mapped to both, the name is one piece of evidence. It is
+--    kept only in the field on the record's side.
+--    With shared_name_column, one column holds every name, a person's or a company's. Then a person field keeps its
+--    name only if the record's side is person, and the company field only if the side is company.
+
+CREATE OR REPLACE TEMP TABLE sided AS
+-- name_sums scores each distinct name once, since many records share a name. As in the model's training, each
+-- n-gram counts once however often the name holds it, and an n-gram the model doesn't know adds nothing.
+WITH name_sums AS (
+  SELECT g.t, SUM(w.w) AS s
+  FROM (
+    SELECT DISTINCT t, SUBSTR(t, i, n) AS term
+    FROM (SELECT DISTINCT LOWER(any_name) AS t FROM standardized WHERE any_name IS NOT NULL),
+      UNNEST(GENERATE_ARRAY(1, @ngram)) AS n,
+      UNNEST(GENERATE_ARRAY(1, LENGTH(t) - n + 1)) AS i
+  ) AS g
+  JOIN name_weights AS w ON w.term = g.term
+  GROUP BY g.t
+),
 -- written is TRUE if the name as written holds a legal form. logit is the name model's log-odds that the name is a
 -- company's. flag is the file's flag as a kind: 2 company, 1 person, or NULL if the file gives none.
-WITH judged AS (
+judged AS (
   SELECT
     s.*,
     COALESCE(REGEXP_CONTAINS(NULLIF(TRANSLATE(nfkc(REGEXP_REPLACE(kind_name, r'[\s\x{3000}]+', '')), @hiragana, @katakana), ''),
@@ -163,29 +172,22 @@ decided AS (
     CAST(IF(sure_kind <> 0, sure_kind, COALESCE(flag, 0)) AS INT64) AS kind,
     IF(@trust_flag, CAST(flag - 1 AS FLOAT64), name_p) AS leaning
   FROM sure
-)
-SELECT
-  * EXCEPT (kind_flag, kind_name, written, logit, flag, name_p, sure_kind, kind, leaning),
-  kind,
-  IF(kind_name IS NULL, NULL, leaning) AS kind_p,  -- NULL if the record has no name to judge.
-  IF(sure_kind = 0 AND flag IS NOT NULL, 'flag', 'engine') AS kind_by,
-  (sure_kind <> 0 AND flag IS NOT NULL AND sure_kind <> flag) AS kind_flagged,
-  -- The side tells section 4 which fields keep a name.
-  CASE WHEN kind = 2 THEN 'company'
-       WHEN kind = 1 THEN 'person'
-       WHEN leaning >= CAST(0.5 AS FLOAT64) THEN 'company'
-       ELSE 'person' END AS side
-FROM decided;
-
-
--- 4. A name counts once, even if it is in two fields. If a person field and the company field hold the same name
---    once kana_fold is applied, as they do when one column is mapped to both, the name is one piece of evidence. It is
---    kept only in the field on the record's side.
---    With shared_name_column, one column holds every name, a person's or a company's. Then a person field keeps its
---    name only if the record's side is person, and the company field only if the side is company.
-
-CREATE OR REPLACE TEMP TABLE sided AS
-WITH routed AS (
+),
+told AS (  -- each record with its kind, kind_p, kind_by and kind_flagged, and its side
+  SELECT
+    * EXCEPT (kind_flag, kind_name, written, logit, flag, name_p, sure_kind, kind, leaning),
+    kind,
+    IF(kind_name IS NULL, NULL, leaning) AS kind_p,  -- NULL if the record has no name to judge.
+    IF(sure_kind = 0 AND flag IS NOT NULL, 'flag', 'engine') AS kind_by,
+    (sure_kind <> 0 AND flag IS NOT NULL AND sure_kind <> flag) AS kind_flagged,
+    -- The side tells section 4 which fields keep a name.
+    CASE WHEN kind = 2 THEN 'company'
+         WHEN kind = 1 THEN 'person'
+         WHEN leaning >= CAST(0.5 AS FLOAT64) THEN 'company'
+         ELSE 'person' END AS side
+  FROM decided
+),
+routed AS (
   SELECT
     * EXCEPT (full_name, person_name, company_name),
     IF(@shared_name_column AND side <> 'person', NULL, full_name) AS full_name,

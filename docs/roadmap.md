@@ -14,7 +14,9 @@ every job's tables are compared by digest, as `tests/test_parity.py` compares th
 `scripts/estimate_cost.py` against BigQuery's own bytes billed and slot time. After that comes the scale rehearsal,
 1M → 10M → 100M generated records with time and bytes billed at each size, before the first real build. The same
 step proves the BigQuery `lookup` job equal to the lookups here, and measures how much of the key index a
-lookup's keys read.
+lookup's keys read. It also shows report.txt read from the job's temporary report_ tables after its procedure ends:
+BigQuery's docs give a procedure's temporary tables to its caller and keep a session's for the session, but no test
+here can show it.
 
 ## 2 · BigQuery's pricing and storage, measured
 

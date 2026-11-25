@@ -119,11 +119,10 @@ flowchart TB
   decide["decide.sql + entities_of (entities.py): decisions stored,<br/>entities by connected components<br/>O(D + N)"]
   report["report.sql: the run's numbers, no record's value<br/>O(N·F + C)"]
   match["match.sql (the match job): the pairs at a threshold,<br/>less those people said differ<br/>O(C + P·F)"]
-  t_records[("records · this_batch · set_aside · placeholders")]
-  t_fit[("fit_sample · fit_prior · em_patterns · u_outside · u_counted<br/>u_near · u_sampled · u_filled · model · fit")]
-  t_score[("rule_keys · every_key (the key index)<br/>cands · gated · scored")]
+  t_records[("records · set_aside · placeholders")]
+  t_fit[("fit_sample · u_sampled · model · fit")]
+  t_score[("rule_keys · every_key (the key index)<br/>cands · scored")]
   t_decide[("decisions · gold")]
-  t_report[("report_counts · report_fields · report_scores<br/>report_patterns · report_keys · report_clusters")]
   t_matched[("matched")]
   f_report[/"report.txt"/]
   f_matched[/"matched/points-#lt;t#gt;.parquet (on BigQuery: the table matched)"/]
@@ -145,8 +144,7 @@ flowchart TB
   t_records --> decide
   decide --> t_decide
   t_decide --> report
-  report --> t_report
-  t_report -->|"nayose.report_text"| f_report
+  report -->|"nayose.report_text"| f_report
   t_score -->|"scored"| match
   t_decide -->|"decisions"| match
   match --> t_matched
@@ -186,7 +184,7 @@ because in a bigger file a field agrees by chance less often. The `model` table 
 
 **score.sql · `O(Δ·b + C·K·L²) + O(N·L)`.** The batch's records are scored against all of the run's.
 
-1. The rules, in order, give the certain pairs (`batch_rule_pairs`). A rule ignores a key value held by `oversized` records
+1. The rules, in order, give the certain pairs (`rule_pairs`, in `batch_pairs`). A rule ignores a key value held by `oversized` records
    or more.
 2. The 22 key generators list the pairs worth comparing (`every_key`). Some match a value exactly, some a value with
    one character deleted, and some a name's reading.
@@ -201,17 +199,19 @@ because in a bigger file a field agrees by chance less often. The `model` table 
 The key index is kept: a job makes the keys of its batch's records and of the records made again, and those join the index once the records made again have left it. Reading the index for the blocks the batch's keys name is the `O(N·L)` term, a scan. Nothing merges here.
 
 **decide.sql · `O(D + N)`**, then **report.sql · `O(N·F + C)`**: the entities ([6](#6--decisions)), then the run's
-numbers for `report.txt` (`report_*` tables), with no record's value in them.
+numbers for `report.txt` (temporary `report_*` tables, which the job prints from before it ends), with no record's value in them.
 
-The run's tables, those that outlive a job:
+The run's tables, those that outlive a job. A table is one of them only if a later job or a person reads it; every
+other table a job makes is temporary, and ends with the job's session. Besides these, `method` holds the fingerprint an
+update and a lookup check; on BigQuery, `looked_up` holds a lookup's answer, and `input` and `given` are the files a
+job loads:
 
 | Stage | Tables |
 |---|---|
-| records | `records` (a record a row: its fields, kind, copies and `batch`), `this_batch`, `set_aside`, `placeholders`, `name_weights` |
-| fit | `fit_sample`, `fit_prior`, `em_patterns`, `u_outside`, `u_counted`, `u_near`, `u_sampled`, `u_filled`, `model`, `fit` (λ, sizes, notes, and `fitted`: the model whole, which an update starts from) |
-| score | `rule_keys` and `every_key` (each record's keys: the index lookups read), `cands`, `gated`, `scored` (each pair once: `id_l`, `id_r`, its levels, `match_weight`, `match_probability`, `rule`, `sources`) |
+| records | `records` (a record a row: its fields, kind, copies and `batch`), `set_aside`, `placeholders`, `name_weights` |
+| fit | `fit_sample` (read by the view `u_records`), `u_sampled`, `model`, `fit` (λ, sizes, notes, and `fitted`: the model whole, which an update starts from) |
+| score | `rule_keys` and `every_key` (each record's keys: the index lookups read), `cands` (the last batch's candidates, which `scripts/key_quality.py` reads), `scored` (each pair once: `id_l`, `id_r`, its levels, `match_weight`, `match_probability`, `rule`, `sources`) |
 | decide | `decisions` (every decision that changed its pair, the latest flagged), `gold` (each record's `cluster_id`, its kind and its customer's) |
-| report | `report_counts`, `report_fields`, `report_scores`, `report_patterns`, `report_keys`, `report_clusters` |
 | match | `matched` (on BigQuery; here the job writes it to a file) |
 
 ## 4 · Values and columns

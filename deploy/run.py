@@ -1,5 +1,5 @@
 """Run a job on BigQuery: load its input into the run's dataset, call its procedure (deploy/deploy.py made it), and
-say what it did. A build and an update print report.txt (nayose.report_text, from the run's report_ tables).
+say what it did. A build and an update print report.txt (nayose.report_text, from the job's temporary report_ tables).
 
     python deploy/run.py PROJECT.DATASET build gs://BUCKET/in/records.parquet [...]   a run's first batch
     python deploy/run.py PROJECT.DATASET update gs://BUCKET/in/batch.parquet          a batch added to the run

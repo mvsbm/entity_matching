@@ -425,7 +425,7 @@ def add_asked_record(engine, record: str | None, values: dict | None, temp: set)
     """
     if record is not None:
         temp.add("this_batch")
-        engine.run("CREATE TEMP TABLE this_batch AS SELECT MAX(batch) + 1 AS batch FROM records")
+        engine.run("CREATE OR REPLACE TEMP TABLE this_batch AS SELECT MAX(batch) + 1 AS batch FROM records")
         engine.run("UPDATE records SET batch = (SELECT batch FROM this_batch) WHERE id = @id", {"id": record})
         return
     columns = config()["input"]
