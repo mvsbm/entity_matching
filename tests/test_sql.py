@@ -60,7 +60,9 @@ def test_the_fingerprint_follows_every_stage_file_and_the_values(tmp_path):
     (tmp_path / "config.toml").write_text("[a]\nx = 1\n")
     second = nayose.fingerprint(tmp_path)
     (tmp_path / "sql" / "a.sql").write_text("SELECT 2;\n")
-    assert len({first, second, nayose.fingerprint(tmp_path)}) == 3
+    third = nayose.fingerprint(tmp_path)
+    (tmp_path / "em.py").write_text("x = 1\n")  # the Python BigQuery runs as fit_model
+    assert len({first, second, third, nayose.fingerprint(tmp_path)}) == 4
 
 
 @pytest.mark.parametrize("path", sorted(nayose.SQL.glob("*.sql")), ids=lambda p: p.name)
