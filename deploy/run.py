@@ -1,21 +1,26 @@
-"""A job on BigQuery: its input loaded into the run's dataset, its procedure called (deploy/deploy.py made it), and
-what it did said: build and update print report.txt (nayose.report_text, from the run's report_ tables).
+"""Run a job on BigQuery: load its input into the run's dataset, call its procedure (deploy/deploy.py made it), and
+say what it did. A build and an update print report.txt (nayose.report_text, from the run's report_ tables).
 
     python deploy/run.py PROJECT.DATASET build gs://BUCKET/in/records.parquet [...]   a run's first batch
     python deploy/run.py PROJECT.DATASET update gs://BUCKET/in/batch.parquet          a batch added to the run
     python deploy/run.py PROJECT.DATASET decide gs://BUCKET/in/decided.parquet        people's decisions applied
-    python deploy/run.py PROJECT.DATASET match 8                                      the match table at 8 points: matched
+    python deploy/run.py PROJECT.DATASET match 8                                      the match table at 8 points
     python deploy/run.py PROJECT.DATASET undo                                         a job that never ended, undone
-    python deploy/run.py PROJECT.DATASET lookup --record ID | COLUMN=VALUE ...        a lookup, its answer in looked_up
+    python deploy/run.py PROJECT.DATASET lookup --record ID | COLUMN=VALUE ...        a lookup, answered in looked_up
 
-Runs as nayose-runtime (deploy/Jenkinsfile, Run, from main). All or nothing, though BigQuery takes no DDL in a
-transaction: a job first makes the table job_running (the job, and the dataset's tables), which a second job finds and
-refuses (exit 75), and clones each table (before__<table>: no bytes billed, its storage shared until either changes).
-A job that fails is undone: each table made again from its clone, a table it made dropped. One whose process died is
-undone by undo, once no query of its session still runs (BigQuery carries on a procedure its caller left). The run's
-views (fit.sql's) aren't tables: a first build that fails leaves them, and the next build makes them again.
-A lookup (nayose.lookup) writes its answer, which holds records' values, to the run's table looked_up and prints only
-that it did: Jenkins keeps what a job prints. It refuses while a job is marked, whose tables are half made.
+It runs as nayose-runtime (deploy/Jenkinsfile's Run stage, from main).
+
+A job is all or nothing, though BigQuery takes no DDL in a transaction:
+- It first makes the table job_running, holding the job and the dataset's tables. A second job finds it and refuses
+  (exit 75).
+- It then clones each table (before__<table>): a clone bills no bytes, and shares its storage until either changes.
+- A job that fails is undone: each table is made again from its clone, and each table it made is dropped.
+- A job whose process died is undone by `undo`, once no query of its session still runs: BigQuery carries on a
+  procedure its caller left.
+- The run's views (fit.sql's) aren't tables, so a first build that fails leaves them; the next build makes them again.
+
+A lookup (nayose.lookup) writes its answer, which holds records' values, to the run's table looked_up, and prints only
+that it did, as Jenkins keeps what a job prints. It refuses while a job is marked, as that job's tables are half made.
 """
 import json
 import sys
@@ -28,33 +33,37 @@ import nayose  # noqa: E402
 from nayose.engines import BigQuery, bigquery_literal  # noqa: E402
 
 JOBS = ("build", "update", "decide", "match")
-MARK, BEFORE = "job_running", "before__"
-DEPLOYED = ("name_weights",)  # the deploy's, no job's: an undo never brings back one a deploy has since replaced
+MARK, BEFORE = "job_running", "before__"  # the running job's table, and the prefix of its clones
+DEPLOYED = ("name_weights",)  # the deploy's tables, no job's: an undo never brings back one a deploy has since replaced
 
 
-class Running(Exception):  # the marked job's procedure still runs in BigQuery: undone, it would race it
-    pass
+class Running(Exception):
+    """The marked job's procedure still runs in BigQuery: undoing it now would race it."""
 
 
-def script(engine: BigQuery, statements: list[str]) -> None:  # one job, its statements in order: the first to fail stops it
+def script(engine: BigQuery, statements: list[str]) -> None:
+    """Run the statements as one script, in order: the first to fail stops it."""
     if statements:
         engine.run(";\n".join(statements))
 
 
-def tables(engine: BigQuery, dataset: str) -> list[str]:  # the dataset's tables the jobs write; a clone is one, and a table made from it too
+def tables(engine: BigQuery, dataset: str) -> list[str]:
+    """Return the dataset's tables the jobs write: clones too, and tables made from them."""
     return [t for (t,) in engine.rows(f"SELECT table_name FROM `{dataset}`.INFORMATION_SCHEMA.TABLES "
                                       "WHERE table_type IN ('BASE TABLE', 'CLONE') ORDER BY 1") if t not in DEPLOYED]
 
 
 def begin(engine: BigQuery, dataset: str, job: str) -> bool:
-    """The job marked and each table cloned; False where another job's mark is there."""
+    """Mark the dataset with the job and clone each of its tables; return False where another job's mark is there."""
     now = tables(engine, dataset)
     if MARK in now:
         return False
-    script(engine, [f"DROP TABLE `{dataset}`.{t}" for t in now if t.startswith(BEFORE)])  # a finished job's, left: gone before the mark, so no undo reads them
+    # a finished job's clones, left behind: dropped before the mark, so no undo reads them
+    script(engine, [f"DROP TABLE `{dataset}`.{t}" for t in now if t.startswith(BEFORE)])
     held = [t for t in now if not t.startswith(BEFORE)]
+    # fails where another job made the mark first, which is then never undone here
     engine.run(f"CREATE TABLE `{dataset}`.{MARK} AS SELECT '{job}' AS job, CURRENT_TIMESTAMP() AS started, "
-               f"{bigquery_literal(engine.session)} AS session, {bigquery_literal(held or [''])} AS tables")  # fails where another job made it first: never undone here
+               f"{bigquery_literal(engine.session)} AS session, {bigquery_literal(held or [''])} AS tables")
     try:
         script(engine, [f"CREATE TABLE `{dataset}`.{BEFORE}{t} CLONE `{dataset}`.{t}" for t in held])
     except BaseException:
@@ -63,25 +72,30 @@ def begin(engine: BigQuery, dataset: str, job: str) -> bool:
     return True
 
 
-def end(engine: BigQuery, dataset: str) -> None:  # the mark first: clones left without it are dropped by the next job
-    script(engine, [f"DROP TABLE `{dataset}`.{MARK}", *(f"DROP TABLE `{dataset}`.{t}" for t in tables(engine, dataset) if t.startswith(BEFORE))])
+def end(engine: BigQuery, dataset: str) -> None:
+    """Drop the mark, then the clones: clones left without a mark are dropped by the next job."""
+    clones = [f"DROP TABLE `{dataset}`.{t}" for t in tables(engine, dataset) if t.startswith(BEFORE)]
+    script(engine, [f"DROP TABLE `{dataset}`.{MARK}", *clones])
 
 
 def undo(engine: BigQuery, dataset: str) -> bool:
-    """The dataset's tables as the marked job found them: each from its clone, each it made dropped; then the mark, then
-    the clones, so an undo stopped partway can run again. False where no job is marked; Running while a query of the
-    marked job's session (another process's) still runs."""
+    """Put the dataset's tables back as the marked job found them, and return False where no job is marked.
+
+    Each table is made again from its clone, and each table the job made is dropped; then the mark, then the clones,
+    so an undo stopped partway can run again. Raises Running while a query of the marked job's session, another
+    process's, still runs.
+    """
     now = tables(engine, dataset)
     if MARK not in now:
         return False
     session, held = engine.rows(f"SELECT session, tables FROM `{dataset}`.{MARK}")[0]
     held = [t for t in held if t]
-    if session != engine.session:  # a job of another process: its procedure may outlive it (bigquery.jobs.list, iam.tf)
+    if session != engine.session:  # another process's job: its procedure may outlive it (bigquery.jobs.list, iam.tf)
         region = engine.client.get_dataset(dataset).location.lower()
         if engine.value(f"SELECT COUNT(*) FROM `region-{region}`.INFORMATION_SCHEMA.JOBS_BY_USER "
                         "WHERE session_info.session_id = @session AND state <> 'DONE'", {"session": session}):
             raise Running(session)
-    back = [t for t in held if BEFORE + t in now]  # a table without its clone was never touched: the job stopped before it ran
+    back = [t for t in held if BEFORE + t in now]  # a table without its clone was never touched: the job stopped first
     made = [t for t in now if t not in held and t != MARK and not t.startswith(BEFORE)]
     script(engine, [*(f"CREATE OR REPLACE TABLE `{dataset}`.{t} CLONE `{dataset}`.{BEFORE}{t}" for t in back),
                     *(f"DROP TABLE `{dataset}`.{t}" for t in made), f"DROP TABLE `{dataset}`.{MARK}",
@@ -90,6 +104,7 @@ def undo(engine: BigQuery, dataset: str) -> bool:
 
 
 def main(argv: list[str] | None = None, client: object = None, bigquery: object = None) -> int:
+    """Run the job the arguments name, and return its exit code: 0, 2 for a mistake, 75 to try again later."""
     args = sys.argv[1:] if argv is None else argv
     if len(args) < 2 or args[1] not in (*JOBS, "undo", "lookup") or (args[1] != "undo" and len(args) < 3):
         print(__doc__, file=sys.stderr)
@@ -97,7 +112,7 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
     dataset, job, given = args[0], args[1], args[2:]
     if job == "match":
         try:
-            nayose.check_threshold(float(given[0]))  # before any client: as the job does here
+            nayose.check_threshold(float(given[0]))  # before any client, as the job does here
         except nayose.InputError as e:
             print(json.dumps(dict(severity="ERROR", error=str(e), fix=e.fix)), file=sys.stderr)
             return 2
@@ -112,23 +127,30 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
         engine.close()
 
 
-def undone(engine: BigQuery, dataset: str) -> int:  # a job whose process died, undone once its procedure has ended
+def undone(engine: BigQuery, dataset: str) -> int:
+    """Undo a job whose process died, once its procedure has ended; return the exit code."""
     try:
-        print(json.dumps(dict(severity="INFO", job="undo", dataset=dataset, undone=undo(engine, dataset))), file=sys.stderr)
+        said = dict(severity="INFO", job="undo", dataset=dataset, undone=undo(engine, dataset))
     except Running as e:
-        print(json.dumps(dict(severity="WARNING", error=f"the marked job's procedure still runs in BigQuery (session {e})",
-                              fix=f"undo once it ends: python deploy/run.py {dataset} undo")), file=sys.stderr)
+        said = dict(severity="WARNING", error=f"the marked job's procedure still runs in BigQuery (session {e})",
+                    fix=f"undo once it ends: python deploy/run.py {dataset} undo")
+        print(json.dumps(said), file=sys.stderr)
         return 75
+    print(json.dumps(said), file=sys.stderr)
     return 0
 
 
 def marked(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
-    """A job all or nothing: the dataset marked and its tables cloned (begin), the job run, undone where it fails, the
-    mark and the clones dropped (end); then report.txt for a build or an update."""
+    """Run a job all or nothing, and return its exit code.
+
+    The dataset is marked and its tables cloned (begin), the job run, and undone where it fails; then the mark and
+    the clones are dropped (end). A build or an update then prints report.txt.
+    """
     t = time.perf_counter()
     if not begin(engine, dataset, job):
         print(json.dumps(dict(severity="WARNING", error=f"a job is marked running in {dataset} ({MARK})",
-                              fix=f"wait for it to finish; if none runs, its process died: python deploy/run.py {dataset} undo")), file=sys.stderr)
+                              fix="wait for it to finish; if none runs, its process died: "
+                                  f"python deploy/run.py {dataset} undo")), file=sys.stderr)
         return 75
     try:
         run(engine, dataset, job, given)
@@ -144,14 +166,16 @@ def marked(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
 
 
 def lookup(engine: BigQuery, dataset: str, given: list[str]) -> int:
+    """Look up a record (--record ID, or COLUMN=VALUE words), write its answer to looked_up, return the exit code."""
     record = given[1] if given[0] == "--record" and len(given) == 2 else None
     values = None if record else dict(w.split("=", 1) for w in given if "=" in w)
     if values is not None and len(values) != len(given):
-        print(json.dumps(dict(severity="ERROR", error="give --record ID, or COLUMN=VALUE words", fix="for example: lookup --record 1234")), file=sys.stderr)
+        print(json.dumps(dict(severity="ERROR", error="give --record ID, or COLUMN=VALUE words",
+                              fix="for example: lookup --record 1234")), file=sys.stderr)
         return 2
     if MARK in tables(engine, dataset):
-        print(json.dumps(dict(severity="WARNING", error=f"a job is marked running in {dataset} ({MARK}): its tables are half made",
-                              fix="look up once it ends")), file=sys.stderr)
+        error = f"a job is marked running in {dataset} ({MARK}): its tables are half made"
+        print(json.dumps(dict(severity="WARNING", error=error, fix="look up once it ends")), file=sys.stderr)
         return 75
     try:
         answer = nayose.lookup(engine, record=record, values=values)
@@ -159,13 +183,16 @@ def lookup(engine: BigQuery, dataset: str, given: list[str]) -> int:
         print(json.dumps(dict(severity="ERROR", error=str(e), fix=e.fix), ensure_ascii=False), file=sys.stderr)
         return 2
     engine.run("CREATE TABLE IF NOT EXISTS looked_up (asked STRING, at TIMESTAMP, answer STRING)")
+    asked = json.dumps(dict(record=record, values=values), ensure_ascii=False)
     engine.run("INSERT INTO looked_up (asked, at, answer) SELECT @asked, CURRENT_TIMESTAMP(), @answer",
-               {"asked": json.dumps(dict(record=record, values=values), ensure_ascii=False), "answer": json.dumps(answer, ensure_ascii=False)})
-    print(json.dumps(dict(severity="INFO", job="lookup", dataset=dataset, into=f"{dataset}.looked_up", entities=len(answer["entities"]))), file=sys.stderr)
+               {"asked": asked, "answer": json.dumps(answer, ensure_ascii=False)})
+    print(json.dumps(dict(severity="INFO", job="lookup", dataset=dataset, into=f"{dataset}.looked_up",
+                          entities=len(answer["entities"]))), file=sys.stderr)
     return 0
 
 
-def run(engine: BigQuery, dataset: str, job: str, given: list[str]) -> None:  # the job's input loaded, its procedure called
+def run(engine: BigQuery, dataset: str, job: str, given: list[str]) -> None:
+    """Load the job's input, then call its procedure."""
     if job in ("build", "update"):
         engine.read_parquet("input", given, nayose.config()["input"]["columns"])
     if job == "decide":

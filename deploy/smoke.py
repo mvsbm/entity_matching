@@ -17,8 +17,10 @@ from nayose.engines import BigQuery, DuckDB  # noqa: E402
 
 COMPARED = {"scored": "SELECT id_l, id_r, ROUND(match_weight, 9) AS w, rule, sources FROM scored ORDER BY id_l, id_r",
             "gold": "SELECT id, cluster_id, customer_kind FROM gold ORDER BY id",
-            # BigQuery's EDIT_DISTANCE (cl_levenshtein's there) counted in characters, as the twin: 3 and the cut's 2, not bytes
-            "levenshtein": "SELECT cl_levenshtein('東京都港区芝', '東京府北区') AS d, cl_levenshtein_cut('東京都港区', '大阪府北区', 1) AS c"}
+            # BigQuery's EDIT_DISTANCE (cl_levenshtein's there) counts characters, as the twin does: 3, and the cut's 2,
+            # not the bytes' counts
+            "levenshtein": "SELECT cl_levenshtein('東京都港区芝', '東京府北区') AS d, "
+                           "cl_levenshtein_cut('東京都港区', '大阪府北区', 1) AS c"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,7 +30,10 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([sys.executable, "-m", "nayose", "build", local, "--out", tmp], check=True, capture_output=True)
         here, there = DuckDB(Path(tmp) / "run.duckdb"), BigQuery(dataset)
-        differ = [name for name, sql in COMPARED.items() if not here.frame(sql).astype("string").fillna("").equals(there.frame(sql).astype("string").fillna(""))]
+        def text(frame):  # each cell as text, a missing one empty, so the engines' types don't matter
+            return frame.astype("string").fillna("")
+
+        differ = [name for name, sql in COMPARED.items() if not text(here.frame(sql)).equals(text(there.frame(sql)))]
         here.close()
         there.close()
     print(f"smoke: {'the same' if not differ else 'different: ' + ', '.join(differ)} on BigQuery and DuckDB")

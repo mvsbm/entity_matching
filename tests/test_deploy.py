@@ -5,6 +5,7 @@ records what it is sent."""
 import importlib.util
 import math
 import re
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,16 @@ from nayose.engines import bigquery_literal, functions, procedures
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 CODE = nayose.NOT_CODE  # comments and strings: what isn't code
+FILE_BUDGET = 86  # the most tracked files the repository holds: CONTRIBUTING.md, rule 10
+
+
+def test_the_repository_holds_no_more_files_than_its_budget():
+    tracked = subprocess.run(["git", "ls-files"], cwd=DEPLOY.parent, capture_output=True, text=True)
+    if tracked.returncode:
+        pytest.skip("not a git checkout: no tracked files to count")
+    count = len(tracked.stdout.splitlines())
+    assert count <= FILE_BUDGET, (f"{count} tracked files, over the budget of {FILE_BUDGET}: remove one, "
+                                  "or raise FILE_BUDGET in this file and say why in the pull request")
 
 
 def script(name: str):  # deploy/<name>.py as a module
