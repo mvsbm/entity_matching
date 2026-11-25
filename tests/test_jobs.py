@@ -124,12 +124,10 @@ def test_each_key_s_candidates_and_matches_are_counted_and_the_keys_that_can_go_
 
 def test_a_build_runs_on_a_file_where_a_compared_field_is_never_filled(tmp_path, population):
     df = population.df.copy()
-    df["BIRTH_DATE"] = None  # no record has it: its comparison has nothing to count, so it is sampled and bounded
+    df[["BIRTH_DATE", "CIF_ID"]] = None  # no record has them: their comparisons have nothing to count, so are sampled
     df.to_parquet(tmp_path / "in.parquet", index=False)
     engine = DuckDB()
     nayose.build(engine, [tmp_path / "in.parquet"])
     assert engine.value("SELECT COUNT(*) FROM gold") == len(df)
-    df["PHONE_NUM_4"] = None  # a near-certain rule reads the phone too: a population this small then finds no pair
-    df.to_parquet(tmp_path / "in.parquet", index=False)
-    with pytest.raises(Exception, match="agree on any near-certain rule"):  # the fit's own refusal, its fix said
-        nayose.build(DuckDB(), [tmp_path / "in.parquet"])
+    bits = dict(engine.rows("SELECT comparison, MAX(ABS(bits)) FROM model WHERE comparison IN ('birth', 'cif') GROUP BY 1"))
+    assert bits == {"birth": 0.0, "cif": 0.0}  # learned nothing about them: every level weighs nothing

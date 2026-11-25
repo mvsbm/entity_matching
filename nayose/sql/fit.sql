@@ -204,8 +204,9 @@ FROM u_records GROUP BY scope;
 --     pair of them, each pair's level of each comparison, counted. A comparison counted to its else level (each of
 --     its levels counted, pairs left for its else level) isn't sampled. An update samples only once refresh would
 --     sample a comparison again (em.py's stale: resampled, from the counts above); else its sample would go unused.
---     A comparison no record fills in a scope has no counts to join, so its flag is NULL there and it is sampled:
---     its u is then the bound, as em.py gives one no pair reached.
+--     A comparison no record fills in a scope has no exact count (u_counted), so its test fails and it is sampled:
+--     its u is then the bound, as em.py gives one no pair reached. The joins are LEFT, so a scope keeps its row of
+--     flags even when it fills none of phone, cif and birth, and its other comparisons' pairs are still sampled.
 CREATE OR REPLACE TEMP TABLE u_plan AS
 SELECT
   o.scope,
@@ -213,8 +214,8 @@ SELECT
   COALESCE(LOGICAL_OR(IF(o.comparison = 'cif', NOT (c.pairs > 0 AND n.pairs > 0 AND c.pairs + n.pairs < o.pairs), NULL)), TRUE) AS cif,
   COALESCE(LOGICAL_OR(IF(o.comparison = 'birth', NOT (c.pairs > 0 AND n.pairs > 0 AND c.pairs + n.pairs < o.pairs), NULL)), TRUE) AS birth
 FROM u_outside AS o
-JOIN u_counted AS c ON c.scope = o.scope AND c.comparison = o.comparison AND c.label = 'exact'
-JOIN u_near AS n ON n.scope = o.scope AND n.comparison = o.comparison
+LEFT JOIN u_counted AS c ON c.scope = o.scope AND c.comparison = o.comparison AND c.label = 'exact'
+LEFT JOIN u_near AS n ON n.scope = o.scope AND n.comparison = o.comparison
 GROUP BY o.scope;
 
 -- when: NOT @refit
