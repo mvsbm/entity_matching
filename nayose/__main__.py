@@ -199,6 +199,7 @@ def decide(a: argparse.Namespace) -> dict:
     """Run the decide job: store people's decisions, and make the entities again."""
     t = time.perf_counter()
     with writing(a.out) as engine:
+        nayose.unchanged(engine, nayose.build_again("decide", a.out))
         before = engine.value("SELECT COUNT(*) FROM decisions")
         nayose.decide(engine, files(a.given))
         stored, matches, entities = engine.rows(
@@ -214,6 +215,7 @@ def match(a: argparse.Namespace) -> dict:
     into = a.into or a.out / "matched" / f"points-{a.threshold:g}.parquet"
     into.parent.mkdir(parents=True, exist_ok=True)
     with reading(a.out) as engine:
+        nayose.unchanged(engine, nayose.build_again("match", a.out))
         nayose.match(engine, a.threshold)
         engine.con.execute(f"COPY (SELECT * FROM matched) TO '{into}' (FORMAT parquet)")
         pairs = engine.value("SELECT COUNT(*) FROM matched")

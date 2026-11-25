@@ -20,7 +20,7 @@ The stages the jobs run:
 Running SQL:
     stage(engine, name, **values)   run a stage file's statements in order, each given the values it names (@name)
     statements(text)                split a stage file into statements: each ends with a line that ends in ';'
-    fingerprint()                   hash what an update needs unchanged since its build: the SQL, the values, the
+    fingerprint()                   hash what every job after a build needs unchanged: the SQL, the values, the
                                     mapping and the name model
 """
 import contextlib
@@ -51,7 +51,7 @@ NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a column name config.toml may 
 MAPPED = ("input_rows", "mapped")  # the tables a mapping makes, for records.sql
 METHOD = "CREATE OR REPLACE TABLE method AS SELECT @fingerprint AS fingerprint"  # a build's last statement
 CHANGED = ("the method, its values or the mapping changed since the run was built: "
-           "a batch or a lookup would be scored otherwise")
+           "this code would read its tables, and score its batches, otherwise")
 UNCHANGED = (f"SELECT IF((SELECT fingerprint FROM method) IS DISTINCT FROM @fingerprint, "  # a NULL one differs too
              f"ERROR('{CHANGED}; build the run again'), 0)")
 QUERY = "￿asked"  # the ID of a record looked up by its values: no record has it, and it sorts after every ID
@@ -118,9 +118,32 @@ class InputError(ValueError):
         self.fix = fix
 
 
+# What an older config.toml names otherwise: (section, key) → as it was written, as it is written now
+RENAMED = {
+    ("score", "keys"): ("[score] keys", "[score] generators"),
+    ("records", "min_block"): ("[records] min_block", "[records] placeholder_min"),
+    ("fit", "fit_rows"): ("[fit] fit_rows", "[fit] fit_records"),
+    ("fit", "sessions"): ("[fit] sessions", "[fit] em_sessions"),
+    ("report", "patterns"): ("[report.patterns]", "[report.looks]"),
+}
+ADDED = (("report", "sample_records"), ("report", "patterns_shown"))  # what an older config.toml lacks
+
+
 def config() -> dict:
-    """Return config.toml, or the file NAYOSE_CONFIG names (a variant, at design time)."""
-    return tomllib.loads(Path(os.environ.get("NAYOSE_CONFIG") or HERE / "config.toml").read_text(encoding="utf-8"))
+    """Return config.toml, or the file NAYOSE_CONFIG names (a variant, at design time).
+
+    Raises InputError for a key an older config.toml names otherwise (RENAMED), or one it lacks (ADDED).
+    """
+    path = Path(os.environ.get("NAYOSE_CONFIG") or HERE / "config.toml")
+    c = tomllib.loads(path.read_text(encoding="utf-8"))
+    for (section, key), (was, now) in RENAMED.items():
+        if key in c.get(section, {}):
+            raise InputError(f"{path.name}: {was} is named {now} now", fix=f"rename {was} {now}")
+    for section, key in ADDED:
+        if key not in c.get(section, {}):
+            raise InputError(f"{path.name}: [{section}] lacks {key}",
+                             fix=f"add [{section}] {key}, as nayose/config.toml has it")
+    return c
 
 
 def mapping() -> Path:
@@ -771,16 +794,16 @@ def for_lookup(sql: str, temp: set) -> str | None:
 
 
 def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
-    """Return the hash of what an update needs unchanged since its build.
+    """Return the hash of what every job after a build needs unchanged since it.
 
     It covers every stage file, the values (config.toml), the input's mapping and the name model, each by name and
     content, every function the deploy makes outside the SQL files (engines.functions: the comparisons, the hash,
     nfkc and the Python UDFs, em.py's and entities.py's whole source), and every value the stages read as the Python
     makes it from config.toml (values_of: the patterns, the kana maps, the name model's terms). Any byte counts, a
     comment's too: a run built before an edit is built again. DuckDB's twins of the comparisons are held to them by
-    tests/test_functions.py. A build stores the hash in the table method; an update or a lookup refuses a run whose
-    hash differs. `root` is the nayose folder to hash; `mapping_file` is the deployment's mapping, where the deploy
-    has one.
+    tests/test_functions.py. A build stores the hash in the table method; every other job (update, decide, match,
+    lookup) refuses a run whose hash differs. `root` is the nayose folder to hash; `mapping_file` is the deployment's
+    mapping, where the deploy has one.
     """
     if root == HERE:
         config_file = Path(os.environ.get("NAYOSE_CONFIG") or HERE / "config.toml")

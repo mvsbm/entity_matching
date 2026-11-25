@@ -568,7 +568,7 @@ def kind_training_names(persons: pd.DataFrame, registry: pd.DataFrame, legal_fro
 def train_name_model(reference: Path, generator: Path) -> dict:
     """The person-or-company name model nayose's records.sql reads (config/kind_names.npz: terms, coef, intercept):
     logistic regression on a name's character n-grams (1 to config.toml [records] ngram), the names read as any_name
-    reads them (nayose's SQL: no spaces, NFKC, katakana, no legal form, kana folded), trained on the reference data's
+    reads them (records.sql's: NFKC, then no spaces, katakana, no legal form, kana folded), trained on the reference data's
     training half (name_model_split), written as config/generator.toml's kana_confusions and branches write bank
     records (kind_training_names). scripts/train_name_model.py saves it for the runs. O(T·L·g) for T names."""
     import nayose
@@ -583,7 +583,7 @@ def train_name_model(reference: Path, generator: Path) -> dict:
     engine.put("names", pd.DataFrame({"i": range(len(names)), "name": names["name"].astype("string")}))
     nayose.stage(engine, "functions")
     v = nayose.values_of("records")
-    texts = engine.frame(r"""SELECT NULLIF(TRANSLATE(REGEXP_REPLACE(TRANSLATE(nfkc(REGEXP_REPLACE(name, r'[\s\x{3000}]+', '')), @hiragana, @katakana),
+    texts = engine.frame(r"""SELECT NULLIF(TRANSLATE(REGEXP_REPLACE(TRANSLATE(REGEXP_REPLACE(nfkc(name), r'[\s\x{3000}]+', ''), @hiragana, @katakana),
                                      @legal_pattern, ''), @kana_fold_from, @kana_fold_to), '') AS t FROM names ORDER BY i""",
                          {k: v[k] for k in ("hiragana", "katakana", "legal_pattern", "kana_fold_from", "kana_fold_to")})["t"]
     vec = CountVectorizer(analyzer="char", ngram_range=(1, int(r["ngram"])), binary=True, min_df=2)

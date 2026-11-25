@@ -209,8 +209,8 @@ The key index is kept: a job makes the keys of its batch's records and of the re
 numbers for `report.txt` (temporary `report_*` tables, which the job prints from before it ends), with no record's value in them.
 
 The run's tables, those that outlive a job. A table is one of them only if a later job or a person reads it; every
-other table a job makes is temporary, and ends with the job's session. Besides these, `method` holds the fingerprint an
-update and a lookup check; on BigQuery, `looked_up` holds a lookup's answer, and `input` and `given` are the files a
+other table a job makes is temporary, and ends with the job's session. Besides these, `method` holds the fingerprint
+every job after a build checks; on BigQuery, `looked_up` holds a lookup's answer, and `input` and `given` are the files a
 job loads:
 
 | Stage | Tables |
@@ -236,9 +236,10 @@ The SQL text never changes between runs. What changes is given to it:
   own mapping. Prod's is in Secret Manager as `nayose-mapping`, outside the repository. `config.toml` `[input]` lists
   the columns it reads, and a column the file lacks is read as missing.
 
-`report.txt` names the method's fingerprint (`nayose.fingerprint`), a hash of every stage file, `config.toml`, the
-mapping, the name model and the functions the deploy makes, any byte of them, and of every value the stages read as
-the Python makes it from `config.toml`, so two reports show whether two runs ran the same method.
+`report.txt` names the method the run was built by: the fingerprint its build stored in `method`
+(`nayose.fingerprint`), a hash of every stage file, `config.toml`, the mapping, the name model and the functions the
+deploy makes, any byte of them, and of every value the stages read as the Python makes it from `config.toml`, so two
+reports show whether two runs ran the same method.
 
 ## 5 · An update
 

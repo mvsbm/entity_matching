@@ -20,6 +20,20 @@ A job is all or nothing, though BigQuery takes no DDL in a transaction:
   exits 75 with what stopped it, and `undo` puts the tables back once the procedure ends.
 - The run's view (fit.sql's compared) isn't a table: a first build that fails leaves it; the next build makes it again.
 
+Each run ends with one JSON line on stderr. Its outcomes, their exit codes and their fixes:
+
+    outcome                                                  exit  fix
+    the job done                                             0
+    a job already marked (job_running)                       75    wait; if none runs, undo
+    stopped while its procedure runs on in BigQuery (cause)  75    undo once it ends
+    failed, and undone (error)                               1     run it again
+    failed, and its undo failed too (error, undo_error)      1     undo, then run it again
+    done, but ending it or report.txt failed (finished)      1     run nothing again; drop a mark left, never undo
+    undo: done, or nothing marked                            0
+    undo: the marked job's procedure still runs              75    undo once it ends
+    a lookup: answered; a job marked; a mistake in it        0; 75; 2
+    a mistake in the command (a threshold under keep_from)   2     the fix it names
+
 A lookup (nayose.lookup) writes its answer, which holds records' values, to the run's table looked_up, and prints only
 that it did, as Jenkins keeps what a job prints. It refuses while a job is marked, as that job's tables are half made.
 """
@@ -41,6 +55,19 @@ SEVERITY = {0: "INFO", 75: "WARNING"}  # what an exit code says, as a log reads 
 
 class Running(Exception):
     """The marked job's procedure still runs in BigQuery: undoing it now would race it."""
+
+
+class UndoFailed(Exception):
+    """The job failed (`stopped`), and so did its undo (`failed`): the job stays marked."""
+
+    def __init__(self, stopped: BaseException, failed: Exception) -> None:
+        super().__init__(described(failed))
+        self.stopped, self.failed = stopped, failed
+
+
+def described(e: BaseException) -> str:
+    """Return what an exception says, or its type's name where it says nothing (an interrupt)."""
+    return str(e) or type(e).__name__
 
 
 def say(code: int, **fields: object) -> int:
@@ -75,10 +102,23 @@ def begin(engine: BigQuery, dataset: str, job: str) -> bool:
                f"{bigquery_literal(engine.session)} AS session, {bigquery_literal(held or [''])} AS tables")
     try:
         script(engine, [f"CREATE TABLE `{dataset}`.{BEFORE}{t} CLONE `{dataset}`.{t}" for t in held])
-    except BaseException:
-        undo(engine, dataset)
-        raise
+    except BaseException as stopped:
+        undo_after(engine, dataset, stopped)
     return True
+
+
+def undo_after(engine: BigQuery, dataset: str, stopped: BaseException) -> None:
+    """Undo the marked job that `stopped` ended, then raise `stopped` again.
+
+    Raises Running, caused by `stopped`, while the job's procedure still runs, and UndoFailed where the undo fails.
+    """
+    try:
+        undo(engine, dataset)
+    except Running as e:
+        raise e from stopped
+    except Exception as e:
+        raise UndoFailed(stopped, e) from e
+    raise stopped
 
 
 def end(engine: BigQuery, dataset: str) -> None:
@@ -155,10 +195,11 @@ def dispatch(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
         return undone(engine, dataset)
     try:
         return all_or_nothing(engine, dataset, job, given)
-    except Exception as e:  # all_or_nothing undid the job, or, if its undo failed, left the job marked
-        return say(1, job=job, dataset=dataset, error=str(e) or type(e).__name__,
-                   fix=f"if a job is still marked, undo it (python deploy/run.py {dataset} undo), "
-                       "then run this job again")
+    except UndoFailed as e:  # the job is still marked
+        return say(1, job=job, dataset=dataset, error=described(e.stopped), undo_error=described(e.failed),
+                   fix=f"undo it (python deploy/run.py {dataset} undo), then run this job again")
+    except Exception as e:  # all_or_nothing undid the job, or never marked the dataset
+        return say(1, job=job, dataset=dataset, error=described(e), fix="run this job again")
 
 
 def undone(engine: BigQuery, dataset: str) -> int:
@@ -174,27 +215,45 @@ def undone(engine: BigQuery, dataset: str) -> int:
 def all_or_nothing(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
     """Run a job all or nothing, and return its exit code.
 
-    The dataset is marked and its tables cloned (begin), the job run, and undone where it fails; then the mark and
-    the clones are dropped (end). A build or an update then prints report.txt.
+    The dataset is marked and its tables cloned (begin), the job run, and undone where it fails (undo_after); then the
+    mark and the clones are dropped (end), and a build or an update prints report.txt (finished).
     """
     t = time.perf_counter()
-    if not begin(engine, dataset, job):
-        return say(75, error=f"a job is marked running in {dataset} ({MARK})",
-                   fix=f"wait for it to finish; if none runs, its process died: python deploy/run.py {dataset} undo")
     try:
-        call_procedure(engine, dataset, job, given)
-    except BaseException as stopped:
+        if not begin(engine, dataset, job):
+            return say(75, error=f"a job is marked running in {dataset} ({MARK})", fix="wait for it to finish; "
+                       f"if none runs, its process died: python deploy/run.py {dataset} undo")
         try:
-            undo(engine, dataset)
-        except Running as e:  # stopped waiting mid-call: the procedure carries on, so its undo waits for it
-            return say(75, error=f"the job's procedure still runs in BigQuery (session {e})",
-                       cause=str(stopped) or type(stopped).__name__,
-                       fix=f"undo once it ends: python deploy/run.py {dataset} undo")
-        raise
-    end(engine, dataset)
-    seconds = round(time.perf_counter() - t, 1)
-    if job in ("build", "update"):
-        print(nayose.report_text(engine, {job: seconds}, job))
+            call_procedure(engine, dataset, job, given)
+        except BaseException as stopped:
+            undo_after(engine, dataset, stopped)
+    except Running as e:  # stopped waiting mid-call: the procedure carries on, so its undo waits for it
+        return say(75, error=f"the job's procedure still runs in BigQuery (session {e})", cause=described(e.__cause__),
+                   fix=f"undo once it ends: python deploy/run.py {dataset} undo")
+    return finished(engine, dataset, job, round(time.perf_counter() - t, 1))
+
+
+def finished(engine: BigQuery, dataset: str, job: str, seconds: float) -> int:
+    """End a job whose procedure succeeded (end), print a build's or an update's report.txt, and return the exit code.
+
+    Where either step fails, the job is done all the same: it exits 1, saying so and never to run it again, which
+    would run it twice. The next job drops the clones left. A mark left would make the next job refuse and offer an
+    undo, which would take back what the job did, so the fix then is to drop the mark alone.
+    """
+    step = "ending it (the mark and the clones)"
+    try:
+        end(engine, dataset)
+        step = "report.txt"
+        if job in ("build", "update"):
+            print(nayose.report_text(engine, {job: seconds}, job))
+    except Exception as e:
+        try:
+            marked = MARK in tables(engine, dataset)
+        except Exception:  # unknown: said as if it stayed
+            marked = True
+        fix = (f"run nothing again; drop the mark alone (DROP TABLE `{dataset}`.{MARK}), never undo: an undo would "
+               "take back what the job did" if marked else "run nothing again: the next job drops the clones left")
+        return say(1, job=job, dataset=dataset, finished=True, failed=step, error=described(e), fix=fix)
     return say(0, job=job, dataset=dataset, seconds=seconds)
 
 
