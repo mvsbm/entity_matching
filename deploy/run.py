@@ -148,14 +148,14 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
 
 
 def dispatch(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
-    """Run a lookup, an undo, or a job all or nothing (marked), and return its exit code: 1 if the job failed."""
+    """Run a lookup, an undo, or a job all or nothing (all_or_nothing), and return its exit code: 1 if it failed."""
     if job == "lookup":
         return lookup(engine, dataset, given)
     if job == "undo":
         return undone(engine, dataset)
     try:
-        return marked(engine, dataset, job, given)
-    except Exception as e:  # marked undid the job, or, if its undo failed, left the job marked
+        return all_or_nothing(engine, dataset, job, given)
+    except Exception as e:  # all_or_nothing undid the job, or, if its undo failed, left the job marked
         return say(1, job=job, dataset=dataset, error=str(e) or type(e).__name__,
                    fix=f"if a job is still marked, undo it (python deploy/run.py {dataset} undo), "
                        "then run this job again")
@@ -171,7 +171,7 @@ def undone(engine: BigQuery, dataset: str) -> int:
     return say(0, job="undo", dataset=dataset, undone=was_marked)
 
 
-def marked(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
+def all_or_nothing(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
     """Run a job all or nothing, and return its exit code.
 
     The dataset is marked and its tables cloned (begin), the job run, and undone where it fails; then the mark and
@@ -182,7 +182,7 @@ def marked(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
         return say(75, error=f"a job is marked running in {dataset} ({MARK})",
                    fix=f"wait for it to finish; if none runs, its process died: python deploy/run.py {dataset} undo")
     try:
-        run(engine, dataset, job, given)
+        call_procedure(engine, dataset, job, given)
     except BaseException as stopped:
         try:
             undo(engine, dataset)
@@ -218,7 +218,7 @@ def lookup(engine: BigQuery, dataset: str, given: list[str]) -> int:
     return say(0, job="lookup", dataset=dataset, into=f"{dataset}.looked_up", entities=len(answer["entities"]))
 
 
-def run(engine: BigQuery, dataset: str, job: str, given: list[str]) -> None:
+def call_procedure(engine: BigQuery, dataset: str, job: str, given: list[str]) -> None:
     """Load the job's input, then call its procedure."""
     if job in ("build", "update"):
         engine.read_parquet("input", given, nayose.config()["input"]["columns"])

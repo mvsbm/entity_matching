@@ -48,25 +48,25 @@ JOIN (SELECT id FROM records WHERE @refit ORDER BY er_hash(postal_code__first3),
   USING (id);
 
 
--- 2. λ is how likely two random records are one customer. fit_model estimates it from found, the pairs that any of
---    the near-certain rules find in the sample, each pair counted once. Each rule's own count is kept too, because a
---    rule that finds no pair in the sample is skipped, and the report names it.
+-- 2. λ is how likely two random records are one customer. fit_model estimates it from prior_pairs, the pairs that
+--    any of the near-certain rules find in the sample, each pair counted once. Each rule's own count is kept too,
+--    because a rule that finds no pair in the sample is skipped, and the report names it.
 --    The near-certain rules are score.sql's X1, X2 and X4. X3 (customer ID and phone) and X5 (company name, address
 --    code and phone) are left out, because [fit] prior_recall is the share of all matches that X1, X2 and X4 find,
---    as measured on labelled data, and λ divides found by it.
+--    as measured on labelled data, and λ divides prior_pairs by it.
 CREATE OR REPLACE TEMP TABLE fit_prior AS
 SELECT
   (SELECT COUNT(*) FROM fit_sample) AS records,
   (SELECT COUNT(*) FROM (
-     SELECT l.id AS l, r.id AS r FROM fit_sample AS l JOIN fit_sample AS r  -- X1, customer ID and full name
-       ON l.customer_id = r.customer_id AND l.full_name = r.full_name AND l.id < r.id
+     SELECT x.id AS l, y.id AS r FROM fit_sample AS x JOIN fit_sample AS y  -- X1, customer ID and full name
+       ON x.customer_id = y.customer_id AND x.full_name = y.full_name AND x.id < y.id
      UNION DISTINCT
-     SELECT l.id, r.id FROM fit_sample AS l JOIN fit_sample AS r  -- X2, customer ID and company name
-       ON l.customer_id = r.customer_id AND l.company_name = r.company_name AND l.id < r.id
+     SELECT x.id, y.id FROM fit_sample AS x JOIN fit_sample AS y  -- X2, customer ID and company name
+       ON x.customer_id = y.customer_id AND x.company_name = y.company_name AND x.id < y.id
      UNION DISTINCT
-     SELECT l.id, r.id FROM fit_sample AS l JOIN fit_sample AS r  -- X4, full name, address code and phone
-       ON l.full_name = r.full_name AND l.address_code = r.address_code AND l.phone = r.phone AND l.id < r.id
-  )) AS found,
+     SELECT x.id, y.id FROM fit_sample AS x JOIN fit_sample AS y  -- X4, full name, address code and phone
+       ON x.full_name = y.full_name AND x.address_code = y.address_code AND x.phone = y.phone AND x.id < y.id
+  )) AS prior_pairs,
   (SELECT COALESCE(SUM(pairs_of(n)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample  -- X1's pairs
      WHERE customer_id IS NOT NULL AND full_name IS NOT NULL GROUP BY customer_id, full_name)) AS cif_name,
   (SELECT COALESCE(SUM(pairs_of(n)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample  -- X2's pairs
@@ -82,18 +82,18 @@ SELECT
 --    is NULL in its session.
 CREATE OR REPLACE TEMP TABLE em_patterns AS
 WITH paired AS (  -- a pair keeps its two records whole, and name_score runs once a pair for name_level
-  SELECT 'phone' AS session, l, r, name_score(l, r) AS s_name
-  FROM fit_sample AS l JOIN fit_sample AS r ON l.phone = r.phone AND l.id < r.id
+  SELECT 'phone' AS session, x, y, name_score(x, y) AS s_name
+  FROM fit_sample AS x JOIN fit_sample AS y ON x.phone = y.phone AND x.id < y.id
   UNION ALL
-  SELECT 'address', l, r, name_score(l, r)
-  FROM fit_sample AS l JOIN fit_sample AS r ON l.address__address = r.address__address AND l.id < r.id
+  SELECT 'address', x, y, name_score(x, y)
+  FROM fit_sample AS x JOIN fit_sample AS y ON x.address__address = y.address__address AND x.id < y.id
 )
 SELECT session, name, company, address, phone, cif, birth, COUNT(*) AS pairs
 FROM (
-  SELECT session, name_level(l, r, s_name) AS name, gamma_company(l, r) AS company,
-         IF(session = 'address', CAST(NULL AS INT64), gamma_address(l, r)) AS address,
-         IF(session = 'phone', CAST(NULL AS INT64), gamma_phone(l, r)) AS phone, gamma_cif(l, r) AS cif,
-         gamma_birth(l, r) AS birth
+  SELECT session, name_level(x, y, s_name) AS name, gamma_company(x, y) AS company,
+         IF(session = 'address', CAST(NULL AS INT64), gamma_address(x, y)) AS address,
+         IF(session = 'phone', CAST(NULL AS INT64), gamma_phone(x, y)) AS phone, gamma_cif(x, y) AS cif,
+         gamma_birth(x, y) AS birth
   FROM paired
 )
 GROUP BY session, name, company, address, phone, cif, birth;
@@ -128,16 +128,16 @@ UNION ALL SELECT scope, 'birth', IF(birth_date IS NOT NULL, 1, 0) AS mask, COUNT
 
 CREATE OR REPLACE TEMP TABLE u_outside AS
 WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared),
-every AS (SELECT scope, pairs_of(COUNT(*)) AS pairs FROM u_records GROUP BY scope),
+all_pairs AS (SELECT scope, pairs_of(COUNT(*)) AS pairs FROM u_records GROUP BY scope),
 missing AS (
   SELECT a.scope, a.comparison, SUM(IF(a.mask = b.mask, pairs_of(a.n), a.n * b.n)) AS pairs
   FROM u_masks AS a JOIN u_masks AS b
     ON a.scope = b.scope AND a.comparison = b.comparison AND a.mask <= b.mask AND (a.mask & b.mask) = 0
   GROUP BY a.scope, a.comparison
 )
-SELECT c.scope, c.comparison, every.pairs - COALESCE(missing.pairs, 0) AS pairs
+SELECT c.scope, c.comparison, all_pairs.pairs - COALESCE(missing.pairs, 0) AS pairs
 FROM (SELECT DISTINCT scope, comparison FROM u_masks) AS c
-JOIN every USING (scope) LEFT JOIN missing USING (scope, comparison);
+JOIN all_pairs USING (scope) LEFT JOIN missing USING (scope, comparison);
 
 -- 4b. u_counted counts each comparison's equality levels, up to its first fuzzy level. The pairs equal on a set of
 --     columns, all filled, number Σ n(n−1)/2, with n the number of records holding each combination of values. A
@@ -235,11 +235,11 @@ longer AS (
   GROUP BY scope, comparison
 )
 SELECT c.scope, c.comparison, 'one digit off' AS label,
-       COALESCE(s.pairs, 0) + COALESCE(w.pairs, 0) + COALESCE(l.pairs, 0) AS pairs
+       COALESCE(s.pairs, 0) + COALESCE(sw.pairs, 0) + COALESCE(lg.pairs, 0) AS pairs
 FROM (SELECT DISTINCT scope, comparison FROM u_outside WHERE comparison IN ('phone', 'cif', 'birth')) AS c
 LEFT JOIN substituted AS s USING (scope, comparison)
-LEFT JOIN swapped AS w USING (scope, comparison)
-LEFT JOIN longer AS l USING (scope, comparison);
+LEFT JOIN swapped AS sw USING (scope, comparison)
+LEFT JOIN longer AS lg USING (scope, comparison);
 
 -- 4d. u_filled counts each scope's records, and for each comparison the records that fill its column. For address it
 --     takes the most filled of its three columns. From these, fit_model estimates how many sampled pairs fill each
@@ -269,10 +269,10 @@ SELECT
   NOT LOGICAL_OR(comparison = 'birth' AND counted_whole) AS birth
 FROM (  -- one row per scope and comparison. counted_whole is TRUE if all its levels are counted exactly.
   SELECT o.scope, o.comparison,
-         COALESCE(c.pairs > 0 AND n.pairs > 0 AND c.pairs + n.pairs < o.pairs, FALSE) AS counted_whole
+         COALESCE(c.pairs > 0 AND one_edit.pairs > 0 AND c.pairs + one_edit.pairs < o.pairs, FALSE) AS counted_whole
   FROM u_outside AS o
   LEFT JOIN u_counted AS c ON c.scope = o.scope AND c.comparison = o.comparison AND c.label = 'exact'
-  LEFT JOIN u_near AS n ON n.scope = o.scope AND n.comparison = o.comparison
+  LEFT JOIN u_near AS one_edit ON one_edit.scope = o.scope AND one_edit.comparison = o.comparison
 )
 GROUP BY scope;
 
@@ -299,15 +299,15 @@ WHERE share >= 1 OR MOD(er_hash(id || '_' || @seed), 1000000000) < GREATEST(1, R
 -- comparison that u_plan doesn't sample is NULL.
 CREATE OR REPLACE TEMP TABLE u_patterns AS
 WITH paired AS (  -- a pair keeps its two records whole, and name_score runs once a pair for name_level
-  SELECT l.scope, l, r, name_score(l, r) AS s_name
-  FROM u_drawn AS l JOIN u_drawn AS r ON l.scope = r.scope AND l.id < r.id
+  SELECT x.scope, x, y, name_score(x, y) AS s_name
+  FROM u_drawn AS x JOIN u_drawn AS y ON x.scope = y.scope AND x.id < y.id
 )
 SELECT scope, name, company, address, phone, cif, birth, COUNT(*) AS pairs
 FROM (  -- a subquery, so that the GROUP BY's phone, cif and birth name the levels, not u_plan's columns of those names
   SELECT
-    p.scope, name_level(p.l, p.r, p.s_name) AS name, gamma_company(p.l, p.r) AS company,
-    gamma_address(p.l, p.r) AS address, IF(plan.phone, gamma_phone(p.l, p.r), NULL) AS phone,
-    IF(plan.cif, gamma_cif(p.l, p.r), NULL) AS cif, IF(plan.birth, gamma_birth(p.l, p.r), NULL) AS birth
+    p.scope, name_level(p.x, p.y, p.s_name) AS name, gamma_company(p.x, p.y) AS company,
+    gamma_address(p.x, p.y) AS address, IF(plan.phone, gamma_phone(p.x, p.y), NULL) AS phone,
+    IF(plan.cif, gamma_cif(p.x, p.y), NULL) AS cif, IF(plan.birth, gamma_birth(p.x, p.y), NULL) AS birth
   FROM paired AS p JOIN u_plan AS plan ON plan.scope = p.scope
 )
 GROUP BY scope, name, company, address, phone, cif, birth;

@@ -10,6 +10,8 @@
 --   @edges      the points at which each score band starts
 --   @floor      the review floor, in points
 --   @oversized  how many records make a block oversized
+--   @sample_records, @patterns_shown   the records FIELDS samples, and the patterns each band shows (config.toml
+--               [report])
 -- Writes (read by nayose.report_text, here or after a BigQuery procedure): report_counts, report_fields,
 -- report_scores, report_patterns, report_keys, report_clusters.
 
@@ -44,12 +46,12 @@ SELECT
   COUNT(birth_date) AS birth_date
 FROM records;
 
--- report_fields describes each field on a sample of 10,000 records, chosen by hash so that the sample is the same
--- whatever the rows' order. It gives the share of a field's filled values that look like its pattern (looks_right),
--- the share that its most common value holds (top_value), the share with no letter or digit (no_letters), and the
--- values' mean and longest length.
+-- report_fields describes each field on a sample of @sample_records records, chosen by hash so that the sample is the
+-- same whatever the rows' order. It gives the share of a field's filled values that look like its pattern
+-- (looks_right), the share that its most common value holds (top_value), the share with no letter or digit
+-- (no_letters), and the values' mean and longest length.
 CREATE OR REPLACE TEMP TABLE report_fields AS
-WITH sample AS (SELECT * FROM records ORDER BY er_hash(id) LIMIT 10000),
+WITH sample AS (SELECT * FROM records ORDER BY er_hash(id) LIMIT @sample_records),
 v AS (
   SELECT 'full_name' AS field, full_name AS v FROM sample UNION ALL SELECT 'person_name', person_name FROM sample
   UNION ALL SELECT 'given_name', given_name FROM sample UNION ALL SELECT 'company_name', company_name FROM sample
@@ -83,21 +85,21 @@ UNION ALL
 SELECT -1, (SELECT COUNT(*) FROM batch_pairs) - (SELECT COUNT(*) FROM batch_scored WHERE match_weight >= 0);
 
 -- report_patterns splits the batch's pairs at 0 points or more into two bands, below the review floor (@floor) and
--- from it up. For each band it keeps the 12 most common patterns of levels, each with its pairs and their mean
--- points. It also gives the band's total pairs and how many patterns the band holds (kinds).
+-- from it up. For each band it keeps the @patterns_shown most common patterns of levels, each with its pairs and their
+-- mean points. It also gives the band's total pairs and how many patterns the band holds (kinds).
 CREATE OR REPLACE TEMP TABLE report_patterns AS
 WITH p AS (
   SELECT match_weight >= @floor AS up, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth,
-         COUNT(*) AS n, AVG(match_weight) AS w
+         COUNT(*) AS n, AVG(match_weight) AS mean_points
   FROM batch_scored WHERE match_weight >= 0
   GROUP BY up, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth
 )
 SELECT * FROM (
   SELECT *, SUM(n) OVER (PARTITION BY up) AS total, COUNT(*) OVER (PARTITION BY up) AS kinds,
-         ROW_NUMBER() OVER (PARTITION BY up ORDER BY n DESC, w DESC, gamma_name, gamma_company, gamma_address,
-                                                     gamma_phone, gamma_cif, gamma_birth) AS k
+         ROW_NUMBER() OVER (PARTITION BY up ORDER BY n DESC, mean_points DESC, gamma_name, gamma_company,
+                                                     gamma_address, gamma_phone, gamma_cif, gamma_birth) AS nth
   FROM p
-) WHERE k <= 12;
+) WHERE nth <= @patterns_shown;
 
 -- report_keys describes each key that the run uses. pairs counts the candidates it listed, each pair once, even if
 -- a deletion key listed the pair through several of its deletions. largest is the size of its largest block that
@@ -108,10 +110,10 @@ blocks AS (
   SELECT g, MAX(n) AS largest, COUNT(DISTINCT CASE WHEN n >= @oversized THEN k END) AS oversized
   FROM key_blocks GROUP BY g
 )
-SELECT g.g, g.name, COALESCE(l.pairs, 0) AS pairs, COALESCE(b.largest, 0) AS largest,
+SELECT gen.g, gen.name, COALESCE(ls.pairs, 0) AS pairs, COALESCE(b.largest, 0) AS largest,
        COALESCE(b.oversized, 0) AS oversized
-FROM generators AS g LEFT JOIN listing AS l USING (name) LEFT JOIN blocks AS b USING (g)
-WHERE g.used;
+FROM generators AS gen LEFT JOIN listing AS ls USING (name) LEFT JOIN blocks AS b USING (g)
+WHERE gen.used;
 
 -- report_clusters counts the entities of each size.
 CREATE OR REPLACE TEMP TABLE report_clusters AS

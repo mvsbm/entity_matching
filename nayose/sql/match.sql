@@ -19,15 +19,15 @@
 -- a phone, and they differ in their given name (two edits or more), in the last three characters of their name's
 -- reading (three edits or more) or in their birth date (two edits or more). A difference counts only if both sides
 -- are filled. household is a label only, and it changes no score.
-CREATE OR REPLACE TEMP FUNCTION household(l ANY TYPE, r ANY TYPE) AS (
-  (l.address_code = r.address_code OR l.address__address = r.address__address OR l.phone = r.phone)
-  AND ((l.given_name__kana_fold IS NOT NULL AND r.given_name__kana_fold IS NOT NULL
-        AND cl_damerau_levenshtein_cut(l.given_name__kana_fold, r.given_name__kana_fold, 1) > 1)
-    OR (l.person_name__kana_fold_long_vowel_last3 IS NOT NULL AND r.person_name__kana_fold_long_vowel_last3 IS NOT NULL
-        AND cl_damerau_levenshtein_cut(l.person_name__kana_fold_long_vowel_last3,
-                                       r.person_name__kana_fold_long_vowel_last3, 2) > 2)
-    OR (l.birth_date IS NOT NULL AND r.birth_date IS NOT NULL
-        AND cl_damerau_levenshtein_cut(l.birth_date, r.birth_date, 1) > 1))
+CREATE OR REPLACE TEMP FUNCTION household(x ANY TYPE, y ANY TYPE) AS (
+  (x.address_code = y.address_code OR x.address__address = y.address__address OR x.phone = y.phone)
+  AND ((x.given_name__kana_fold IS NOT NULL AND y.given_name__kana_fold IS NOT NULL
+        AND cl_damerau_levenshtein_cut(x.given_name__kana_fold, y.given_name__kana_fold, 1) > 1)
+    OR (x.person_name__kana_fold_long_vowel_last3 IS NOT NULL AND y.person_name__kana_fold_long_vowel_last3 IS NOT NULL
+        AND cl_damerau_levenshtein_cut(x.person_name__kana_fold_long_vowel_last3,
+                                       y.person_name__kana_fold_long_vowel_last3, 2) > 2)
+    OR (x.birth_date IS NOT NULL AND y.birth_date IS NOT NULL
+        AND cl_damerau_levenshtein_cut(x.birth_date, y.birth_date, 1) > 1))
 );
 
 -- shown gives each comparison's levels as people read them, each with its label and its bits rounded to two places.
@@ -54,12 +54,12 @@ SELECT
   x.address AS address_l, y.address AS address_r, x.postal_code AS postal_code_l, y.postal_code AS postal_code_r,
   x.phone AS phone_l, y.phone AS phone_r, x.customer_id AS customer_id_l, y.customer_id AS customer_id_r,
   x.birth_date AS birth_date_l, y.birth_date AS birth_date_r,
-  n.label AS name, n.bits AS name_bits, c.label AS company, c.bits AS company_bits,
+  nm.label AS name, nm.bits AS name_bits, c.label AS company, c.bits AS company_bits,
   a.label AS address, a.bits AS address_bits, p.label AS phone, p.bits AS phone_bits,
   i.label AS cif, i.bits AS cif_bits, b.label AS birth, b.bits AS birth_bits
 FROM scored AS s
 JOIN pair_records AS x ON x.id = s.id_l JOIN pair_records AS y ON y.id = s.id_r
-JOIN shown AS n ON n.comparison = 'name' AND n.gamma = s.gamma_name
+JOIN shown AS nm ON nm.comparison = 'name' AND nm.gamma = s.gamma_name
 JOIN shown AS c ON c.comparison = 'company' AND c.gamma = s.gamma_company
 JOIN shown AS a ON a.comparison = 'address' AND a.gamma = s.gamma_address
 JOIN shown AS p ON p.comparison = 'phone' AND p.gamma = s.gamma_phone

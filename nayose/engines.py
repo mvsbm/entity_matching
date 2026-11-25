@@ -359,7 +359,7 @@ def functions(dataset: str) -> list[str]:
     out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.one_byte_hash(x STRING) AS "
                "(CODE_POINTS_TO_STRING(ARRAY(SELECT 33 + MOD(c, 94) "
                "FROM UNNEST(TO_CODE_POINTS(x)) AS c WITH OFFSET AS i ORDER BY i)))")
-    python_udfs = ((em, "fit_model", "counts STRING, settings STRING, stored STRING", "fit"),
+    python_udfs = ((em, "fit_model", "counts STRING, settings STRING, given_fit STRING", "fit"),
                    (entities, "entities_of", "pairs STRING", "of"))
     for module, name, args, entry in python_udfs:
         source = Path(module.__file__).read_text(encoding="utf-8")  # python-3.11 there, and the standard library only
@@ -540,8 +540,8 @@ def bigquery_literal(v: object) -> str:
         return f"CAST('{v!r}' AS FLOAT64)" if not_finite else f"CAST({v!r} AS FLOAT64)"
     if isinstance(v, int):
         return str(v)
-    said = {"\\": "\\\\", "'": "\\'"}
-    return "'" + "".join(said.get(ch) or (ch if ch.isprintable() else f"\\U{ord(ch):08x}") for ch in str(v)) + "'"
+    escapes = {"\\": "\\\\", "'": "\\'"}
+    return "'" + "".join(escapes.get(ch) or (ch if ch.isprintable() else f"\\U{ord(ch):08x}") for ch in str(v)) + "'"
 
 
 class BigQuery:

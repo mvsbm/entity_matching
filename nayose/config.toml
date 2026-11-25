@@ -79,6 +79,10 @@ at_least = 4.0     # points: the entities a lookup shows by default, from here u
 likely_from = 6.0  # points: a candidate from here up whose names were compared is likely, as people review
 most = 20          # the most entities a lookup shows
 
+[report]  # sql/report.sql, nayose/reporting.py
+sample_records = 10000  # records: FIELDS reads a sample of this many by hash, COLUMNS NOT MAPPED the input's first this many
+patterns_shown = 12     # PATTERNS BY SCORE shows each band's this many most common patterns of levels
+
 [report.patterns]  # sql/report.sql, nayose.report: what each field's values look like, for FIELDS' "looks right" and
 # COLUMNS NOT MAPPED's "looks like" (RE2; company_name's: a legal form, [records]'s)
 full_name = '^[ァ-ヴー・ｦ-ﾟ\s　]+$'
