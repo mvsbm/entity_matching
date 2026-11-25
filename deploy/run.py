@@ -125,14 +125,19 @@ def undo_after(engine: BigQuery, dataset: str, stopped: BaseException) -> None:
     raise stopped
 
 
+LOADED = ("input", "given")  # the tables run() loads a job's files into, which only that job reads
+
+
 def end(engine: BigQuery, dataset: str) -> None:
-    """Rename the mark before__job_running, then drop it and the clones: the next job drops what is left of them.
+    """Rename the mark before__job_running, then drop it, the clones and the job's loaded files.
 
     Once renamed, the mark is no mark: no job, undo or lookup finds it. A mark left by a DROP that failed would make
-    an undo take back what the job did.
+    an undo take back what the job did. The loaded files (input, given) are the raw records and decisions: only the
+    job read them, so none outlives it. The next job drops what a failed DROP leaves of the clones.
     """
     clones = [f"DROP TABLE `{dataset}`.{t}" for t in tables(engine, dataset) if t.startswith(BEFORE)]
-    script(engine, [f"ALTER TABLE `{dataset}`.{MARK} RENAME TO {BEFORE}{MARK}",
+    loaded = [f"DROP TABLE IF EXISTS `{dataset}`.{t}" for t in LOADED]
+    script(engine, [f"ALTER TABLE `{dataset}`.{MARK} RENAME TO {BEFORE}{MARK}", *loaded,  # the raw records go first
                     f"DROP TABLE `{dataset}`.{BEFORE}{MARK}", *clones])
 
 
