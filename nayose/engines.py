@@ -394,18 +394,19 @@ ARGUMENTS = {"match": {"threshold": "FLOAT64"}}  # a procedure's own values: giv
 KEPT = ("decisions",)  # people's decisions: a build keeps them, as the CLI's build does
 
 
-def in_dataset(sql: str, dataset: str) -> str:
-    """Return a view's statement with each table it names (a WITH's names aside) as the dataset's.
+def in_dataset(sql: str, dataset: str, temp: set = frozenset()) -> str:
+    """Return a statement with each table it names written with the dataset, but a WITH's names and `temp`'s.
 
-    BigQuery reads a view's body without a default dataset.
+    BigQuery reads a procedure's and a view's tables without a default dataset: SET @@dataset_id names none there.
+    The rest of the statement is as written, its comments too: each name is found by its place in the parse.
     """
-    tree, (project, name) = sqlglot.parse_one(sql, read="bigquery"), dataset.split(".")
+    tree = sqlglot.parse_one(sql, read="bigquery")
     ctes = {c.alias_or_name for c in tree.find_all(exp.CTE)}
-    for t in tree.find_all(exp.Table):
-        if not t.args.get("db") and t.name not in ctes:
-            t.set("db", exp.to_identifier(name))
-            t.set("catalog", exp.to_identifier(project))
-    return tree.sql(dialect="bigquery")
+    starts = {t.this.meta["start"] for t in tree.find_all(exp.Table)
+              if isinstance(t.this, exp.Identifier) and not t.args.get("db") and t.name not in ctes | set(temp)}
+    for start in sorted(starts, reverse=True):
+        sql = f"{sql[:start]}`{dataset}`.{sql[start:]}"
+    return sql
 
 
 def stage_statements(stage: str, mapping: Path | None) -> list[str]:
@@ -449,31 +450,34 @@ def job_statements(job: str, stages: list, dataset: str, mapping: Path | None) -
     Each statement is as the procedure runs it (in_procedure). A CREATE TEMP FUNCTION is left out: sql_functions makes
     it a function of the dataset. The tables written are the run's (run_table_written), in the order first written.
     """
-    body, declared, written = [], {}, {}
+    declared, written = {}, {}
+    plain = []
     for stage, told in stages:
         declared |= nayose.values_of(stage, **told)
-        for sql in stage_statements(stage, mapping):
-            if TEMP_FUNCTION.match(sql):
-                continue
-            body.append(in_procedure(sql, dataset))
-            if table := run_table_written(sql):
-                written.setdefault(table)
+        if stage == "decide" and job != "decide":  # nothing given: a build's or an update's entities
+            plain.append(nayose.NOTHING_GIVEN)
+        plain += [sql for sql in stage_statements(stage, mapping) if not TEMP_FUNCTION.match(sql)]
+    temp = {t for sql in plain for t in TEMP_TABLE.findall(nayose.NOT_CODE.sub(" ", sql))}
+    body = [in_procedure(sql, dataset, temp) for sql in plain]
+    for sql in plain:
+        if table := run_table_written(sql):
+            written.setdefault(table)
+    assert not temp & set(written), f"{job}: tables both temporary and the run's: {temp & set(written)}"
     arguments = ARGUMENTS.get(job, {})
     return body, {k: v for k, v in declared.items() if k not in arguments}, list(written)
 
 
-def in_procedure(sql: str, dataset: str) -> str:
+def in_procedure(sql: str, dataset: str, temp: set) -> str:
     """Return a stage's statement as its procedure runs it.
 
     Each @name becomes v_name, in the code and in its -- comments, where a `-- when:` condition is read from, but never
-    in a string, a quoted name or a /* */ comment, which run_file leaves as written too. A view names its tables with
-    their dataset (in_dataset). A statement with a `-- when:` condition is wrapped in IF ... END IF.
+    in a string, a quoted name or a /* */ comment, which run_file leaves as written too. Each of the run's tables is
+    named with its dataset (in_dataset); the job's temporary tables (`temp`) aren't. A statement with a `-- when:`
+    condition is wrapped in IF ... END IF.
     """
-    sql = VALUE_OR_NOT_CODE.sub(as_variable, sql)
-    guard = nayose.when(sql)  # read before in_dataset, whose SQL keeps no comment
-    head = WRITE.match(sql)
-    if head and "VIEW" in nayose.verb_of(head):
-        sql = in_dataset(sql, dataset)
+    sql = in_dataset(VALUE_OR_NOT_CODE.sub(as_variable, sql), dataset, temp)
+    guard = nayose.when(sql)  # a comment, which in_dataset leaves: its tables are named here
+    guard = guard and in_dataset(f"SELECT {guard}", dataset, temp).removeprefix("SELECT ")
     return f"IF {guard} THEN\n{sql};\nEND IF" if guard else sql
 
 
@@ -496,34 +500,40 @@ def run_table_written(sql: str) -> str | None:
     return None if "VIEW" in verb or "TEMP" in verb or head["table"] in KEPT else head["table"]
 
 
+TEMP_TABLE = re.compile(r"\bCREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", re.I)
+LIMIT_VALUE = re.compile(r"\bLIMIT v_(\w+)")  # a LIMIT of a value, as in_procedure writes it
+
+
 def procedure(job: str, body: list[str], declared: dict, written: list[str], dataset: str, fingerprint: str) -> str:
     """Return the CREATE PROCEDURE statement of one job, from its statements (job_statements).
 
-    The procedure declares its values, then sets the dataset as the default. A build first drops every table it
-    writes, so it starts as an empty run, and last stores the method's fingerprint; every other job first refuses a
-    run whose fingerprint differs. So a procedure reads:
+    The procedure declares its values. A build first drops every table it writes, so it starts as an empty run, and
+    last stores the method's fingerprint; every other job first refuses a run whose fingerprint differs. Each of the
+    run's tables is named with its dataset. strict_mode is off: BigQuery would otherwise refuse, when the deploy makes
+    it, a procedure that reads a table no build has made yet; each statement is checked when it runs instead. A LIMIT
+    takes its value as a number, as BigQuery takes a literal or a query parameter there, never a variable. So a
+    procedure reads:
 
-        CREATE OR REPLACE PROCEDURE `project.dataset`.job(its arguments)
+        CREATE OR REPLACE PROCEDURE `project.dataset`.job(its arguments) OPTIONS (strict_mode = FALSE)
         BEGIN
         DECLARE v_name TYPE DEFAULT value;            each value its stages read
-        SET @@dataset_project_id = ...; SET @@dataset_id = ...;
         DROP TABLE IF EXISTS table; ...               a build: each run's table it writes
           or SELECT IF(... UNCHANGED ...);            every other job: the fingerprint checked
         the stages' statements, each as in_procedure gives it;
         CREATE OR REPLACE TABLE method AS ...;        a build: the fingerprint stored (METHOD)
         END
     """
-    project, name = dataset.split(".")
     arguments = ", ".join(f"v_{k} {kind}" for k, kind in ARGUMENTS.get(job, {}).items())
     head = [f"DECLARE v_{k} {bigquery_type(v)} DEFAULT {bigquery_literal(v)}" for k, v in declared.items()]
-    head += [f"SET @@dataset_project_id = '{project}'", f"SET @@dataset_id = '{name}'"]
     if job == "build":
-        head += [f"DROP TABLE IF EXISTS {x}" for x in written]
-        body = [*body, nayose.METHOD.replace("@fingerprint", fingerprint)]
+        head += [f"DROP TABLE IF EXISTS `{dataset}`.{x}" for x in written]
+        body = [*body, in_dataset(nayose.METHOD.replace("@fingerprint", fingerprint), dataset)]
     else:
-        head.append(nayose.UNCHANGED.replace("@fingerprint", fingerprint))
-    statements = ";\n".join([*head, *(qualified(sql, dataset) for sql in body)])
-    return f"CREATE OR REPLACE PROCEDURE `{dataset}`.{job}({arguments})\nBEGIN\n{statements};\nEND"
+        head.append(in_dataset(nayose.UNCHANGED.replace("@fingerprint", fingerprint), dataset))
+    body = [LIMIT_VALUE.sub(lambda m: f"LIMIT {int(declared[m[1]])}", qualified(sql, dataset)) for sql in body]
+    statements = ";\n".join([*head, *body])
+    return (f"CREATE OR REPLACE PROCEDURE `{dataset}`.{job}({arguments}) OPTIONS (strict_mode = FALSE)\n"
+            f"BEGIN\n{statements};\nEND")
 
 
 def method_functions() -> set[str]:
@@ -649,8 +659,8 @@ class BigQuery:
         """Load Parquet files in Cloud Storage (gs://…) as the dataset's table, adding each of `columns` they lack."""
         config = self.bigquery.LoadJobConfig(source_format="PARQUET", write_disposition="WRITE_TRUNCATE")
         self.client.load_table_from_uri(list(files), f"{self.dataset}.{table}", job_config=config).result()
-        for c in columns:
-            self.run(f"ALTER TABLE `{table}` ADD COLUMN IF NOT EXISTS `{c}` STRING")
+        if columns:  # in one statement: BigQuery takes about five changes to a table in ten seconds
+            self.run(f"ALTER TABLE `{table}` " + ", ".join(f"ADD COLUMN IF NOT EXISTS `{c}` STRING" for c in columns))
 
     @contextlib.contextmanager
     def scratch(self):

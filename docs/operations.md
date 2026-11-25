@@ -104,10 +104,24 @@ python -m nayose lookup --out runs/main --record 1234          or COLUMN=VALUE â
 - **Backup and restore:** copy `run.duckdb` at any time, since writers never change it in place. To restore, copy it back while no job is writing.
 - **Another config or mapping:** set `NAYOSE_CONFIG` or `NAYOSE_MAPPING` to its path.
 
+## Checking on a BigQuery sandbox
+
+```
+pip install pydata-google-auth     # once; the first run opens a browser to sign in
+python deploy/bigquery_check.py PROJECT [--entities 400] [--plans plans.json] [--keep]
+```
+
+- **What it does:** it deploys nayose (`deploy/deploy.py`) in `PROJECT.nayose_check`, made anew, and runs every job through `deploy/run.py` on generated records, as `tests/test_parity.py` makes its runs: a build with two crowds of 70 (the gate skips one block and lists the other), an update that finds a placeholder and makes records again, a match, people's decisions, a match again, four lookups, and a decide given a wrong file, which is refused and undone. DuckDB runs the same jobs on the same files. Every table each job keeps, each lookup's answer, and the functions (the comparisons and `er_hash` on pairs of names, `nfkc` on every code point) must be the same on both. It prints a line a check (PASS, FAIL, or SKIP for a table temporary on BigQuery) and exits 1 if any failed.
+- **What it costs: nothing.** It runs only where billing is off, a sandbox: it first makes sure the project refuses an INSERT, and stops if it doesn't.
+- **A sandbox's limits:** 10 GiB of storage in its whole life (deleting a table gives none of it back), 1 TiB of queries a month, tables gone after 60 days. A run writes about 8 KB a record: the default 400 entities about 6 MB, 100k records about 0.8 GB. Past 4,000 entities it compares each table's row count, not its rows.
+- **How it differs from prod:** a sandbox refuses DML, so the check's client sends each INSERT, DELETE and UPDATE as the DDL that leaves its table the same rows (a table clustered as the SQL first made it), and holds `records`' columns to `records.sql`'s types, as an INSERT would. It loads the jobs' files from this machine, as a sandbox has no Cloud Storage. So DML as BigQuery runs it, Cloud Storage and a billed project's costs are left to staging's smoke test (`deploy/smoke.py`).
+- **`--plans`:** each procedure's statements with what BigQuery measured (wall clock, slot time, bytes processed and billed) and each one's query plan, as JSON; the costliest are printed a job.
+
+Run it after a change to `nayose/sql/`, to the procedures (`engines.py`) or to `deploy/`.
+
 ## What isn't there yet
 
-- **Lookups on BigQuery.** The `lookup` job is written to run there as here, unproven until the parity step.
-- **Nothing has run on BigQuery yet.** `tests/test_deploy.py` checks the deploy and the jobs against a client that records what it is sent. The parity check (the tests' population built in `nayose_ci` and held to the same digests as DuckDB) waits for the sandbox. Confirm these on the first staging deploy: the Python functions (`python-3.11`) can be made in the dataset's location; the OIDC token each WIF configuration reads is on the agent, since the Jenkinsfile binds only the configuration file; the smoke test says `the same`.
+- **What only a billed project shows.** Every job has run on a BigQuery sandbox, each table the same as DuckDB's (`deploy/bigquery_check.py`). A sandbox can't show DML as BigQuery runs it, a load from Cloud Storage, or a billed project's costs and quotas. Confirm these on the first staging deploy: the OIDC token each WIF configuration reads is on the agent, since the Jenkinsfile binds only the configuration file; the smoke test says `the same`.
 
 ## What the DevOps team decides
 

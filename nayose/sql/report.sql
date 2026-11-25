@@ -65,12 +65,29 @@ top AS (
   SELECT field, MAX(n) / SUM(n) AS top_value
   FROM (SELECT field, v, COUNT(*) AS n FROM sampled_values WHERE v IS NOT NULL GROUP BY field, v)
   GROUP BY field
+),
+-- looks holds each field's look from @looks, one path a field: BigQuery reads a JSON path only as written out.
+looks AS (
+  SELECT 'full_name' AS field, JSON_VALUE(@looks, '$.full_name') AS look
+  UNION ALL SELECT 'person_name', JSON_VALUE(@looks, '$.person_name')
+  UNION ALL SELECT 'given_name', JSON_VALUE(@looks, '$.given_name')
+  UNION ALL SELECT 'company_name', JSON_VALUE(@looks, '$.company_name')
+  UNION ALL SELECT 'any_name', JSON_VALUE(@looks, '$.any_name')
+  UNION ALL SELECT 'address', JSON_VALUE(@looks, '$.address')
+  UNION ALL SELECT 'address_code', JSON_VALUE(@looks, '$.address_code')
+  UNION ALL SELECT 'postal_code', JSON_VALUE(@looks, '$.postal_code')
+  UNION ALL SELECT 'prefecture', JSON_VALUE(@looks, '$.prefecture')
+  UNION ALL SELECT 'town_code', JSON_VALUE(@looks, '$.town_code')
+  UNION ALL SELECT 'city', JSON_VALUE(@looks, '$.city')
+  UNION ALL SELECT 'phone', JSON_VALUE(@looks, '$.phone')
+  UNION ALL SELECT 'customer_id', JSON_VALUE(@looks, '$.customer_id')
+  UNION ALL SELECT 'birth_date', JSON_VALUE(@looks, '$.birth_date')
 )
 SELECT
-  field, AVG(CAST(REGEXP_CONTAINS(v, JSON_VALUE(@looks, CONCAT('$.', field))) AS INT64)) AS looks_right,
+  field, AVG(CAST(REGEXP_CONTAINS(v, look) AS INT64)) AS looks_right,
   ANY_VALUE(top.top_value) AS top_value, AVG(CAST(NOT REGEXP_CONTAINS(v, r'[\pL\pN]') AS INT64)) AS no_letters,
   AVG(LENGTH(v)) AS length, MAX(LENGTH(v)) AS longest
-FROM sampled_values LEFT JOIN top USING (field)
+FROM sampled_values LEFT JOIN top USING (field) LEFT JOIN looks USING (field)
 GROUP BY field;
 
 -- report_scores counts the batch's pairs by band. A pair scored at 0 points or more is in band k if k of @edges are
