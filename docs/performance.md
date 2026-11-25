@@ -106,6 +106,14 @@ Up to 75k records, a job's cost hardly depends on its size: it is the fixed cost
   multiple of it at 37,619 records, 1,318 MB billed for 333 MB processed.
 - **`scripts/estimate_cost.py` is calibrated:** for that build it estimates 1,198 MB billed for records, fit, score
   and decide, and BigQuery billed 1,150 MB for them (report.sql's 168 MB aside): within 4%, above.
+- **An update reads the whole key index:** key_blocks reads every_key, and rule_blocks rule_keys, to count the
+  blocks of the batch's keys. At 1M records that is about 1.7 GB billed, about $0.01; it grows with the run, not the
+  batch, so at 1B records about 1.7 TB, about $10 an update. BigQuery skips a partition only for a constant: on an
+  index of 4M rows partitioned by a hash bucket of its key, the buckets of 200 keys read 9.9 MB as a query parameter
+  or a script variable, and the whole 200 MB as a join, a subquery, an array subquery or EXISTS. (Unpartitioned and
+  clustered by key, at 200 MB, no form skipped a block: too few blocks to skip.) Reading only the batch's part would
+  take a bucket column and partitioning on both indexes, and the batch's buckets in a variable the deploy sets: left
+  for the scale rehearsal, where it pays ([roadmap](roadmap.md)).
 
 A sandbox stores 10 GiB in its life, so a build of a million records (about 8 GB written) is left to staging,
 where the scale rehearsal measures what grows with N ([roadmap](roadmap.md)).

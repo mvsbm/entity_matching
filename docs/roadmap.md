@@ -22,8 +22,11 @@ Each of these is kept only where the sandbox shows the bill falling, every table
 - **The pricing model.** Each job is run on demand (bytes billed) and on capacity (slot time, `total_slot_ms`), and
   each job's cost is worked out under both. The jobs scan much and compute little a row, which is the case where
   slot time costs less.
-- **Pruning for small batches.** An update's batch keys passed to the clustered key index as a parameter, as a
-  lookup's are, where the batch is small enough to.
+- **Pruning for small batches.** An update reads the whole key index ([performance](performance.md#on-bigquery-itself)).
+  BigQuery skips a partition only for a constant (a parameter or a variable, measured), never for a join or a
+  subquery: so the index partitioned by a hash bucket of its key, and the batch's buckets in a variable the
+  procedure sets, where the batch is small enough to. It adds a column to both indexes and a step to the deploy, so it
+  is kept only where the scale rehearsal shows the bill falling.
 - **Search indexes** on `records.id`, `gold.id` and the key index's `key`, for the lookups.
 - **Storage.** Physical (compressed) storage billing, with two days of time travel: each update adds to the key index
   and rewrites the fit's tables, and time travel keeps every version it replaces.
