@@ -26,7 +26,7 @@ def measure(run: Path, truth: Path | None, points: float) -> dict:
     con = engine.con
     if con.execute("SELECT MAX(batch) FROM records").fetchone()[0]:
         raise SystemExit(f"{run}: updated since its build, and cands holds its last batch's pairs alone: count a build's run")
-    engine.run(nayose.making("score", "generators"), {"keys": list(nayose.config()["score"]["keys"])})  # score.sql's: each one's bit
+    engine.run(nayose.statement_making("score", "generators"), {"keys": list(nayose.config()["score"]["keys"])})  # score.sql's: each one's bit
     made = engine.rows("SELECT name, used FROM generators ORDER BY g")
     names, used = [n for n, _ in made], {n for n, on in made if on}
     same = "a.entity = b.entity" if truth else "NULL"

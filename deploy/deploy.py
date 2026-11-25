@@ -1,7 +1,9 @@
-"""The deploy: nayose made in one BigQuery dataset, the run's: its functions (engines.functions: the comparisons in
-JavaScript or over BigQuery's own EDIT_DISTANCE, EM and the entities in Python, the hash), the method's SQL functions and one procedure a job
-(engines.procedures, the values config.toml gives), and the name model the records read (name_weights). Each statement
-is CREATE OR REPLACE: run again, it makes the same.
+"""Deploy nayose into one BigQuery dataset, the run's. It makes:
+- the functions (engines.functions): the comparisons, in JavaScript or over BigQuery's own EDIT_DISTANCE; EM and the
+  entities, in Python; the hash;
+- the method's SQL functions, and one procedure a job, declaring the values config.toml gives (engines.procedures);
+- the name model the records read (the table name_weights).
+Each statement is CREATE OR REPLACE, so a deploy run again makes the same.
 
     python deploy/deploy.py PROJECT.DATASET [--mapping mapping.sql]
 

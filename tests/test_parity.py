@@ -123,6 +123,6 @@ def test_a_lookup_writes_none_of_the_run_s_tables_even_without_a_transaction(tmp
     for sql in ("INSERT INTO scored SELECT * FROM batch_scored", "INSERT records SELECT 1", "DELETE records WHERE TRUE", "TRUNCATE TABLE records",
                 "MERGE INTO records USING x ON TRUE WHEN MATCHED THEN DELETE", "ALTER TABLE records ADD COLUMN x INT64", "DROP TABLE records"):
         with pytest.raises(ValueError, match="would write the run's|can't tell what"):  # a write it can't make temporary: refused
-            nayose.scratched(sql, set())
+            nayose.for_lookup(sql, set())
     for sql in ("CREATE TABLE x AS SELECT 1", "CREATE OR REPLACE TABLE `x` CLUSTER BY k AS SELECT 1 AS k", "/* c */ CREATE  OR REPLACE VIEW x AS SELECT 1"):
-        assert nayose.scratched(sql, set()).lstrip("/* c */ ").startswith("CREATE OR REPLACE TEMP TABLE x AS SELECT 1")
+        assert nayose.for_lookup(sql, set()).lstrip("/* c */ ").startswith("CREATE OR REPLACE TEMP TABLE x AS SELECT 1")

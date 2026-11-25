@@ -1,23 +1,27 @@
-"""decide's connected components (decide.sql): the pairs people said match → each record they join and its entity,
-named by the entity's smallest ID (in a string's order), so A–B and B–C make one entity even if A–C was never
-decided. A pure function, JSON in and JSON out, standard library only: decide.sql calls it as entities_of, BigQuery's
-Python UDF (engines.functions) and DuckDB's alike. O(D log D) for D pairs.
+"""decide's connected components (decide.sql): turn the pairs people said match into each record's entity.
+
+An entity is named by its smallest ID, in a string's order, so A–B and B–C make one entity even if A–C was never
+decided. of() is a pure function, JSON in and JSON out, using the standard library only. decide.sql calls it as
+entities_of, on BigQuery as a Python UDF (engines.functions) and on DuckDB alike. O(D log D) for D pairs.
 """
 import json
 
 
 def of(pairs: str) -> str:
-    """pairs: {"pairs": [{"l": id, "r": id}, ...], or null for none}. Each ID a pair names, with its entity's smallest
-    ID: [{"id": id, "entity": id}, ...]."""
-    up: dict[str, str] = {}
+    """Return each ID the pairs name, with its entity's smallest ID.
+
+    `pairs` is {"pairs": [{"l": id, "r": id}, ...]}, or {"pairs": null} for none. The result is
+    [{"id": id, "entity": id}, ...].
+    """
+    parent: dict[str, str] = {}  # union–find: each ID's parent; a root is its entity's smallest ID
 
     def root(x: str) -> str:
-        while up.setdefault(x, x) != x:
-            up[x] = up[up[x]]  # halved on the way: the next walk is shorter
-            x = up[x]
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]  # path halving: the next walk is shorter
+            x = parent[x]
         return x
 
     for p in json.loads(pairs)["pairs"] or []:
         a, b = root(p["l"]), root(p["r"])
-        up[max(a, b)] = min(a, b)  # a root is its entity's smallest ID: the smaller of two roots stays one
-    return json.dumps([{"id": x, "entity": root(x)} for x in up])
+        parent[max(a, b)] = min(a, b)  # of two roots, the smaller stays one
+    return json.dumps([{"id": x, "entity": root(x)} for x in parent])
