@@ -25,6 +25,10 @@
 --                log2(file_m / file_u), which a score adds
 --   fit          λ (probability), the sample's size, the file's size, prior_bits (the prior in bits at the file's
 --                size), the notes the report reads, and fitted (fit_model's whole answer)
+-- Every other result is the stage's own, read by no later stage. Each is a temporary table where it costs more to
+-- make than to read and is read more than once (u_patterns, six times by u_sampled), as BigQuery makes a WITH again
+-- each time it is named. Any other is a WITH: one read once, or one that costs no more than its reads (u_records,
+-- two tables' rows).
 
 -- fit is made first, empty where a build dropped it, as section 3 reads its fitted where a build is given a model.
 CREATE TABLE IF NOT EXISTS fit (probability FLOAT64, fit_records INT64, records INT64, prior_bits FLOAT64, notes STRING,
@@ -253,13 +257,15 @@ FROM (  -- a subquery, so that the GROUP BY's phone, cif and birth name the leve
 )
 GROUP BY scope, name, company, address, phone, cif, birth;
 
--- 3. fit_model learns the model from every count above, passed as one JSON text, and returns it as one JSON text. A
---    build given a model passes it (fit), which fit_model keeps. The answer holds each level's m and u as fitted
---    on the sample, its file_m and file_u on the file, and its bits from those, which the scores add.
---    A result here is a temporary table where it costs more to make than to read and is read more than once
---    (u_patterns, six times by u_sampled), as BigQuery makes a WITH again each time it is named. Any other is a WITH:
---    one read once, as what only fit_model reads (the levels, λ's counts, EM's patterns, the records that fill each
---    comparison, the sampled levels' pairs), or one that costs no more than its reads (u_records, two tables' rows).
+-- 3. fit_model learns the model. It takes counts, settings (@settings) and given_fit (a build given a model passes
+--    it, from fit, and fit_model keeps it), and returns the model as one JSON text. counts is one JSON text of:
+--      levels    the levels (a WITH below)            outside   u_outside (section 2a)
+--      prior     λ's counts (fit_prior, below)        counted   u_counted (2b)
+--      patterns  EM's patterns (em_patterns, below)   one_edit  u_one_edit (2c)
+--      filled    u_filled (below)                     sampled   u_sampled (below), from u_patterns (2d)
+--      plan      u_plan (2d)
+--    What only fit_model reads is a WITH of this statement, each read once. The answer holds each level's m and u
+--    as fitted on the sample, its file_m and file_u on the file, and its bits from those, which the scores add.
 CREATE OR REPLACE TEMP TABLE learned AS
 WITH
 -- levels lists each comparison's levels, numbered as functions.sql's section 2 numbers them, with what the fit

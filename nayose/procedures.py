@@ -67,12 +67,16 @@ def functions(dataset: str) -> list[str]:
     return out
 
 
-# A new job reaches, besides JOBS: values_of for a new stage (nayose/__init__.py), which the fingerprint hashes for
-# every stage named here; its local job and CLI command (nayose/__init__.py, nayose/__main__.py); deploy/run.py's
-# call_procedure, for the files it loads and the arguments it passes; and tests/test_deploy.py.
 # Each job BigQuery runs as a procedure of the run's dataset: its stages in order, each with what values_of() is told.
 # There is no lookup procedure: nayose.lookup runs its own statements, each step in a session of its own
 # (BigQuery.scratch), writing temporary tables alone.
+# To add a job, change, besides JOBS:
+#   nayose/sql/<stage>.sql   a new stage's file
+#   values_of                what a new stage reads (nayose/__init__.py); the fingerprint hashes each stage named here
+#   ARGUMENTS, KEPT          below: the values the procedure takes when called, and the tables a build keeps
+#   the local job and CLI    nayose/__init__.py, nayose/__main__.py
+#   deploy/run.py            call_procedure: the files it loads, the arguments it passes
+#   tests/test_deploy.py
 JOBS = {
     "build": [("functions", {}), ("mapping", {}), ("records", {}), ("fit", {"refit": True}), ("score", {}),
               ("decide", {"given": False}), ("report", {})],
@@ -171,8 +175,8 @@ def in_procedure(sql: str, dataset: str, temp: set, known: dict | None = None) -
     condition is always false is left out. BigQuery runs each other condition as a query of its own, about a second.
     """
     sql = in_dataset(VALUE_OR_NOT_CODE.sub(as_variable, sql), dataset, temp)
-    guard = nayose.when(sql)  # a comment, which in_dataset leaves: its tables are named here
-    if guard:  # its -- when: line goes: the IF says it, where the deploy hasn't decided it
+    guard = nayose.when(sql)  # a -- comment, which in_dataset leaves: its tables get the dataset further down
+    if guard:  # the -- when: line is dropped: the IF says the condition, or the deploy has decided it
         lead = re.match(nayose.LEAD, sql, re.S)["lead"]
         sql = re.sub(r"^[ \t]*--\s*when:.*\n", "", lead, count=1, flags=re.M | re.I) + sql[len(lead):]
         guard = folded(guard, known or {})
@@ -190,11 +194,13 @@ def queried_once(body: list[str]) -> tuple[list[str], list[str]]:
     """Return a procedure's statements with each condition its IFs ask more than once asked once, and the names of the
     variables (condition_1, ...) that hold the answers, which the procedure declares.
 
-    BigQuery runs each IF's condition as a query of its own, about a second. A condition and NOT it are one question.
-    It is asked once only where no statement from its first IF to its last (the first's own statement in, the
-    last's out, as it runs after its condition) writes a table it reads (writes): the variable then holds what each
-    query would have found. Its first IF becomes SET v_condition_n = (condition), and
-    each IF reads the variable, or NOT it.
+    BigQuery runs each IF's condition as a query of its own, about a second. So a condition is asked once where:
+    - two IFs or more ask it: the same SQL once sqlglot writes it, a NOT in front counting as the same condition;
+    - no statement from the first IF's own statement up to the last IF writes a table the condition reads (writes);
+      the variable then holds what each query would have found. A statement writes() can't read (a CALL) may write
+      any, so it keeps the condition asked at each IF.
+    Its first IF becomes SET v_condition_n = (condition), numbered in the job's order, and each IF reads the
+    variable, or NOT it.
     """
     places: dict[str, list[tuple[int, bool]]] = {}
     for i, sql in enumerate(body):
