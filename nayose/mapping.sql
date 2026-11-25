@@ -1,13 +1,20 @@
--- The input's columns as the fields records.sql reads: the generated data's mapping (design/generate.py writes these
--- columns). A deployment's own file has its own mapping in this form, kept out of the repository (Secret Manager).
+-- This file maps the input's columns to the fields that records.sql reads. It is the mapping of the generated data,
+-- whose columns design/generate.py writes. A deployment keeps its own mapping, in the same form, outside the
+-- repository (in Secret Manager).
 --
--- Each column the mapping reads is read through read_value (functions.sql): damaged values, lists, controls,
--- placeholders and, in a column of numbers (TRUE), numbers a spreadsheet wrote, fixed. A column that isn't text is
--- cast first (a float column of codes: CAST(CAST(x AS INT64) AS STRING)). Each field is then built from its sources in
--- order: the first whose columns are all filled, joined. config.toml [input] columns lists every column read here; one
--- the file lacks is read as missing.
+-- Every column is read through read_value (functions.sql). It reads damaged values and null tokens (@nulls, from
+-- config.toml's [input] nulls) as missing, takes a list's first filled item and removes control characters. If its
+-- second argument is TRUE, for a column of numbers, it also reads 12345.0 as 12345 and a number cut short in E
+-- notation as missing.
+-- A column that isn't text is cast to text first. A float column of codes, for example, is cast as
+-- CAST(CAST(x AS INT64) AS STRING).
+-- Each field takes the first of its sources, in order, whose columns are all filled. A source of two columns joins
+-- them, as LAST_NAME_KANA || GIVEN_NAME_KANA does.
+-- config.toml's [input] columns lists every column read here. A column that the file lacks is read as missing.
 
--- every distinct input row as the file gave it, its ID read as the records' is: what set_aside keeps, and tells apart
+-- input_rows holds each distinct input row as the file gave it, with its ID read as mapped reads it (nayose_id).
+-- records.sql sets aside rows from it as they were given, and counts its rows per ID to find an ID given with
+-- different content.
 CREATE OR REPLACE TEMP TABLE input_rows AS
 SELECT DISTINCT read_value(CONT_ID, TRUE, @nulls) AS nayose_id, * FROM input;
 

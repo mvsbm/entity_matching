@@ -1,17 +1,21 @@
--- The report's numbers: what the run holds and how its latest batch went, with no record's value in them, for
--- nayose.report to set out as report.txt. O(N·F) for the fields' fill, O(C) over the batch's pairs.
+-- This file computes report.txt's numbers, which tell what the run holds and how its latest batch went. No number
+-- holds a record's value. nayose.report sets them out as report.txt. O(N·F) for the fields' fill, and O(C) over the
+-- batch's pairs.
 --
--- Reads: records, this_batch, set_aside, placeholders, gold, decisions, model, fit, cands, batch_pairs and
--- batch_scored (score.sql), key_blocks, gated, generators.
--- Values: @patterns (JSON: each field's look, config.toml [report] patterns, and the legal forms for company_name),
--- @edges (bits: where a score band starts), @floor (bits: the review floor), @oversized.
--- Writes (read by nayose.report_text, here or after a BigQuery procedure): report_counts, report_fields, report_scores, report_patterns,
--- report_keys, report_clusters.
+-- Reads: records, this_batch, set_aside, gold, decisions, cands, batch_pairs and batch_scored (score.sql), key_blocks,
+-- gated and generators. nayose.report_text reads placeholders, model and fit itself.
+-- Values:
+--   @patterns   as JSON, the regular expression that each field's values look like (config.toml [report.patterns],
+--               and for company_name the legal forms)
+--   @edges      the points at which each score band starts
+--   @floor      the review floor, in points
+--   @oversized  how many records make a block oversized
+-- Writes (read by nayose.report_text, here or after a BigQuery procedure): report_counts, report_fields,
+-- report_scores, report_patterns, report_keys, report_clusters.
 
 
--- one row: the run's records, the batch's, those set aside, the batch's pairs and its rule pairs, the entities and the
--- records people's decisions joined, the largest entity, the kinds of records and of customers, the oversized blocks
--- kept and skipped, each field's filled records
+-- report_counts holds one row of counts about the run, its latest batch, its entities and kinds, its oversized
+-- blocks, and each field's filled records.
 CREATE OR REPLACE TABLE report_counts AS
 SELECT
   (SELECT COUNT(*) FROM records) AS records,
@@ -34,13 +38,16 @@ SELECT
   (SELECT COUNT(*) FROM gated WHERE decision = 'kept') AS oversized_kept,
   (SELECT COUNT(*) FROM gated WHERE decision <> 'kept') AS oversized_skipped,
   COUNT(full_name) AS full_name, COUNT(person_name) AS person_name, COUNT(given_name) AS given_name,
-  COUNT(company_name) AS company_name, COUNT(any_name) AS any_name, COUNT(address) AS address, COUNT(address_code) AS address_code,
-  COUNT(postal_code) AS postal_code, COUNT(prefecture) AS prefecture, COUNT(town_code) AS town_code, COUNT(city) AS city,
-  COUNT(phone) AS phone, COUNT(customer_id) AS customer_id, COUNT(birth_date) AS birth_date
+  COUNT(company_name) AS company_name, COUNT(any_name) AS any_name, COUNT(address) AS address,
+  COUNT(address_code) AS address_code, COUNT(postal_code) AS postal_code, COUNT(prefecture) AS prefecture,
+  COUNT(town_code) AS town_code, COUNT(city) AS city, COUNT(phone) AS phone, COUNT(customer_id) AS customer_id,
+  COUNT(birth_date) AS birth_date
 FROM records;
 
--- each field on a sample of 10,000 records by hash (the same sample whatever the rows' order): the share of its filled
--- values that look like it, that its most common value holds, that hold no letter or digit; its mean and longest length
+-- report_fields describes each field on a sample of 10,000 records, chosen by hash so that the sample is the same
+-- whatever the rows' order. It gives the share of a field's filled values that look like its pattern (looks_right),
+-- the share that its most common value holds (top_value), the share with no letter or digit (no_letters), and the
+-- values' mean and longest length.
 CREATE OR REPLACE TABLE report_fields AS
 WITH sample AS (SELECT * FROM records ORDER BY er_hash(id) LIMIT 10000),
 v AS (
@@ -52,7 +59,11 @@ v AS (
   UNION ALL SELECT 'city', city FROM sample UNION ALL SELECT 'phone', phone FROM sample
   UNION ALL SELECT 'customer_id', customer_id FROM sample UNION ALL SELECT 'birth_date', birth_date FROM sample
 ),
-top AS (SELECT field, MAX(n) / SUM(n) AS top_value FROM (SELECT field, v, COUNT(*) AS n FROM v WHERE v IS NOT NULL GROUP BY field, v) GROUP BY field)
+top AS (
+  SELECT field, MAX(n) / SUM(n) AS top_value
+  FROM (SELECT field, v, COUNT(*) AS n FROM v WHERE v IS NOT NULL GROUP BY field, v)
+  GROUP BY field
+)
 SELECT
   field, AVG(CAST(REGEXP_CONTAINS(v, JSON_VALUE(@patterns, CONCAT('$.', field))) AS INT64)) AS looks_right,
   ANY_VALUE(top.top_value) AS top_value, AVG(CAST(NOT REGEXP_CONTAINS(v, r'[\pL\pN]') AS INT64)) AS no_letters,
@@ -60,17 +71,20 @@ SELECT
 FROM v LEFT JOIN top USING (field)
 GROUP BY field;
 
--- the batch's candidates by bits from 0 up (band: how many of @edges a pair reaches); the rest, below 0 (-1): those
--- weighed under it, and those the bound put there unweighed
+-- report_scores counts the batch's pairs by band. A pair scored at 0 points or more is in band k if k of @edges are
+-- at or below its points. Band -1 counts the rest of the batch's pairs (batch_pairs). With [score] keep_from at 0,
+-- those are the pairs that scored below 0 points, and the pairs that the bound kept from being scored.
 CREATE OR REPLACE TABLE report_scores AS
 SELECT band, COUNT(*) AS pairs
-FROM (SELECT ARRAY_LENGTH(ARRAY(SELECT e FROM UNNEST(@edges) AS e WHERE e <= match_weight)) AS band FROM batch_scored WHERE match_weight >= 0)
+FROM (SELECT ARRAY_LENGTH(ARRAY(SELECT e FROM UNNEST(@edges) AS e WHERE e <= match_weight)) AS band
+      FROM batch_scored WHERE match_weight >= 0)
 GROUP BY band
 UNION ALL
 SELECT -1, (SELECT COUNT(*) FROM batch_pairs) - (SELECT COUNT(*) FROM batch_scored WHERE match_weight >= 0);
 
--- the batch's pairs at 0 bits and up, below the review floor and from it: each band's patterns of levels, with how
--- many pairs hold each and their mean bits, the 12 most common first
+-- report_patterns splits the batch's pairs at 0 points or more into two bands, below the review floor (@floor) and
+-- from it up. For each band it keeps the 12 most common patterns of levels, each with its pairs and their mean
+-- points. It also gives the band's total pairs and how many patterns the band holds (kinds).
 CREATE OR REPLACE TABLE report_patterns AS
 WITH p AS (
   SELECT match_weight >= @floor AS up, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth,
@@ -80,18 +94,25 @@ WITH p AS (
 )
 SELECT * FROM (
   SELECT *, SUM(n) OVER (PARTITION BY up) AS total, COUNT(*) OVER (PARTITION BY up) AS kinds,
-         ROW_NUMBER() OVER (PARTITION BY up ORDER BY n DESC, w DESC, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth) AS k
+         ROW_NUMBER() OVER (PARTITION BY up ORDER BY n DESC, w DESC, gamma_name, gamma_company, gamma_address,
+                                                     gamma_phone, gamma_cif, gamma_birth) AS k
   FROM p
 ) WHERE k <= 12;
 
--- each key: the pairs it lists (each once, a deletion key's too), per record; its largest block, how many are oversized
+-- report_keys describes each key that the run uses. pairs counts the candidates it listed, each pair once, even if
+-- a deletion key listed the pair through several of its deletions. largest is the size of its largest block that
+-- holds a batch record, and oversized counts its blocks of @oversized records or more.
 CREATE OR REPLACE TABLE report_keys AS
 WITH listing AS (SELECT name, COUNT(*) AS pairs FROM cands, UNNEST(SPLIT(sources, '+')) AS name GROUP BY name),
-blocks AS (SELECT g, MAX(n) AS largest, COUNT(DISTINCT CASE WHEN n >= @oversized THEN k END) AS oversized FROM key_blocks GROUP BY g)
-SELECT g.g, g.name, COALESCE(l.pairs, 0) AS pairs, COALESCE(b.largest, 0) AS largest, COALESCE(b.oversized, 0) AS oversized
+blocks AS (
+  SELECT g, MAX(n) AS largest, COUNT(DISTINCT CASE WHEN n >= @oversized THEN k END) AS oversized
+  FROM key_blocks GROUP BY g
+)
+SELECT g.g, g.name, COALESCE(l.pairs, 0) AS pairs, COALESCE(b.largest, 0) AS largest,
+       COALESCE(b.oversized, 0) AS oversized
 FROM generators AS g LEFT JOIN listing AS l USING (name) LEFT JOIN blocks AS b USING (g)
 WHERE g.used;
 
--- the entities by size
+-- report_clusters counts the entities of each size.
 CREATE OR REPLACE TABLE report_clusters AS
 SELECT n AS size, COUNT(*) AS entities FROM (SELECT COUNT(*) AS n FROM gold GROUP BY cluster_id) GROUP BY n;
