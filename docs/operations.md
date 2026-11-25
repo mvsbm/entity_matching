@@ -130,5 +130,6 @@ These are good practice the repository can't set for you:
 - **No service account keys:** Workload Identity Federation, and an organisation policy that forbids keys.
 - **A VPC Service Controls perimeter** around both projects: Storage, BigQuery and Secret Manager.
 - **Customer-managed encryption keys** for the bucket, the datasets and the secret, where policy asks for them.
-- **Data Access audit logs** for Storage and BigQuery, and how long logs, time travel and the bucket's soft delete keep things.
+- **Data Access audit logs** for Storage and BigQuery, and how long logs and the bucket's soft delete keep things. Time travel keeps the run's dataset 2 days (`max_time_travel_hours`, the least BigQuery allows); lengthen it only if people restore by hand.
+- **A daily query quota** for `nayose-runtime` (BigQuery's query usage per user per day), above the largest job's bytes billed (its `nayose_job` label in `INFORMATION_SCHEMA.JOBS`), so that a runaway scan stops there.
 - **Who is in `APPROVERS`,** who receives `alert_emails`, and who may write prod's `in/`.

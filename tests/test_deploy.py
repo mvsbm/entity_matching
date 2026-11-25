@@ -165,6 +165,7 @@ class Recorded:  # a BigQuery client that records what it is sent
 
     def query(self, sql, job_config=None):
         self.sent.append(sql)
+        self.labels = getattr(job_config, "labels", None)  # the last query's
         return SimpleNamespace(result=lambda: [], session_info=SimpleNamespace(session_id="s1"))
 
     def load_table_from_dataframe(self, frame, table, job_config=None):
@@ -215,6 +216,7 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
 
     def query(self, sql, job_config=None):
         self.sent.append(sql)
+        self.labels = getattr(job_config, "labels", None)  # the last query's
         if getattr(job_config, "create_session", False):
             self.sessions += 1
         given, rows = {p[0]: p[2] for p in getattr(job_config, "query_parameters", [])}, []
@@ -396,6 +398,7 @@ def test_a_lookup_on_bigquery_writes_its_answer_to_looked_up_and_prints_none_of_
     assert "ヤマダ" not in said.out + said.err and '"entities": 1' in said.err
     insert = next(s for s in client.sent if s.startswith("INSERT INTO looked_up"))
     assert "@answer" in insert and "ヤマダ" not in insert  # the answer goes as a parameter, into the run's table
+    assert client.labels == {"nayose_job": "lookup"}  # each query labelled with its job: INFORMATION_SCHEMA.JOBS by job
     client.tables["before__job_running"], client.kind["before__job_running"] = "mark", "BASE TABLE"  # a job done's, left
     assert run.main(["p.run", "lookup", "--record", "123"], client=client, bigquery=MODULE) == 0
     client.tables["job_running"], client.kind["job_running"] = "mark", "BASE TABLE"

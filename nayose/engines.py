@@ -652,14 +652,15 @@ class BigQuery:
 
     A run's tables are in `dataset` (project.dataset), so a statement names them alone; so are the functions it calls,
     which the deploy made (functions(), procedures()). `client` is a google.cloud.bigquery.Client, made when not
-    given; `bigquery` is the module its job configurations come from, imported when not given.
+    given; `bigquery` is the module its job configurations come from, imported when not given. With `job`, each query
+    and load is labelled nayose_job=<job>, so INFORMATION_SCHEMA.JOBS gives each job's cost.
     """
     name = "bigquery"
 
-    def __init__(self, dataset: str, client: object = None, bigquery: object = None) -> None:
+    def __init__(self, dataset: str, client: object = None, bigquery: object = None, job: str | None = None) -> None:
         self.bigquery = bigquery or importlib.import_module("google.cloud.bigquery")
         self.client = client or self.bigquery.Client(project=dataset.split(".")[0])
-        self.dataset, self.session = dataset, None
+        self.dataset, self.session, self.labels = dataset, None, {"nayose_job": job} if job else {}
         try:  # what a query of a table the dataset lacks raises; the client library brings it
             self.MISSING = (importlib.import_module("google.api_core.exceptions").NotFound,)
         except ImportError:  # a test's fake client, without the library: no such error to catch
@@ -679,7 +680,7 @@ class BigQuery:
         bq = self.bigquery
         session = [bq.ConnectionProperty("session_id", self.session)] if self.session else []
         config = bq.QueryJobConfig(create_session=self.session is None, default_dataset=self.dataset,
-                                   connection_properties=session)
+                                   connection_properties=session, labels=self.labels)
 
         def parameter(name: str, v: object) -> object:
             if isinstance(v, list):
@@ -714,12 +715,13 @@ class BigQuery:
 
     def put(self, table: str, frame: pd.DataFrame) -> None:
         """Make a small frame the dataset's table `table`, by a load job."""
-        config = self.bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
+        config = self.bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE", labels=self.labels)
         self.client.load_table_from_dataframe(frame, f"{self.dataset}.{table}", job_config=config).result()
 
     def read_parquet(self, table: str, files: list[str], columns: list[str] = ()) -> None:
         """Load Parquet files in Cloud Storage (gs://…) as the dataset's table, adding each of `columns` they lack."""
-        config = self.bigquery.LoadJobConfig(source_format="PARQUET", write_disposition="WRITE_TRUNCATE")
+        config = self.bigquery.LoadJobConfig(source_format="PARQUET", write_disposition="WRITE_TRUNCATE",
+                                             labels=self.labels)
         self.client.load_table_from_uri(list(files), f"{self.dataset}.{table}", job_config=config).result()
         if columns:  # in one statement: BigQuery takes about five changes to a table in ten seconds
             self.run(f"ALTER TABLE `{table}` " + ", ".join(f"ADD COLUMN IF NOT EXISTS `{c}` STRING" for c in columns))
