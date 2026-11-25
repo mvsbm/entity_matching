@@ -28,7 +28,9 @@ def test_a_run_is_built_updated_matched_decided_and_looked_up_in_its_folder(tmp_
     assert code == 0 and said["records"] == half and (run / "run.duckdb").is_file() and "full run" in (run / "report.txt").read_text(encoding="utf-8")
     assert job("build", tmp_path / "first.parquet", "--out", run)[0] == 2  # a folder that holds a run: refused without --overwrite
     code, said = job("update", tmp_path / "batch.parquet", "--out", run)
-    assert code == 0 and said["added"] == len(g.df) - half and "increment of" in (run / "report.txt").read_text(encoding="utf-8")
+    told = (run / "report.txt").read_text(encoding="utf-8")
+    assert code == 0 and said["added"] == len(g.df) - half and "increment of" in told
+    assert "fit" not in said["steps"] and "build again" in told  # the build's model, and the run has grown past it
     assert job("update", tmp_path / "batch.parquet", "--out", run)[1]["added"] == 0  # given twice: nothing new, nothing written
     code, said = job("match", "--out", run, "--threshold", 6)
     table = pd.read_parquet(said["into"])
