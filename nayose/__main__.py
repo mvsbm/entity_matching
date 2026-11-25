@@ -173,8 +173,7 @@ def update(a: argparse.Namespace) -> dict:
     """Run the update job: add a batch to the run. A batch with no new record raises NothingNew, or InputError."""
     out, given, steps = a.out, files(a.given), {}
     with writing(out, compute=limits(a)) as engine:
-        rebuild = f"python -m nayose build FILE --out {out} --overwrite"
-        nayose.unchanged(engine, f"build the run again with them ({rebuild}), or update with the code the build ran")
+        nayose.unchanged(engine, nayose.build_again("update", out))
         before = engine.value("SELECT COUNT(*) FROM records")
         timed(steps, "records", nayose.records, engine, given)
         added = engine.value("SELECT COUNT(*) FROM records") - before
@@ -258,50 +257,45 @@ def report(engine: DuckDB, out: Path, steps: dict, job: str) -> None:
     (out / "report.txt").write_text(nayose.report(engine, steps, job), encoding="utf-8")
 
 
-JOB_HELP = (  # each job: its help, and its positional argument's (none for match)
-    ("build", "a run's first batch", "the records: a Parquet file, a folder of them or a quoted glob"),
-    ("update", "a batch added to the run", "the batch, as build reads records"),
-    ("match", "the pairs at a threshold, as a table for people", None),
-    ("decide", "people's decisions applied to the run",
-     "Parquet: id_l, id_r, decision, as a match table holds them filled in"),
-    ("lookup", "records looked up in the run", "COLUMN=VALUE of one record, by the input's column names"),
-)
-
-
 def parser() -> argparse.ArgumentParser:
-    """Return the command line's parser: one subcommand a job."""
+    """Return the command line's parser: one subcommand a job, each with its own arguments."""
     p = argparse.ArgumentParser(prog="python -m nayose",
                                 description="Entity resolution jobs: build, update, match, decide, lookup.")
     jobs = p.add_subparsers(dest="job", required=True)
-    for name, about, given in JOB_HELP:
+
+    def job(name: str, about: str, given: str | None, nargs: str | None = None) -> argparse.ArgumentParser:
+        """Add a job's subcommand: its help (`about`), its positional argument's (`given`, if any), and --out."""
         j = jobs.add_parser(name, help=about, description=about)
         if given:
-            j.add_argument("given", nargs="*" if name == "lookup" else None, help=given)
+            j.add_argument("given", nargs=nargs, help=given)
         j.add_argument("--out", required=True, type=Path, help="the run's folder")
-        if name in ("build", "update"):
-            j.add_argument("--compute", nargs="*", default=[], metavar="KEY=VALUE",
-                           help="DuckDB's limits for this run: memory_limit=8GB threads=4")
-        if name == "build":
-            j.add_argument("--overwrite", action="store_true",
-                           help="replace the run the folder holds, keeping people's decisions")
-        if name == "match":
-            j.add_argument("--threshold", type=float, required=True, help="the fewest points a pair in the table has")
-            j.add_argument("--into", type=Path,
-                           help="the table's file (default: <out>/matched/points-<threshold>.parquet)")
-        if name == "lookup":
-            j.add_argument("--record", help="a stored record's ID, looked up as if it were new")
-            j.add_argument("--file", help="a file of records, each looked up by its values")
-            j.add_argument("--from", dest="at_least", type=float,
-                           help="the fewest points an entity shown has (default: config.toml [lookup] at_least)")
-            j.add_argument("--count", type=int, help="the most entities shown (default: config.toml [lookup] most)")
+        return j
+
+    build = job("build", "a run's first batch", "the records: a Parquet file, a folder of them or a quoted glob")
+    update = job("update", "a batch added to the run", "the batch, as build reads records")
+    for writer in (build, update):
+        writer.add_argument("--compute", nargs="*", default=[], metavar="KEY=VALUE",
+                            help="DuckDB's limits for this run: memory_limit=8GB threads=4")
+    build.add_argument("--overwrite", action="store_true",
+                       help="replace the run the folder holds, keeping people's decisions")
+    match = job("match", "the pairs at a threshold, as a table for people", None)
+    match.add_argument("--threshold", type=float, required=True, help="the fewest points a pair in the table has")
+    match.add_argument("--into", type=Path, help="the table's file (default: <out>/matched/points-<threshold>.parquet)")
+    job("decide", "people's decisions applied to the run",
+        "Parquet: id_l, id_r, decision, as a match table holds them filled in")
+    lookup = job("lookup", "records looked up in the run", "COLUMN=VALUE of one record, by the input's column names",
+                 nargs="*")
+    lookup.add_argument("--record", help="a stored record's ID, looked up as if it were new")
+    lookup.add_argument("--file", help="a file of records, each looked up by its values")
+    lookup.add_argument("--from", dest="at_least", type=float,
+                        help="the fewest points an entity shown has (default: config.toml [lookup] at_least)")
+    lookup.add_argument("--count", type=int, help="the most entities shown (default: config.toml [lookup] most)")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run the job the command line names, print its JSON, and return its exit code."""
-    for stream in (sys.stdout, sys.stderr):  # UTF-8 wherever it goes: on Windows, a pipe or a file takes the code page
-        if hasattr(stream, "reconfigure") and stream.encoding.replace("-", "").lower() != "utf8":
-            stream.reconfigure(encoding="utf-8", errors="replace")
+    utf8_output()
     a = parser().parse_args(argv)
     try:
         result = dict(build=build, update=update, match=match, decide=decide, lookup=lookup)[a.job](a)
@@ -312,13 +306,28 @@ def main(argv: list[str] | None = None) -> int:
                          ensure_ascii=False))
         return 75 if isinstance(e, Busy) else 2
     except duckdb.InvalidInputException as e:
-        # a refusal the SQL raised (ERROR(...)), or the fit (em.py's ValueError): its words say what to fix
-        said = str(e).split("ValueError: ", 1)[-1] if "ValueError: " in str(e) else str(e).split("Error: ", 1)[-1]
-        error, fix = said.split("; ", 1)[0], said.split("; ", 1)[-1]
+        error, fix = refusal(e)
         print(json.dumps(dict(severity="ERROR", error=error, fix=fix), ensure_ascii=False))
         return 2
     print(json.dumps({"severity": "INFO", **result}, ensure_ascii=False, default=str))
     return 0
+
+
+def utf8_output() -> None:
+    """Write stdout and stderr in UTF-8 wherever they go: on Windows, a pipe or a file takes the code page."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and stream.encoding.replace("-", "").lower() != "utf8":
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def refusal(e: duckdb.InvalidInputException) -> tuple[str, str]:
+    """Return what is wrong and its fix, from a refusal the SQL raised (ERROR(...)) or the fit's (em.py's ValueError).
+
+    Its words are "<what is wrong>; <the fix>"; without a "; ", each is the whole of them.
+    """
+    message = str(e)
+    said = message.split("ValueError: ", 1)[-1] if "ValueError: " in message else message.split("Error: ", 1)[-1]
+    return said.split("; ", 1)[0], said.split("; ", 1)[-1]
 
 
 if __name__ == "__main__":

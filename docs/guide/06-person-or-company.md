@@ -81,7 +81,7 @@ The name model judged is the run's own: trained on `design.generate.kind_trainin
 - `nayose/sql/records.sql`: 3. Each record's kind, in 4's `sided` (`name_sums`, the name model's sum over each distinct name's n-grams; `told`: the legal form, the name model, the flag, and `kind`, `kind_p`, `kind_by`, `kind_flagged`); 4. One name, two fields (`sided`: each name on its kind's side)
 - `nayose/config.toml` `[records]`: `legal_forms`, `legal_front`, `legal_end`, `flag_company`, `name_line`, `ngram`, `trust_flag`, `shared_name_column`
 - `nayose/__init__.py`: `legal_pattern` (the legal forms where banks write them), `name_weights` (the name model, `config/kind_names.npz`, trained by `scripts/train_name_model.py`)
-- `nayose/sql/decide.sql`, 3. The entities: `customer_kind` (a customer's kind); `nayose/__init__.py`: `report_text` (the summary's kind lines)
+- `nayose/sql/decide.sql`, 3. The entities: `customer_kind` (a customer's kind); `nayose/reporting.py`: `report_summary` (the summary's kind lines)
 - `design/shared_name_mapping.sql`: a mapping with one name column for both kinds
 - `design/generate.py`: `name_model_split`, `kind_problems`, `bank_name`, `kind_training_names`
 - `scripts/benchmark.py`: `kinds`, the whole run

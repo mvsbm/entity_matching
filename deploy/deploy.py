@@ -22,6 +22,10 @@ from nayose.engines import BigQuery, functions, procedures  # noqa: E402
 
 
 def main(argv: list[str] | None = None, client: object = None, bigquery: object = None) -> int:
+    """Make nayose in the dataset the arguments name, and return the exit code.
+
+    `client` and `bigquery` go to engines.BigQuery: a test's fakes, or None for BigQuery's own.
+    """
     p = argparse.ArgumentParser(prog="deploy/deploy.py", description="nayose made in a BigQuery dataset")
     p.add_argument("dataset", help="PROJECT.DATASET: the run's")
     p.add_argument("--mapping", type=Path, help="the deployment's mapping.sql (else NAYOSE_MAPPING's, or nayose's)")
