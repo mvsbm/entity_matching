@@ -89,7 +89,7 @@ SELECT
   NULLIF(REGEXP_REPLACE(TRANSLATE(nfkc(person_name), @hiragana, @katakana), r'[\s\x{3000}]+', ''), '') AS person_name,
   NULLIF(REGEXP_REPLACE(TRANSLATE(nfkc(given_name), @hiragana, @katakana), r'[\s\x{3000}]+', ''), '') AS given_name,
   NULLIF(REGEXP_REPLACE(TRANSLATE(nfkc(company_name), @hiragana, @katakana), r'[\s\x{3000}]+', ''), '') AS company_name,
-  NULLIF(TRANSLATE(REGEXP_REPLACE(TRANSLATE(nfkc(REGEXP_REPLACE(any_name, r'[\s\x{3000}]+', '')), @hiragana, @katakana),
+  NULLIF(TRANSLATE(REGEXP_REPLACE(TRANSLATE(REGEXP_REPLACE(nfkc(any_name), r'[\s\x{3000}]+', ''), @hiragana, @katakana),
                                   @legal_pattern, ''), @kana_fold_from, @kana_fold_to), '') AS any_name,
   NULLIF(address, '') AS address,
   NULLIF(address_code, '') AS address_code,
@@ -135,7 +135,7 @@ WITH name_sums AS (
 judged AS (
   SELECT
     s.*,
-    COALESCE(REGEXP_CONTAINS(NULLIF(TRANSLATE(nfkc(REGEXP_REPLACE(kind_name, r'[\s\x{3000}]+', '')), @hiragana, @katakana), ''),
+    COALESCE(REGEXP_CONTAINS(NULLIF(TRANSLATE(REGEXP_REPLACE(nfkc(kind_name), r'[\s\x{3000}]+', ''), @hiragana, @katakana), ''),
                              @legal_pattern), FALSE) AS written,
     IF(s.any_name IS NULL, NULL, @intercept + COALESCE(n.s, CAST(0 AS FLOAT64))) AS logit,
     CASE WHEN s.kind_flag IS NULL THEN NULL

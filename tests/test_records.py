@@ -137,3 +137,10 @@ def test_records_without_an_id_are_set_aside_and_the_rest_of_the_batch_kept(tmp_
     nayose.records(engine, [tmp_path / "in.parquet"])
     assert sorted(engine.rows("SELECT id FROM records")) == [("a1",), ("a2",), ("a3",)]
     assert engine.rows("SELECT reason, COUNT(*) FROM set_aside GROUP BY reason") == [("no ID", 2)]
+
+
+def test_a_space_nfkc_makes_is_stripped_from_every_name_copy(tmp_path):  # U+00A0, U+2000-200A: a space only once read
+    row = {c: None for c in COLUMNS} | {"CONT_ID": "00001", "FULL_NAME_KANA": "ヤマダ タロウ", "NYS_CNV_P_NAME_KANA": "ヤマダ タロウ"}
+    pd.DataFrame([row], columns=COLUMNS).astype("string").to_parquet(tmp_path / "in.parquet", index=False)
+    new, _ = nayose_records(tmp_path / "in.parquet")
+    assert " " not in new.loc[0, "person_name"] and " " not in new.loc[0, "any_name"]
