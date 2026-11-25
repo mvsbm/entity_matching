@@ -53,7 +53,7 @@ Each field is then standardized (`records.sql`, step 2): NFKC, hiragana as katak
 
 ## What is set aside
 
-Rows identical in every column are kept once. These are set aside: a record without an ID (blank, of spaces of any width); a record already in the run, so a batch given twice adds nothing; every record of an ID that holds different content, because the run can't tell which is right. The table `set_aside` keeps the latest batch's rows as given, each with its `reason`. An update whose every record is already in the run exits 0 with `added: 0`. One that has no new record for any other reason is refused.
+Rows identical in every column are kept once. These are set aside: a record without an ID (blank, of spaces of any width); a record whose ID is already in the run, so a batch given twice adds nothing; every record of an ID that holds different content, because the run can't tell which is right. The table `set_aside` keeps the latest batch's rows as given, each with its `reason`. An update whose every record is already in the run exits 0 with `added: 0`. One that has no new record for any other reason is refused.
 
 ## Placeholders
 
@@ -61,7 +61,7 @@ A value held by too many records to be one customer's, such as a dummy phone, is
 
 - it is held by at least `min_block` records (64), or by `spread` (10) times the field's records per value if that is more;
 - it is held by at least `crowd` (64) customers, counted by customer ID, else by record ID;
-- its pairs outnumber, together, those of every value of the field that isn't crowded.
+- its own pairs outnumber those of all the field's values that fail either test above, taken together.
 
 A `customer_id` value is one when it passes the first test alone. Placeholders are counted over the run's records and the batch's together, and they stay with the run (the table `placeholders`). A batch is read with them as missing, and a run record holding a value newly found to be a placeholder is made again without it. report.txt's SUMMARY notes each field's. A lookup adds none.
 

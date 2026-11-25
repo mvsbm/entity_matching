@@ -120,7 +120,11 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
         self.sent.append(sql)
         if getattr(job_config, "create_session", False):
             self.sessions += 1
-        session, given, rows = f"s{self.sessions}", {p[0]: p[2] for p in getattr(job_config, "query_parameters", [])}, []
+        given, rows = {p[0]: p[2] for p in getattr(job_config, "query_parameters", [])}, []
+        props = getattr(job_config, "connection_properties", None) or []
+        session = f"s{self.sessions}" if getattr(job_config, "create_session", False) else props[0].value if props else None
+        if session in self.running and "ABORT_SESSION" not in sql:  # BigQuery runs one query at a time in a session
+            raise RuntimeError(f"Resources exceeded: session {session} is running a query")
         for s in sql.split(";\n"):
             name = [x.split(".")[-1] for x in re.findall(r"`p\.run`\.(\w+)", s)]
             if not name and "INFORMATION_SCHEMA" not in s:  # on the default dataset alone (a lookup's looked_up): recorded, no more

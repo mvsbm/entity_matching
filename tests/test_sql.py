@@ -61,9 +61,14 @@ def test_the_fingerprint_follows_every_stage_file_and_the_values(tmp_path):
     (tmp_path / "config.toml").write_text("[a]\nx = 1\n")
     second = nayose.fingerprint(tmp_path)
     (tmp_path / "sql" / "a.sql").write_text("SELECT 2;\n")
-    third = nayose.fingerprint(tmp_path)
-    (tmp_path / "em.py").write_text("x = 1\n")  # the Python BigQuery runs as fit_model
-    assert len({first, second, third, nayose.fingerprint(tmp_path)}) == 4
+    assert len({first, second, nayose.fingerprint(tmp_path)}) == 3
+
+
+def test_the_fingerprint_follows_the_functions_the_deploy_makes(monkeypatch):  # em.py, strings.js, the hash
+    import nayose.engines
+    before = nayose.fingerprint()
+    monkeypatch.setattr(nayose.engines, "functions", lambda dataset: ["CREATE FUNCTION another"])
+    assert nayose.fingerprint() != before
 
 
 @pytest.mark.parametrize("path", sorted(nayose.SQL.glob("*.sql")), ids=lambda p: p.name)
@@ -163,5 +168,7 @@ STRING = re.compile(r"r?'(?:[^'\\]|\\.)*'")  # a string literal: a regex in one 
 
 @pytest.mark.parametrize("path", sorted([*nayose.SQL.glob("*.sql"), nayose.HERE / "mapping.sql"]), ids=lambda p: p.name)
 def test_every_line_of_the_sql_is_at_most_120_characters_its_strings_aside(path):  # CONTRIBUTING.md, rule 9
-    wide = [n for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1) if len(STRING.sub("''", line)) > 120]
+    lines = path.read_text(encoding="utf-8").splitlines()
+    measured = [line if line.lstrip().startswith("--") else STRING.sub("''", line) for line in lines]  # a comment whole
+    wide = [n for n, line in enumerate(measured, 1) if len(line) > 120]
     assert not wide, f"{path.name}: lines {wide} are over 120 characters"

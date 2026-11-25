@@ -16,7 +16,8 @@ A job is all or nothing, though BigQuery takes no DDL in a transaction:
 - It then clones each table (before__<table>): a clone bills no bytes, and shares its storage until either changes.
 - A job that fails is undone: each table is made again from its clone, and each table it made is dropped.
 - A job whose process died is undone by `undo`, once no query of its session still runs: BigQuery carries on a
-  procedure its caller left.
+  procedure its caller left. So is a job interrupted while its procedure runs (an interrupt, a client's timeout): it
+  exits 75 with what stopped it, and `undo` puts the tables back once the procedure ends.
 - The run's views (fit.sql's) aren't tables, so a first build that fails leaves them; the next build makes them again.
 
 A lookup (nayose.lookup) writes its answer, which holds records' values, to the run's table looked_up, and prints only
@@ -86,6 +87,7 @@ def undo(engine: BigQuery, dataset: str) -> bool:
     BigQuery carries on a procedure whose caller left, whether the caller's process died or only stopped waiting
     (an interrupt, a client's timeout).
     """
+    engine.session = None  # a session of its own: the marked job's may still be busy, and a session runs one query
     now = tables(engine, dataset)
     if MARK not in now:
         return False
@@ -166,11 +168,12 @@ def marked(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
         return 75
     try:
         run(engine, dataset, job, given)
-    except BaseException:
+    except BaseException as stopped:
         try:
             undo(engine, dataset)
         except Running as e:  # stopped waiting mid-call: the procedure carries on, so its undo waits for it
             print(json.dumps(dict(severity="WARNING", error=f"the job's procedure still runs in BigQuery (session {e})",
+                                  cause=str(stopped) or type(stopped).__name__,
                                   fix=f"undo once it ends: python deploy/run.py {dataset} undo")), file=sys.stderr)
             return 75
         raise

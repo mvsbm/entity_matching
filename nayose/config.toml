@@ -36,7 +36,7 @@ name_line = 0.99  # the name model calls a kind it is at least this sure of
 ngram = 3  # the name model reads a name's character n-grams of 1 to this many characters (config/kind_names.npz)
 trust_flag = false  # true: the file's flag decides every record's kind
 shared_name_column = false  # true: one column holds every name, a person's or a company's; each goes to the side its kind leans to
-min_block = 64  # records a block holds before it is oversized; the fewest a placeholder is held by
+min_block = 64  # records: the fewest a placeholder is held by
 spread = 10  # a placeholder is held by this many times the field's records per value, or more
 crowd = 64  # the fewest customers a compared field's placeholder is held by
 
@@ -49,8 +49,8 @@ columns = ["CONT_ID", "FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", 
            "PHONE_NUM_4", "CIF_ID", "BIRTH_DATE", "PERSON_ORG_CODE"]
 
 [fit]  # sql/fit.sql, nayose/em.py
-fit_rows = 100000             # the sample the model is learned on: whole postal areas by hash
-prior_recall = 0.0217         # the share of all matches the near-certain rules are thought to find (λ)
+fit_rows = 100000             # the sample the model is learned on: whole postal areas by hash, the last one cut
+prior_recall = 0.0217         # the share of all matches the near-certain rules are thought to find
 fit_u_max_pairs = 1000000     # u sampled on the fit's sample: about this many pairs
 u_max_pairs = 10000000        # u sampled on the file to be scored: about this many pairs
 seed = 0                      # the sample's hash seed
@@ -68,8 +68,8 @@ keys = ["cif", "phone_prefecture", "phone_postal_area", "phone_name_initial", "p
 rules = ["X1_CIF_PERSON_NAME", "X2_CIF_COMPANY_NAME", "X3_CIF_PHONE", "X4_PERSON_NAME_ADDRCD_PHONE", "X5_COMPANY_NAME_ADDRCD_PHONE",
          "F1_NAME~_ADDRCD_PHONE", "F2_NAME~_ADDRESS~_PHONE", "F3_NAME~_CIF", "F4_NAME_ADDRCD_PHONE~", "F5_COMPANY~_PHONE_POSTAL",
          "F6_COMPANY~_ADDRCD_PHONE", "F7_GIVEN_ADDRCD_PHONE"]
-keep_from = 0.0      # bits: scored pairs are kept from here up (and every rule pair): what a match run can offer
-search_floor = 0.0   # bits: a sampled pair at or above it keeps its oversized block (below the 4 bits people review)
+keep_from = 0.0      # points: scored pairs are kept from here up (and every rule pair): what a match run can offer
+search_floor = 0.0   # points: a sampled pair at or above it keeps its oversized block (people review from 4 points)
 oversized = 64       # records: a block this big or bigger is checked on a sample of as many of its records first;
                      # a rule leaves out a value of its keys held by this many records
 

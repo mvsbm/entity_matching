@@ -16,7 +16,7 @@
 --    In the comments below, SP stands for Python's whitespace (the characters str.strip removes). The patterns spell
 --    it as [\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}].
 --
--- 2. The model's comparisons, which the fit (stage 2) and the scores call. Each compares two records on one field,
+-- 2. The model's comparisons, which the fit (stage 2) and the scores call. Each compares two records on its fields,
 --    and takes both records whole, as rows (l and r). Each returns a gamma, the level the pair lands in. The level is
 --    -1 if either side is missing. The other levels count down from the highest to 0, the else level.
 --    The cl_* functions compare by character (engines.py). In BigQuery they run as JavaScript, or as BigQuery's own
@@ -113,7 +113,8 @@ CREATE OR REPLACE TEMP FUNCTION read_value(v STRING, numeric BOOL, nulls STRING)
 
 -- ---------- 2. The comparisons ----------
 
--- jaro_winkler_of returns the Jaro–Winkler score of a and b. It scores their one-byte copies (records.sql) if both have
+-- jaro_winkler_of returns the Jaro–Winkler score of a and b, exact at the threshold or above: below it, the score may
+-- be returned as 0 instead. It scores their one-byte copies (records.sql) if both have
 -- one. The score is the same, because Jaro–Winkler tests characters only for equality, and a copy keeps different
 -- characters different. On the copies, DuckDB computes the score with its own function.
 CREATE OR REPLACE TEMP FUNCTION jaro_winkler_of(a STRING, b STRING, one_byte_a STRING, one_byte_b STRING,
@@ -193,10 +194,8 @@ CREATE OR REPLACE TEMP FUNCTION name_level(l ANY TYPE, r ANY TYPE, s FLOAT64) AS
   END
 );
 
--- The same levels as name_level, with each Jaro–Winkler call in its own CASE branch. The gate (score.sql) calls it.
--- The gate scores few sampled pairs, so it doesn't pay for name_score's bound, which reads the two letters columns of
--- every record. gamma_name doesn't call name_level(l, r, name_score(l, r)), because BigQuery computes a SQL
--- function's arguments before its body. The score would then be computed for every pair, even if the names are equal.
+-- gamma_name gives the same levels as name_level from the pair alone, with each Jaro–Winkler call in its own CASE
+-- branch. The gate (score.sql) calls it on the pairs it samples.
 CREATE OR REPLACE TEMP FUNCTION gamma_name(l ANY TYPE, r ANY TYPE) AS (
   CASE
     WHEN l.person_name IS NULL OR r.person_name IS NULL THEN -1

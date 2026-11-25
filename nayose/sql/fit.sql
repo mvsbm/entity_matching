@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS fit (probability FLOAT64, fit_rows INT64, records INT
 
 -- 1. compared holds the columns that the comparisons, the near-certain rules and EM's keys read. Only these columns
 --    are read, so only these are billed. The sample takes postal areas whole, in the order of their hash, until it
---    holds @fit_rows records. So a household's records stay together, and a smaller sample is part of a bigger one.
+--    holds @fit_rows records, and cuts the last area by its records' hash. So a household's records stay together,
+--    but in that last area, and a smaller sample is part of a bigger one.
 CREATE OR REPLACE VIEW compared AS
 SELECT
   id, person_name, full_name, given_name__kana_fold, person_name__kana_fold, person_name__kana_fold_long_vowel,
