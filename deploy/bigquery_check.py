@@ -38,7 +38,8 @@ from nayose.engines import TEMP_TABLE as TEMP  # noqa: E402
 SCOPE = ["https://www.googleapis.com/auth/bigquery"]
 # US list prices (cloud.google.com/bigquery/pricing; asia-northeast1's are higher, in about the same ratio): on demand
 # bills bytes, a Standard edition reservation slot time, by the second with fluid scaling. Standard is the cheaper
-# where a job bills more than PER_SLOT_HOUR / PER_TIB TiB a slot-hour, about 6.6 GiB.
+# where a job bills more than PER_SLOT_HOUR / PER_TIB TiB a slot-hour, about 6.6 GiB. Its cost here is the slot time
+# used, the least a reservation bills: the autoscaler adds slots 50 at a time, so a short job bills more.
 PER_TIB, PER_SLOT_HOUR = 6.25, 0.04
 ROWS_UP_TO = 4000  # entities: past these, each table is compared by its rows' count, as reading every row costs quota
 SEEN = ((0x0000, 0x024F), (0x2000, 0x206F), (0x3000, 0x30FF), (0x3400, 0x9FFF), (0xF900, 0xFAFF), (0xFF00, 0xFFEF))

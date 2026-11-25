@@ -498,33 +498,45 @@ def queried_once(body: list[str]) -> tuple[list[str], list[str]]:
     """Return a procedure's statements with each condition its IFs ask more than once asked once, and the names of the
     variables (condition_1, ...) that hold the answers, which the procedure declares.
 
-    BigQuery runs each IF's condition as a query of its own, about a second. A condition is asked once only where no
-    statement between its first IF and its last writes a table it reads: the variable then holds what each query would
-    have found. Its first IF becomes SET v_condition_n = (condition), and each IF reads the variable.
+    BigQuery runs each IF's condition as a query of its own, about a second. A condition and NOT it are one question.
+    It is asked once only where no statement from its first IF to its last writes a table it reads (written): the
+    variable then holds what each query would have found. Its first IF becomes SET v_condition_n = (condition), and
+    each IF reads the variable, or NOT it.
     """
-    places: dict[str, list[int]] = {}
+    places: dict[str, list[tuple[int, bool]]] = {}
     for i, sql in enumerate(body):
         if m := IF_BLOCK.fullmatch(sql):
-            places.setdefault(m[1], []).append(i)
+            tree = sqlglot.parse_one(m[1], read="bigquery")
+            negated = isinstance(tree, exp.Not)
+            places.setdefault((tree.this if negated else tree).sql(dialect="bigquery"), []).append((i, negated))
     names = []
     for condition, at in places.items():
         reads = {t.name for t in sqlglot.parse_one(f"SELECT {condition}", read="bigquery").find_all(exp.Table)}
-        if len(at) < 2 or any(written(sql) & reads for sql in body[at[0] + 1:at[-1]]):
+        if len(at) < 2 or any((w := written(sql)) is None or w & reads for sql in body[at[0][0]:at[-1][0]]):
             continue
         names.append(f"condition_{len(names) + 1}")
-        for k, i in enumerate(at):
-            first = f"SET v_{names[-1]} = ({condition});\n" if k == 0 else ""
-            body[i] = f"{first}IF v_{names[-1]} THEN\n{IF_BLOCK.fullmatch(body[i])[2]};\nEND IF"
+        for k, (i, negated) in enumerate(at):
+            ask = f"SET v_{names[-1]} = ({condition});\n" if k == 0 else ""
+            body[i] = f"{ask}IF {'NOT ' * negated}v_{names[-1]} THEN\n{IF_BLOCK.fullmatch(body[i])[2]};\nEND IF"
     return body, names
 
 
-def written(sql: str) -> set[str]:
-    """Return the names of the tables a procedure's statement writes (made, inserted into, deleted from or updated)."""
+WRITES = (exp.Create, exp.Insert, exp.Delete, exp.Update, exp.Merge, exp.Drop, exp.Alter, exp.TruncateTable)
+
+
+def written(sql: str) -> set[str] | None:
+    """Return the names of the tables a procedure's statement writes, or None for a statement this can't read (a CALL,
+    a SET), which may write any. A query writes none."""
     m = IF_BLOCK.fullmatch(sql)
-    tree = sqlglot.parse_one(m[2] if m else sql, read="bigquery")
-    kinds = (exp.Create, exp.Insert, exp.Delete, exp.Update, exp.Merge, exp.Drop, exp.Alter)
-    return {t.name for t in [tree.this if isinstance(tree.this, exp.Table) else tree.this.find(exp.Table)]
-            if t is not None} if isinstance(tree, kinds) and tree.this is not None else set()
+    out = set()
+    for tree in sqlglot.parse(m[2] if m else sql, read="bigquery"):
+        if tree is None or isinstance(tree, (exp.Semicolon, exp.Query)):  # nothing (a comment after a ;), or a read
+            continue
+        if not isinstance(tree, WRITES):
+            return None
+        out |= {t.name for t in (tree.expressions if isinstance(tree, exp.TruncateTable) else [tree.find(exp.Table)])
+                if t is not None}
+    return out
 
 
 def folded(condition: str, known: dict) -> str | bool:

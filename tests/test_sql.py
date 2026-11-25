@@ -330,7 +330,3 @@ def test_no_name_is_a_reserved_keyword_unless_backquoted(path):
     assert not {n for sql in nayose.statements(path.read_text(encoding="utf-8")) for n in reserved(sql)}
 
 
-def test_no_name_of_the_tables_python_makes_is_a_reserved_keyword():  # tests/test_deploy.py checks what its fake clients are sent
-    sent = []  # decide's statements, as a build runs them
-    nayose.decide(SimpleNamespace(run=lambda sql, values=None: sent.append(sql), value=lambda sql, values=None: True), [])
-    assert sent and not {n for s in sent for n in reserved(s)}

@@ -327,7 +327,8 @@ procedure's `IF <condition> THEN … END IF`, and each `@name` the procedure's v
 `--` comments but never in a string. A condition on a value the procedure declares TRUE or FALSE (`@given`, FALSE for
 a build's and an update's decide stage; `@lookup`, FALSE in every procedure) is decided as the deploy makes it
 (`engines.folded`): the statement is there without its `IF`, or not there at all, as BigQuery runs every other
-condition as a query of its own. BigQuery bills a statement's scans whatever its result, so a
+condition as a query of its own. So a condition that `IF`s ask again, or ask as `NOT` it, is asked once into a
+variable where nothing between its first `IF` and its last writes a table it reads (`engines.queried_once`). BigQuery bills a statement's scans whatever its result, so a
 statement that isn't run is the only one that bills nothing.
 
 **DuckDB** runs the SQL after `duckdb_sql` translates it (sqlglot, BigQuery to DuckDB, cached per statement). Some

@@ -199,8 +199,8 @@ Pairs of two people of one household are counted apart, neither true nor false: 
 
 ## In the code
 
-- `nayose/sql/functions.sql`, 2. The comparisons: `name_score` and `name_level`, `gamma_company`, `gamma_address`, `gamma_phone`, `gamma_cif`, `gamma_birth`, and `levels`, each level's label and agreement
-- `nayose/sql/fit.sql`: 1. The sample; 2. λ (`fit_prior`, the near-certain rules' pairs); 3. EM's pairs (`em_patterns`, a session a field); 4. u (counted where it can be, the rest sampled, on the sample and on the file); 5. The model (`fit_model`: `model`, each level's m, u and bits; `fit`, λ and its bits at the file's size)
+- `nayose/sql/functions.sql`, 2. The comparisons: `name_score` and `name_level`, `gamma_company`, `gamma_address`, `gamma_phone`, `gamma_cif`, `gamma_birth`
+- `nayose/sql/fit.sql`: `levels`, each level's label and agreement; 1. The sample; 2. λ (`fit_prior`, the near-certain rules' pairs); 3. EM's pairs (`em_patterns`, a session a field); 4. u (counted where it can be, the rest sampled, on the sample and on the file); 5. The model (`fit_model`: `model`, each level's m, u and bits; `fit`, λ and its bits at the file's size)
 - `nayose/em.py`: `fit` (the model from fit.sql's counts), `learn` (λ, u, then m), `session` (one EM session), `u_bound`, `sensible_m` (the two limits on m), `assemble` (u on the file)
 - `nayose/config.toml` `[fit]`: `prior_recall`, `em_sessions`, `fit_records`, `fit_u_max_pairs`, `u_max_pairs`, `seed`; `[lookup]`: `at_least` (the review floor, 4 points), `likely_from` (6 points)
 - `nayose/sql/score.sql`: 3. The model's bits (`level_bits`: the prior's bits, rescaled for a lookup; `points_of`; `bound_of`); 6. The scores (`scored`: each pair's levels, points and probability, and `named`, the name check)
