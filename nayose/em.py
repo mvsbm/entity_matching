@@ -34,11 +34,6 @@ PRIOR_RULES = {  # fit_prior's columns, named as the report names the rules
 }
 
 
-def in_order(lv: dict) -> tuple:
-    """Return a level's place in the model: by comparison, then the strongest level first."""
-    return lv["position"], -lv["gamma"]
-
-
 def fit(counts: str, settings: str, stored: str | None = None) -> str:
     """Fit the model and return it as JSON.
 
@@ -52,13 +47,11 @@ def fit(counts: str, settings: str, stored: str | None = None) -> str:
     model as fitted.
     """
     tables, config = json.loads(counts), json.loads(settings)
-    levels = sorted(tables["levels"], key=in_order)
+    # by comparison, then the strongest level first
+    levels = sorted(tables["levels"], key=lambda lv: (lv["position"], -lv["gamma"]))
     measures = measured(tables, config)
-    kept = json.loads(stored) if stored is not None else None
-    if kept is not None:
-        model = kept["model"]
-    else:
-        model = learn(levels, measures["sample"], tables["prior"][0], tables["patterns"] or [], config)
+    model = (json.loads(stored)["model"] if stored is not None
+             else learn(levels, measures["sample"], tables["prior"][0], tables["patterns"] or [], config))
     file = measures["file"]
     exact = exact_u(levels, file)
     sampled = sampled_u(levels, file, [x for x in comparisons(levels) if ELSE not in exact.get(x, {})])
@@ -74,12 +67,6 @@ def fitted(model: dict, scoring: dict, n: int) -> str:
     notes = dict(model["notes"], file_adjusted=scoring["notes"]["adjusted"])
     return json.dumps(dict(levels=levels, probability=model["probability"], fit_rows=model["fit_rows"], records=n,
                            prior_bits=math.log2(lam / (1 - lam)), notes=notes, model=model))
-
-
-def filled_pairs(counts: dict, name: str) -> float:
-    """Return about how many sampled pairs have the comparison filled on both sides."""
-    n = counts["n"]
-    return min(counts["max_pairs"], n * (n - 1) / 2) * (counts["filled"][name] / n if n else 0.0) ** 2
 
 
 def bits(m: float, u: float) -> float:
@@ -108,25 +95,39 @@ def exact_u(levels: list[dict], counts: dict) -> dict[str, dict[str, float]]:
     """Return the u of each comparison's levels that fit.sql counted exactly.
 
     Each u is a share of the pairs outside the comparison's missing level. When every level is counted, the else
-    level's u is the rest.
+    level's u is the rest. A comparison with no level counted is left out.
     """
     out: dict[str, dict[str, float]] = {}
     for name in comparisons(levels):
-        outside = float(counts["outside"][name])
         named = [lv for lv in levels if lv["comparison"] == name and lv["kind"] != ELSE]
-        for lv in named:
-            pairs = counts["counted"].get((name, lv["label"]), counts["near"].get((name, lv["label"])))
-            if pairs is None:
-                break  # a level not counted: neither is any after it
-            if (u := float(pairs) / outside if outside else 0.0) > 0:
-                out.setdefault(name, {})[lv["label"]] = u
-        u_of = out.get(name, {})
-        counted = 0.0
-        for u in u_of.values():  # added in turn: Python 3.12+'s sum() rounds otherwise, and BigQuery runs 3.11
-            counted += u
-        if all(lv["label"] in u_of for lv in named) and (rest := 1 - counted) > 0:
-            u_of[ELSE] = rest  # every level counted: nothing is left to sample
+        if u_of := counted_u(name, named, counts):
+            out[name] = u_of
     return out
+
+
+def counted_u(name: str, named: list[dict], counts: dict) -> dict[str, float]:
+    """Return the u of the levels `named`, one comparison's but its else level, that fit.sql counted, in their order.
+
+    A level counted with no pair has no u. When some level has a u and every one does, the else level's u is the rest.
+    """
+    outside = float(counts["outside"][name])
+    u_of: dict[str, float] = {}
+    for lv in named:
+        pairs = counts["counted"].get((name, lv["label"]), counts["near"].get((name, lv["label"])))
+        if pairs is None:
+            break  # a level not counted: neither is any after it
+        u = float(pairs) / outside if outside else 0.0
+        if u > 0:
+            u_of[lv["label"]] = u
+    if not u_of or any(lv["label"] not in u_of for lv in named):
+        return u_of  # no rest unless some level has a u, and every one does: the else level is sampled
+    counted = 0.0
+    for u in u_of.values():  # added in turn: Python 3.12+'s sum() rounds otherwise, and BigQuery runs 3.11
+        counted += u
+    rest = 1 - counted
+    if rest > 0:
+        u_of[ELSE] = rest  # every level counted: nothing is left to sample
+    return u_of
 
 
 def sampled_u(levels: list[dict], counts: dict, names: list[str]) -> dict[str, dict[str, float]]:
@@ -153,7 +154,9 @@ def u_bound(counts: dict, name: str) -> float:
     The bound counts zero hits among the sampled pairs where the comparison is filled, of which there are at least the
     sample times its fill share squared.
     """
-    return 1 - 0.05 ** (1 / max(1, int(filled_pairs(counts, name))))
+    n = counts["n"]
+    filled_pairs = min(counts["max_pairs"], n * (n - 1) / 2) * (counts["filled"][name] / n if n else 0.0) ** 2
+    return 1 - 0.05 ** (1 / max(1, int(filled_pairs)))
 
 
 def comparisons(levels: list[dict]) -> list[str]:
@@ -166,9 +169,30 @@ def comparisons(levels: list[dict]) -> list[str]:
 def learn(levels: list[dict], counts: dict, prior_counts: dict, patterns: list[dict], settings: dict) -> dict:
     """Learn the model on the sample: u, then λ, then m by the EM sessions in order.
 
-    Raises ValueError when no near-certain rule, or no session's key, finds a pair in the sample.
+    Raises ValueError when no near-certain rule, or no session's key, finds a pair in the sample, or the rules find
+    more pairs than their recall allows.
     """
     names = comparisons(levels)
+    model, filled_u = sample_u(levels, counts, names)
+    records, found = prior_counts["records"], prior_counts["found"]
+    rules_found = [rule for rule in PRIOR_RULES if prior_counts[rule]]
+    sessions = [s["key"] for s in settings["sessions"]]
+    patterns_of = {s: [tuple(p[n] for n in names) + (p["pairs"],) for p in patterns if p["session"] == s]
+                   for s in sessions}
+    em_pairs = {s: sum(p[-1] for p in patterns_of[s]) for s in sessions if patterns_of[s]}
+    lam = prior_rate(records, found, rules_found, sessions, em_pairs, settings["prior_recall"])
+    with_pairs = [s for s in settings["sessions"] if s["key"] in em_pairs]
+    learned, filled_m = learn_m(model, with_pairs, patterns_of, names, lam)
+    adjusted = sensible_m(model, {tuple(x) for x in filled_m})
+    skipped = [PRIOR_RULES[r] for r in PRIOR_RULES if r not in rules_found] + [s for s in sessions if s not in em_pairs]
+    by_session = {s: [[name, label, m] for (name, label), m in m_of.items()] for s, m_of in learned.items()}
+    return dict(model, probability=lam, fit_rows=records,
+                notes=dict(fit_rows=records, filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted,
+                           em_pairs=em_pairs, sessions=by_session))
+
+
+def sample_u(levels: list[dict], counts: dict, names: list[str]) -> tuple[dict, list[list[str]]]:
+    """Return the model before EM, each level's u on the sample and its m unknown, and the levels whose u is a bound."""
     exact = exact_u(levels, counts)
     skip = {name for name, u in exact.items() if ELSE in u}
     u = {**{name: {} for name in skip}, **sampled_u(levels, counts, [x for x in names if x not in skip])}
@@ -176,14 +200,17 @@ def learn(levels: list[dict], counts: dict, prior_counts: dict, patterns: list[d
     filled_u = [[lv["comparison"], lv["label"]] for lv in levels if lv["label"] not in u[lv["comparison"]]]
     model = dict(levels=[dict(lv, u=u[lv["comparison"]].get(lv["label"]) or u_bound(counts, lv["comparison"]), m=None)
                          for lv in levels])
+    return model, filled_u
 
-    records, found = prior_counts["records"], prior_counts["found"]
-    prior = [rule for rule in PRIOR_RULES if prior_counts[rule]]
-    sessions = [s["key"] for s in settings["sessions"]]
-    patterns = {s: [tuple(p[n] for n in names) + (p["pairs"],) for p in patterns if p["session"] == s]
-                for s in sessions}
-    em_pairs = {s: sum(p[-1] for p in patterns[s]) for s in sessions if patterns[s]}
-    if not prior:
+
+def prior_rate(records: int, found: int, rules_found: list[str], sessions: list[str], em_pairs: dict,
+               recall: float) -> float:
+    """Return λ: the pairs the near-certain rules find, over their recall, over every pair of the sample.
+
+    Raises ValueError when no near-certain rule, or no session's key, finds a pair in the sample, or the rules find
+    more pairs than their recall allows.
+    """
+    if not rules_found:
         raise ValueError(f"no two records of the {records:,} the fit samples agree on any near-certain rule "
                          f"({'; '.join(PRIOR_RULES.values())}), so the chance that two records match can't be "
                          "estimated: map the fields those rules read")
@@ -191,16 +218,23 @@ def learn(levels: list[dict], counts: dict, prior_counts: dict, patterns: list[d
         raise ValueError(f"no two records of the {records:,} the fit samples share {' or '.join(sessions)}, "
                          "the pairs it learns from: map those fields to filled columns")
     every = int(records * (records - 1) / 2)
-    if found > every * settings["prior_recall"]:
+    if found > every * recall:
         raise ValueError(f"the near-certain rules find {found:,} of the {every:,} pairs, more than a recall of "
-                         f"{settings['prior_recall']} allows (at least {found / every:,.2f}): "
+                         f"{recall} allows (at least {found / every:,.2f}): "
                          "raise [fit] prior_recall, or make the prior rules stricter")
-    lam = found / settings["prior_recall"] / every
+    return found / recall / every
 
+
+def learn_m(model: dict, with_pairs: list[dict], patterns_of: dict[str, list[tuple]], names: list[str],
+            lam: float) -> tuple[dict, list[list[str]]]:
+    """Learn each level's m by the EM sessions `with_pairs`, in order: the median of what they learned, else its u.
+
+    Returns what each session learned, and the levels whose m is their u.
+    """
     trained: dict[tuple[str, str], list[float]] = {}  # each level's m, as each session so far learned it
     learned = {}
-    for s in (x for x in settings["sessions"] if x["key"] in em_pairs):
-        learned[s["key"]] = session(model, patterns[s["key"]], names, s, lam, trained)
+    for s in with_pairs:
+        learned[s["key"]] = session(model, patterns_of[s["key"]], names, s, lam, trained)
         for key, value in learned[s["key"]].items():
             trained.setdefault(key, []).append(value)
     filled_m = []
@@ -210,12 +244,7 @@ def learn(levels: list[dict], counts: dict, prior_counts: dict, patterns: list[d
         else:
             lv["m"] = lv["u"]
             filled_m.append([lv["comparison"], lv["label"]])
-    adjusted = sensible_m(model, {tuple(x) for x in filled_m})
-    skipped = [PRIOR_RULES[r] for r in PRIOR_RULES if r not in prior] + [s for s in sessions if s not in em_pairs]
-    by_session = {s: [[name, label, m] for (name, label), m in m_of.items()] for s, m_of in learned.items()}
-    return dict(model, probability=lam, fit_rows=records,
-                notes=dict(fit_rows=records, filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted,
-                           em_pairs=em_pairs, sessions=by_session))
+    return learned, filled_m
 
 
 def first_m(model: dict, name: str, gamma: int, trained: dict) -> float:
@@ -252,43 +281,66 @@ def session(model: dict, patterns: list[tuple], names: list[str], s: dict, lam: 
     start = odds(lam)
     for name, label in s["start"]:
         lv = next(x for x in model["levels"] if x["comparison"] == name and x["label"] == label)
-        start = (first_m(model, name, lv["gamma"], trained) / lv["u"] if lv["u"] != 0 else math.inf) * start
+        evidence = first_m(model, name, lv["gamma"], trained) / lv["u"] if lv["u"] != 0 else math.inf
+        start = evidence * start
     lam_s = start / (1 + start)
     u = {(lv["comparison"], lv["gamma"]): lv["u"] for lv in model["levels"] if lv["comparison"] in order}
-    label = {(lv["comparison"], lv["gamma"]): lv["label"] for lv in model["levels"]}
+    label_of = {(lv["comparison"], lv["gamma"]): lv["label"] for lv in model["levels"]}
     m: dict[tuple[str, int], float | None] = {key: first_m(model, key[0], key[1], trained) for key in u}
     # in order, as SQL's ORDER BY ALL sorts them
     rows = [(list(x[:-1]), x[-1]) for x in sorted(tuple(p[i] for i in learns) + (p[-1],) for p in patterns)]
     for _ in range(MAX_ROUNDS):
-        points_at = {key: bits(UNSEEN_M if m[key] is None else m[key], u[key]) for key in m}
+        points_at = {key: bits(seen(m[key]), u[key]) for key in m}
         points_at |= {(n, -1): 0.0 for n in order}  # a missing comparison weighs nothing
-        prior_points = math.log2(odds(lam_s))
-        expected: dict[tuple[str, int], float] = {}
-        matches, pairs = 0.0, 0
-        for gammas, count in rows:
-            total = prior_points
-            for name, g in zip(order, gammas):
-                total = total + points_at[name, g]
-            p = probability(total)
-            matches += p * count
-            pairs += count
-            for name, g in zip(order, gammas):
-                expected[name, g] = expected.get((name, g), 0.0) + p * count
-        new: dict[tuple[str, int], float | None] = {}
-        for name in order:
-            filled = 0.0
-            for key in sorted(k for k in expected if k[0] == name and k[1] >= 0):
-                filled += expected[key]
-            for key in (k for k in m if k[0] == name):
-                share = expected[key] / filled if key in expected and filled else math.nan
-                new[key] = share if share >= 1e-300 else None  # no pair reached it, or its share is nothing (NaN too)
-        new_lam = matches / pairs
-        moved = [abs((UNSEEN_M if new[k] is None else new[k]) - (UNSEEN_M if m[k] is None else m[k])) for k in m]
-        moved.append(abs(new_lam - lam_s))
+        matches, pairs, expected = expect(rows, order, points_at, math.log2(odds(lam_s)))
+        new, new_lam = maximise(expected, m, order), matches / pairs
+        moved = [abs(seen(new[k]) - seen(m[k])) for k in m] + [abs(new_lam - lam_s)]
         m, lam_s = new, new_lam
         if max((x for x in moved if not math.isnan(x)), default=0.0) < CONVERGED:
             break
-    return {(key[0], label[key]): v for key, v in m.items() if v is not None}
+    return {(key[0], label_of[key]): v for key, v in m.items() if v is not None}
+
+
+def seen(m: float | None) -> float:
+    """Return a level's m, or UNSEEN_M where no pair of the session reached it (None)."""
+    return UNSEEN_M if m is None else m
+
+
+def expect(rows: list[tuple], order: list[str], points_at: dict, prior_points: float) -> tuple[float, int, dict]:
+    """E: guess each pattern's chance of a match from λ's points and its levels' points, added left to right.
+
+    Returns the matches expected among the pairs, the pairs, and the matches expected at each level.
+    """
+    expected: dict[tuple[str, int], float] = {}
+    matches, pairs = 0.0, 0
+    for gammas, count in rows:  # loops, not sum(): Python 3.12+'s sum() rounds otherwise, and BigQuery runs 3.11
+        total = prior_points
+        for name, g in zip(order, gammas):
+            total = total + points_at[name, g]
+        p = probability(total)
+        matches += p * count
+        pairs += count
+        for name, g in zip(order, gammas):
+            expected[name, g] = expected.get((name, g), 0.0) + p * count
+    return matches, pairs, expected
+
+
+def maximise(expected: dict, m: dict, order: list[str]) -> dict[tuple[str, int], float | None]:
+    """M: count each level's m from E's guesses (share); None where no pair reached it."""
+    new: dict[tuple[str, int], float | None] = {}
+    for name in order:
+        filled = 0.0
+        for key in sorted(k for k in expected if k[0] == name and k[1] >= 0):  # a loop, not sum(), as in expect
+            filled += expected[key]
+        for key in (k for k in m if k[0] == name):
+            new[key] = share(expected, key, filled)
+    return new
+
+
+def share(expected: dict, key: tuple[str, int], filled: float) -> float | None:
+    """Return a level's m: its expected matches over its comparison's `filled`; None where no pair reached it."""
+    m = expected[key] / filled if key in expected and filled else math.nan
+    return m if m >= 1e-300 else None  # no pair reached it, or its share is nothing (NaN too)
 
 
 def sensible_m(model: dict, filled: set[tuple[str, str]]) -> list[list]:
@@ -302,21 +354,37 @@ def sensible_m(model: dict, filled: set[tuple[str, str]]) -> list[list]:
     out = []
     for name in comparisons(model["levels"]):
         its_levels = [lv for lv in model["levels"] if lv["comparison"] == name]
-        exact = [lv for lv in its_levels if lv["kind"] == "exact"]
-        if exact and all((name, lv["label"]) in filled for lv in exact):
-            for lv in its_levels:
-                if lv["kind"] == "near" and lv["m"] != lv["u"]:
-                    was = round(math.log2(lv["m"] / lv["u"]), 2)
-                    out.append([name, lv["label"], "no exact agreement among matches: 0 bits", was])
-                    lv["m"] = lv["u"]
-        other = next((lv for lv in its_levels if lv["kind"] == ELSE), None)
-        if other:
-            floor = other["m"] / other["u"]
-            for lv in its_levels:
-                if lv is not other and lv["m"] / lv["u"] < floor:
-                    was = round(math.log2(lv["m"] / lv["u"]), 2)
-                    out.append([name, lv["label"], "less than no agreement: the else level's weight", was])
-                    lv["m"] = lv["u"] * floor
+        out += near_without_exact(name, its_levels, filled)
+        out += at_least_else(name, its_levels)
+    return out
+
+
+def near_without_exact(name: str, its_levels: list[dict], filled: set[tuple[str, str]]) -> list[list]:
+    """Give a comparison's near levels m = u where each of its exact levels' m was filled as u; return what changed."""
+    exact = [lv for lv in its_levels if lv["kind"] == "exact"]
+    if not exact or not all((name, lv["label"]) in filled for lv in exact):
+        return []
+    out = []
+    for lv in its_levels:
+        if lv["kind"] == "near" and lv["m"] != lv["u"]:
+            was = round(math.log2(lv["m"] / lv["u"]), 2)
+            out.append([name, lv["label"], "no exact agreement among matches: 0 bits", was])
+            lv["m"] = lv["u"]
+    return out
+
+
+def at_least_else(name: str, its_levels: list[dict]) -> list[list]:
+    """Raise each level of a comparison that weighs less than its else level to that weight; return what changed."""
+    other = next((lv for lv in its_levels if lv["kind"] == ELSE), None)
+    if other is None:
+        return []
+    out = []
+    floor = other["m"] / other["u"]
+    for lv in its_levels:
+        if lv is not other and lv["m"] / lv["u"] < floor:
+            was = round(math.log2(lv["m"] / lv["u"]), 2)
+            out.append([name, lv["label"], "less than no agreement: the else level's weight", was])
+            lv["m"] = lv["u"] * floor
     return out
 
 
