@@ -624,9 +624,9 @@ def build(engine: Engine, files: list, model: str | None = None, timed=run_stage
 def update(engine: Engine, files: list) -> None:
     """Add a batch to the run on `engine`.
 
-    The batch's records are made (one already in the run is set aside), the pairs touching the batch are scored with
-    the model the build left, and the entities are made again. O(Δ·(L + b) + C_Δ·K·L²), plus O(N) scans of the run's
-    records and keys.
+    The batch's records are made (one already in the run is set aside), the pairs touching the batch, or a record made
+    again, are scored with the model the build left, and the entities are made again. O(Δ·(L + b) + C_Δ·K·L²), plus
+    O(N) scans of the run's records and keys.
     """
     unchanged(engine, build_again("update", "RUN"))
     records(engine, files)

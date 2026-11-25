@@ -63,7 +63,7 @@ A value held by too many records to be one entity's, such as a dummy phone, is r
 - it is held by at least `crowd` (64) customers, counted by customer ID, else by record ID;
 - its own pairs outnumber those of all the field's values that fail either test above, taken together.
 
-A `customer_id` value is one when it passes the first test alone. Placeholders are counted over the run's records and the batch's together, and they stay with the run (the table `placeholders`). A batch is read with them as missing, and a run record holding a value newly found to be a placeholder is made again without it. report.txt's SUMMARY notes each field's. A lookup adds none.
+A `customer_id` value is one when it passes the first test alone. Placeholders are counted over the run's records and the batch's together, and they stay with the run (the table `placeholders`). A batch is read with them as missing, and a run record holding a value newly found to be a placeholder is made again without it, its pairs scored again. report.txt's SUMMARY notes each field's. A lookup adds none.
 
 ## The run's answer: `gold`
 
