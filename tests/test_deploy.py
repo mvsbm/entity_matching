@@ -114,9 +114,14 @@ def test_a_condition_a_procedure_asks_again_is_asked_once_where_nothing_between_
     ask = ["IF EXISTS (SELECT 1 FROM t) THEN\nDELETE FROM a WHERE TRUE;\nEND IF", "SELECT 1",
            "IF EXISTS (SELECT 1 FROM t) THEN\nDELETE FROM b WHERE TRUE;\nEND IF"]
     body, names = queried_once(list(ask))
-    assert names == ["condition_1"] and body[0].startswith("SET v_condition_1 = (EXISTS (SELECT 1 FROM t));\nIF v_condition_1 THEN")
+    assert names == ["condition_1"] and body[0].startswith("SET v_condition_1 = (EXISTS(SELECT 1 FROM t));\nIF v_condition_1 THEN")
     assert body[2].startswith("IF v_condition_1 THEN\nDELETE FROM b")
     assert queried_once([ask[0], "CREATE OR REPLACE TEMP TABLE t AS SELECT 1 AS x", ask[2]])[1] == []  # t made again between
+    assert queried_once([ask[0], "CREATE OR REPLACE TEMP TABLE t AS SELECT 1;  -- a note", ask[2]])[1] == []  # its ; then a comment
+    assert queried_once([ask[0].replace("FROM a", "FROM t"), "SELECT 1", ask[2]])[1] == []  # the first IF's own statement
+    assert queried_once([ask[0], "CALL `p.run`.x()", ask[2]])[1] == []  # a statement it can't read may write t
+    negated = queried_once([ask[0], ask[2].replace("IF EXISTS", "IF NOT EXISTS")])[0]
+    assert negated[1].startswith("IF NOT v_condition_1 THEN")  # a condition and NOT it: one question
     for job in [s for s in procedures("p.run") if "CREATE OR REPLACE PROCEDURE" in s]:  # each condition a query once
         asked = re.findall(r"^IF (.*) THEN$", job, re.M) + re.findall(r"^SET v_\w+ = \((.*)\);$", job, re.M)
         assert len([c for c in asked if "SELECT" in c]) == len({c for c in asked if "SELECT" in c}), job[:60]

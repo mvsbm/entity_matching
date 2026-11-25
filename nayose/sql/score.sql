@@ -143,7 +143,7 @@ INSERT INTO rule_keys SELECT i, key, id FROM made_rule_keys;
 CREATE OR REPLACE TEMP TABLE rule_blocks AS
 SELECT i, key, id, TRUE AS in_batch, COUNT(*) OVER (PARTITION BY i, key) AS n FROM rule_keys;
 
--- when: @lookup OR EXISTS (SELECT 1 FROM this_batch WHERE batch > 0)
+-- when: @lookup OR NOT EXISTS (SELECT 1 FROM this_batch WHERE batch = 0)
 CREATE OR REPLACE TEMP TABLE rule_blocks AS
 SELECT i, key, id, id IN (SELECT id FROM batch_records) AS in_batch, COUNT(*) OVER (PARTITION BY i, key) AS n
 FROM rule_keys
@@ -219,7 +219,7 @@ CREATE OR REPLACE TEMP TABLE key_blocks AS
 SELECT g, key, id, TRUE AS in_batch, n FROM (SELECT g, key, id, COUNT(*) OVER (PARTITION BY g, key) AS n FROM every_key)
 WHERE n > 1;
 
--- when: @lookup OR EXISTS (SELECT 1 FROM this_batch WHERE batch > 0)
+-- when: @lookup OR NOT EXISTS (SELECT 1 FROM this_batch WHERE batch = 0)
 CREATE OR REPLACE TEMP TABLE key_blocks AS
 -- touched holds every record of each block that a key of the batch names. held is the number of records the run
 -- holds in the block.

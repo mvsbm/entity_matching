@@ -181,7 +181,8 @@ def still_running(engine: BigQuery, dataset: str, session: str) -> bool:
     """
     bq = engine.bigquery
     region = engine.client.get_dataset(dataset).location.lower()
-    config = bq.QueryJobConfig(query_parameters=[bq.ScalarQueryParameter("session", "STRING", session)])
+    config = bq.QueryJobConfig(query_parameters=[bq.ScalarQueryParameter("session", "STRING", session)],
+                               labels=engine.labels)
     done = engine.client.query(f"SELECT COUNT(*) FROM `region-{region}`.INFORMATION_SCHEMA.JOBS_BY_USER "
                                "WHERE session_info.session_id = @session AND state <> 'DONE'", job_config=config)
     return bool([tuple(r.values()) for r in done.result()][0][0])
