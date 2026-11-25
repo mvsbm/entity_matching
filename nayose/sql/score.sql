@@ -8,10 +8,11 @@
 -- rule pair. These are the pairs a match run can offer people. Nothing merges here.
 -- A pair's two records are x and y. l and r are the pair's IDs, and they can't name its records too, because a
 -- WHERE clause reads a name l differently on the two engines: DuckDB as the SELECT's column l, BigQuery as the table l.
--- O(Δ·b) for the batch's pairs, plus O(N·L) to make every record's keys again.
+-- O(Δ·b) for the batch's pairs, plus O(Δ·L) to make the changed records' keys (Δ counts the records made again
+-- too), and a scan of the index for the blocks the batch's keys name.
 --
--- Reads: records and this_batch (records.sql), compared (fit.sql), model (each level's bits) and fit (the prior's
--- bits at the file's size).
+-- Reads: records, this_batch and redone (records.sql), compared (fit.sql), model (each level's bits) and fit (the
+-- prior's bits at the file's size); block_size, a lookup's blocks read in part (nayose.lookup).
 -- Values:
 --   @keys, @rules   the names of the generators and the rules this run uses (config.toml [score])
 --   @keep_from      a scored pair with this many points or more is kept
@@ -30,6 +31,17 @@
 
 -- 0. The batch's records, the generators and the rules.
 CREATE OR REPLACE TEMP TABLE fresh AS SELECT id FROM records WHERE batch = (SELECT batch FROM this_batch);
+
+-- changed holds the records whose keys this job makes: the batch's, and the run's records that records.sql made again
+-- (redone), marked again. Every other record's keys are as the last job left them, since a record's keys change only
+-- when the record does.
+-- when: NOT @lookup
+CREATE OR REPLACE TEMP TABLE changed AS SELECT id, FALSE AS again FROM fresh UNION ALL SELECT id, TRUE FROM redone;
+
+-- A lookup's records table holds only the records the lookup read, and its index starts empty, so it makes the keys
+-- of every record it holds.
+-- when: @lookup
+CREATE OR REPLACE TEMP TABLE changed AS SELECT id, FALSE AS again FROM records;
 
 -- The generators and the rules are listed by name, in order. A generator's position (g) is its bit in the pairs'
 -- bits, which cands turns into sources. A rule's position (i) is its rank: if several rules find a pair, the first
@@ -59,31 +71,51 @@ FROM (SELECT x FROM UNNEST(@keys) AS x WHERE x NOT IN (SELECT name FROM generato
 --    value is held by @oversized records or more, it can't be one customer's, so the rule leaves it out. The model
 --    can still match those records. The batch's records are paired with all the run's records, each pair once, with
 --    the lower ID first.
-CREATE OR REPLACE TABLE rule_keys CLUSTER BY k AS  -- n is the number of records that hold the key k
-SELECT i, k, id, n, id IN (SELECT id FROM fresh) AS new FROM (
-  SELECT i, k, id, COUNT(*) OVER (PARTITION BY i, k) AS n FROM (
-    SELECT 0 AS i, customer_id || CHR(31) || full_name AS k, id FROM records             -- X1_CIF_PERSON_NAME
-    UNION ALL SELECT 1, customer_id || CHR(31) || company_name, id FROM records          -- X2_CIF_COMPANY_NAME
-    UNION ALL SELECT 2, customer_id || CHR(31) || phone, id FROM records                 -- X3_CIF_PHONE
-    UNION ALL SELECT 3, full_name || CHR(31) || address_code || CHR(31) || phone, id     -- X4_PERSON_NAME_ADDRCD_PHONE
-      FROM records
-    UNION ALL SELECT 4, company_name || CHR(31) || address_code || CHR(31) || phone, id  -- X5_COMPANY_NAME_ADDRCD_PHONE
-      FROM records
-    UNION ALL SELECT 5, address_code || CHR(31) || phone, id FROM records                -- F1_NAME~_ADDRCD_PHONE
-    UNION ALL SELECT 6, phone || CHR(31) || address__address_first3, id FROM records     -- F2_NAME~_ADDRESS~_PHONE
-    UNION ALL SELECT 7, customer_id, id FROM records                                     -- F3_NAME~_CIF
-    UNION ALL SELECT 8, person_name || CHR(31) || address_code, id FROM records          -- F4_NAME_ADDRCD_PHONE~
-    UNION ALL SELECT 9, phone || CHR(31) || postal_code, id FROM records                 -- F5_COMPANY~_PHONE_POSTAL
-    UNION ALL SELECT 10, address_code || CHR(31) || phone, id FROM records               -- F6_COMPANY~_ADDRCD_PHONE
-    UNION ALL SELECT 11, given_name || CHR(31) || address_code || CHR(31) || phone, id   -- F7_GIVEN_ADDRCD_PHONE
-      FROM records
-  ) WHERE k IS NOT NULL AND i IN (SELECT i FROM rules WHERE used)
-);
+CREATE OR REPLACE TEMP TABLE made_rule_keys AS  -- the rule keys of the records in changed
+WITH remade AS (SELECT * FROM records WHERE id IN (SELECT id FROM changed))
+SELECT i, k, id FROM (
+  SELECT 0 AS i, customer_id || CHR(31) || full_name AS k, id FROM remade             -- X1_CIF_PERSON_NAME
+  UNION ALL SELECT 1, customer_id || CHR(31) || company_name, id FROM remade          -- X2_CIF_COMPANY_NAME
+  UNION ALL SELECT 2, customer_id || CHR(31) || phone, id FROM remade                 -- X3_CIF_PHONE
+  UNION ALL SELECT 3, full_name || CHR(31) || address_code || CHR(31) || phone, id     -- X4_PERSON_NAME_ADDRCD_PHONE
+    FROM remade
+  UNION ALL SELECT 4, company_name || CHR(31) || address_code || CHR(31) || phone, id  -- X5_COMPANY_NAME_ADDRCD_PHONE
+    FROM remade
+  UNION ALL SELECT 5, address_code || CHR(31) || phone, id FROM remade                -- F1_NAME~_ADDRCD_PHONE
+  UNION ALL SELECT 6, phone || CHR(31) || address__address_first3, id FROM remade     -- F2_NAME~_ADDRESS~_PHONE
+  UNION ALL SELECT 7, customer_id, id FROM remade                                     -- F3_NAME~_CIF
+  UNION ALL SELECT 8, person_name || CHR(31) || address_code, id FROM remade          -- F4_NAME_ADDRCD_PHONE~
+  UNION ALL SELECT 9, phone || CHR(31) || postal_code, id FROM remade                 -- F5_COMPANY~_PHONE_POSTAL
+  UNION ALL SELECT 10, address_code || CHR(31) || phone, id FROM remade               -- F6_COMPANY~_ADDRCD_PHONE
+  UNION ALL SELECT 11, given_name || CHR(31) || address_code || CHR(31) || phone, id   -- F7_GIVEN_ADDRCD_PHONE
+    FROM remade
+) WHERE k IS NOT NULL AND i IN (SELECT i FROM rules WHERE used);
+
+-- rule_keys holds every record's rule keys. The records made again leave it, and the changed records' keys join it.
+CREATE TABLE IF NOT EXISTS rule_keys CLUSTER BY k AS SELECT i, k, id FROM made_rule_keys WHERE FALSE;
+
+-- when: EXISTS (SELECT 1 FROM changed WHERE again)
+DELETE FROM rule_keys WHERE id IN (SELECT id FROM changed WHERE again);
+
+INSERT INTO rule_keys SELECT i, k, id FROM made_rule_keys;
+
+-- rule_blocks holds every record of each rule key the batch holds. new is TRUE for the batch's records, and n is the
+-- number of records that hold the key.
+-- In the run's first batch (batch 0) every record is the batch's, so every rule key is. A lookup's batch is never
+-- the first, so that it keeps its record's blocks of one.
+-- when: NOT @lookup AND (SELECT batch FROM this_batch) = 0
+CREATE OR REPLACE TEMP TABLE rule_blocks AS
+SELECT i, k, id, TRUE AS new, COUNT(*) OVER (PARTITION BY i, k) AS n FROM rule_keys;
+
+-- when: @lookup OR (SELECT batch FROM this_batch) > 0
+CREATE OR REPLACE TEMP TABLE rule_blocks AS
+SELECT i, k, id, id IN (SELECT id FROM fresh) AS new, COUNT(*) OVER (PARTITION BY i, k) AS n
+FROM rule_keys JOIN (SELECT DISTINCT i, k FROM made_rule_keys WHERE id IN (SELECT id FROM fresh)) USING (i, k);
 
 CREATE OR REPLACE TEMP TABLE batch_rule_pairs AS
 WITH found AS (
   SELECT a.i, LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r
-  FROM rule_keys AS a JOIN rule_keys AS b ON a.i = b.i AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
+  FROM rule_blocks AS a JOIN rule_blocks AS b ON a.i = b.i AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
   -- A function given a row reads all of its columns, so x and y are rows of compared, which holds only the columns
   -- the comparisons read.
   JOIN compared AS x ON x.id = a.id JOIN compared AS y ON y.id = b.id
@@ -105,48 +137,58 @@ FROM (SELECT l, r, MIN(i) AS i FROM found GROUP BY l, r) AS f JOIN rules USING (
 --    records with the same key form a block. A deletion generator makes several keys for a record. They are its value
 --    with each character deleted in turn, and the value whole, each joined to the generator's other fields. Deleting
 --    any character of a run of equal characters gives the same value, so a run gives its key once.
-CREATE OR REPLACE TABLE every_key CLUSTER BY k AS
-SELECT g, k, id, id IN (SELECT id FROM fresh) AS new FROM (
-  SELECT 0 AS g, customer_id AS k, id FROM records                                        -- cif
-  UNION ALL SELECT 1, phone || CHR(31) || prefecture, id FROM records                     -- phone_prefecture
-  UNION ALL SELECT 2, phone || CHR(31) || postal_code__first3, id FROM records            -- phone_postal_area
-  UNION ALL SELECT 3, phone || CHR(31) || any_name__initial, id FROM records              -- phone_name_initial
-  UNION ALL SELECT 4, person_name__kana_fold, id FROM records                             -- person_name
-  UNION ALL SELECT 5, company_name__nfkc_strip_legal_form_kana_fold, id FROM records      -- company_name
+CREATE OR REPLACE TEMP TABLE made_keys AS  -- the keys of the records in changed
+WITH remade AS (SELECT * FROM records WHERE id IN (SELECT id FROM changed))
+SELECT g, k, id FROM (
+  SELECT 0 AS g, customer_id AS k, id FROM remade                                        -- cif
+  UNION ALL SELECT 1, phone || CHR(31) || prefecture, id FROM remade                     -- phone_prefecture
+  UNION ALL SELECT 2, phone || CHR(31) || postal_code__first3, id FROM remade            -- phone_postal_area
+  UNION ALL SELECT 3, phone || CHR(31) || any_name__initial, id FROM remade              -- phone_name_initial
+  UNION ALL SELECT 4, person_name__kana_fold, id FROM remade                             -- person_name
+  UNION ALL SELECT 5, company_name__nfkc_strip_legal_form_kana_fold, id FROM remade      -- company_name
   UNION ALL SELECT 6, SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1), id                         -- company_name_deletions
-    FROM (SELECT company_name__nfkc_strip_legal_form_kana_fold AS x, id FROM records
+    FROM (SELECT company_name__nfkc_strip_legal_form_kana_fold AS x, id FROM remade
           WHERE company_name__nfkc_strip_legal_form_kana_fold IS NOT NULL),
       UNNEST(GENERATE_ARRAY(1, LENGTH(x) + 1)) AS i
     WHERE i = 1 OR i > LENGTH(x) OR SUBSTR(x, i - 1, 1) <> SUBSTR(x, i, 1)
   UNION ALL SELECT 7, w || CHR(31) || SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1), id  -- person_name_deletions_postal_area
-    FROM (SELECT person_name__kana_fold AS x, postal_code__first3 AS w, id FROM records
+    FROM (SELECT person_name__kana_fold AS x, postal_code__first3 AS w, id FROM remade
           WHERE person_name__kana_fold IS NOT NULL),
       UNNEST(GENERATE_ARRAY(1, LENGTH(x) + 1)) AS i
     WHERE i = 1 OR i > LENGTH(x) OR SUBSTR(x, i - 1, 1) <> SUBSTR(x, i, 1)
-  UNION ALL SELECT 8, given_name__kana_fold || CHR(31) || postal_code, id FROM records    -- given_name_postal
-  UNION ALL SELECT 9, address__address || CHR(31) || phone, id FROM records               -- address_phone
-  UNION ALL SELECT 10, address_code || CHR(31) || phone, id FROM records                  -- address_code_phone
-  UNION ALL SELECT 11, address__address || CHR(31) || any_name__initial, id FROM records  -- address_name_initial
-  UNION ALL SELECT 12, address_code || CHR(31) || any_name__initial, id FROM records      -- address_code_name_initial
-  UNION ALL SELECT 13, given_name__kana_fold || CHR(31) || address_code, id FROM records  -- given_name_address_code
+  UNION ALL SELECT 8, given_name__kana_fold || CHR(31) || postal_code, id FROM remade    -- given_name_postal
+  UNION ALL SELECT 9, address__address || CHR(31) || phone, id FROM remade               -- address_phone
+  UNION ALL SELECT 10, address_code || CHR(31) || phone, id FROM remade                  -- address_code_phone
+  UNION ALL SELECT 11, address__address || CHR(31) || any_name__initial, id FROM remade  -- address_name_initial
+  UNION ALL SELECT 12, address_code || CHR(31) || any_name__initial, id FROM remade      -- address_code_name_initial
+  UNION ALL SELECT 13, given_name__kana_fold || CHR(31) || address_code, id FROM remade  -- given_name_address_code
   UNION ALL SELECT 14, SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1), id                        -- cif_deletions
-    FROM (SELECT customer_id AS x, id FROM records WHERE customer_id IS NOT NULL),
+    FROM (SELECT customer_id AS x, id FROM remade WHERE customer_id IS NOT NULL),
       UNNEST(GENERATE_ARRAY(1, LENGTH(x) + 1)) AS i
     WHERE i = 1 OR i > LENGTH(x) OR SUBSTR(x, i - 1, 1) <> SUBSTR(x, i, 1)
-  UNION ALL SELECT 15, birth_date, id FROM records                                        -- birth_date
-  UNION ALL SELECT 16, given_name__kana_fold || CHR(31) || phone, id FROM records         -- given_name_phone
+  UNION ALL SELECT 15, birth_date, id FROM remade                                        -- birth_date
+  UNION ALL SELECT 16, given_name__kana_fold || CHR(31) || phone, id FROM remade         -- given_name_phone
   UNION ALL SELECT 17, w || CHR(31) || SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1), id  -- birth_date_deletions_prefecture
-    FROM (SELECT birth_date AS x, prefecture AS w, id FROM records WHERE birth_date IS NOT NULL),
+    FROM (SELECT birth_date AS x, prefecture AS w, id FROM remade WHERE birth_date IS NOT NULL),
       UNNEST(GENERATE_ARRAY(1, LENGTH(x) + 1)) AS i
     WHERE i = 1 OR i > LENGTH(x) OR SUBSTR(x, i - 1, 1) <> SUBSTR(x, i, 1)
-  UNION ALL SELECT 18, person_name__kana_fold_long_vowel, id FROM records                 -- name_reading
+  UNION ALL SELECT 18, person_name__kana_fold_long_vowel, id FROM remade                 -- name_reading
   UNION ALL SELECT 19, phone || CHR(31)                                                   -- phone_given_tail
-                       || person_name__kana_fold_long_vowel_last3, id FROM records
+                       || person_name__kana_fold_long_vowel_last3, id FROM remade
   UNION ALL SELECT 20, postal_code || CHR(31)                                             -- postal_given_tail
-                       || person_name__kana_fold_long_vowel_last3, id FROM records
+                       || person_name__kana_fold_long_vowel_last3, id FROM remade
   UNION ALL SELECT 21, postal_code__first3 || CHR(31)                                     -- postal_area_given_tail
-                       || person_name__kana_fold_long_vowel_last3, id FROM records
+                       || person_name__kana_fold_long_vowel_last3, id FROM remade
 ) WHERE k IS NOT NULL AND g IN (SELECT g FROM generators WHERE used);
+
+-- every_key holds every record's keys, which are the index a lookup reads by key. The records made again leave it,
+-- and the changed records' keys join it.
+CREATE TABLE IF NOT EXISTS every_key CLUSTER BY k AS SELECT g, k, id FROM made_keys WHERE FALSE;
+
+-- when: EXISTS (SELECT 1 FROM changed WHERE again)
+DELETE FROM every_key WHERE id IN (SELECT id FROM changed WHERE again);
+
+INSERT INTO every_key SELECT g, k, id FROM made_keys;
 
 -- block_size gives a block's whole size if records holds only part of it. A lookup makes the table first, with the
 -- blocks it read in part. In any other job, this statement makes it empty.
@@ -155,14 +197,23 @@ CREATE TEMP TABLE IF NOT EXISTS block_size (g INT64, k STRING, n INT64);
 -- key_blocks gives each key its block's size n among all the run's records. It keeps only the blocks that touch the
 -- batch and hold two records or more, since only those can make a pair. A lookup also keeps its record's blocks of
 -- one, so that lookup.sql can report every key.
+-- In the run's first batch every record is the batch's, so every block is.
+-- when: NOT @lookup AND (SELECT batch FROM this_batch) = 0
 CREATE OR REPLACE TEMP TABLE key_blocks AS
-SELECT e.g, e.k, e.id, e.new, s.n
-FROM every_key AS e
-JOIN (SELECT b.g, b.k, COALESCE(u.n, b.n) AS n
-      FROM (SELECT g, k, COUNT(*) AS n FROM every_key GROUP BY g, k
-            HAVING (COUNT(*) > 1 OR @lookup) AND LOGICAL_OR(new)) AS b
-      LEFT JOIN block_size AS u USING (g, k)) AS s USING (g, k)
-WHERE s.n > 1 OR e.new;
+SELECT g, k, id, TRUE AS new, n FROM (SELECT g, k, id, COUNT(*) OVER (PARTITION BY g, k) AS n FROM every_key)
+WHERE n > 1;
+
+-- when: @lookup OR (SELECT batch FROM this_batch) > 0
+CREATE OR REPLACE TEMP TABLE key_blocks AS
+-- touched holds every record of each block that a key of the batch names. held is the number of records the run
+-- holds in the block.
+WITH touched AS (
+  SELECT e.g, e.k, e.id, COUNT(*) OVER (PARTITION BY e.g, e.k) AS held
+  FROM every_key AS e JOIN (SELECT DISTINCT g, k FROM made_keys WHERE id IN (SELECT id FROM fresh)) USING (g, k)
+)
+SELECT t.g, t.k, t.id, t.id IN (SELECT id FROM fresh) AS new, COALESCE(u.n, t.held) AS n
+FROM touched AS t LEFT JOIN block_size AS u USING (g, k)
+WHERE (t.held > 1 OR @lookup) AND (COALESCE(u.n, t.held) > 1 OR t.id IN (SELECT id FROM fresh));
 
 -- listed holds every pair that touches the batch and shares a block of fewer than @oversized records. bits has one
 -- bit set for each generator whose keys list the pair.

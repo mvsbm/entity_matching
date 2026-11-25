@@ -111,7 +111,7 @@ Most true pairs are like this: on train, the rules miss 6,355 of them, about nin
 
 ## In the code
 
-- `nayose/sql/score.sql`: the rules by name, in order (`rules`: each one's rank); 1. The rules (`rule_keys`, each rule's key of each record and how many records hold it; `batch_rule_pairs`, the join, the fuzzy tests and the first rule in order naming each pair, which `scored` keeps with every batch's pairs). A batch's records are joined against all the run's, so a build and an update run them alike
+- `nayose/sql/score.sql`: the rules by name, in order (`rules`: each one's rank); 1. The rules (`rule_keys`, each rule's key of each record; `rule_blocks`, every record of each rule key the batch holds, with how many records hold it; `batch_rule_pairs`, the join, the fuzzy tests and the first rule in order naming each pair, which `scored` keeps with every batch's pairs). A batch's records are joined against all the run's, so a build and an update run them alike
 - `nayose/sql/functions.sql`, 3. The rules' fuzzy tests: `near_name`, `near_company`, `near_address`, `near_phone`, each an equality first
 - `nayose/config.toml` `[score]`: `rules` (the rules a run uses, by name), `oversized` (a value this common is left out)
 - `nayose/sql/score.sql`, 6. The scores: every rule pair scored by the model too, and kept whatever its score

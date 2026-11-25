@@ -31,7 +31,7 @@ What a run costs, and how each figure is measured. BigQuery bills in one of two 
 | records | `records.sql` | O(Δ·L) + O(N) | each record of the batch is read and standardized; placeholders are counted over the whole run |
 | fit (a build) | `fit.sql`, `em.py` | O(n + P_em·K) + O(N + S·K) | EM learns on a fixed sample. u is counted exactly for the equality and one-edit levels (by value counts, never pair by pair) and sampled for the rest |
 | fit (an update) | `fit.sql` | O(N) + O(S·K) for a stale comparison | the build's model is kept; u is counted again exactly, and the file is sampled only when a comparison has gone stale |
-| score | `score.sql` | O(N·L) + O(Δ·b + C_Δ·K·L²) | every record's keys are made again, and kept as the key index; then the batch's blocks are joined and their pairs compared |
+| score | `score.sql` | O(Δ·L + N·L) + O(Δ·b + C_Δ·K·L²) | the batch's keys, and those of the records made again, join the key index; the index is scanned for the blocks the batch's keys name; then those blocks are joined and their pairs compared |
 | decide | `decide.sql` | O(D + N) | connected components over the match decisions; then every record placed |
 | match | `match.sql` | O(C + P·F) | a scan of the scored pairs; those kept are joined to their records |
 | lookup | `lookup.sql` | O(G) + O(G·b + C·K·L²) | the record's keys made alone; the key index read by them; the record scored against its blocks' records alone |
