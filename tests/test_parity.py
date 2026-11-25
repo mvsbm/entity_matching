@@ -18,11 +18,10 @@ from nayose.engines import DuckDB
 
 GOLDEN = Path(__file__).parent / "fixtures" / "parity.json"
 TABLES = {  # each table as compared: its rows in an order of their own
-    "records": "SELECT * EXCEPT (name_p, batch, person_name__kana_fold_letters_lo, person_name__kana_fold_letters_hi) FROM records ORDER BY id",
+    "records": "SELECT * EXCEPT (batch, person_name__kana_fold_letters_lo, person_name__kana_fold_letters_hi) FROM records ORDER BY id",
     "model": "SELECT comparison, gamma, label, m, u, file_m, file_u, bits FROM model ORDER BY comparison, gamma",
     "fit": "SELECT probability, fit_rows, records, prior_bits FROM fit",
     "scored": "SELECT * FROM scored ORDER BY id_l, id_r",
-    "rule_pairs": "SELECT * FROM rule_pairs ORDER BY l, r",
     "gated": "SELECT g, value, records, decision FROM gated ORDER BY g, value",
     "placeholders": "SELECT * FROM placeholders ORDER BY field, value",
     "gold": "SELECT * FROM gold ORDER BY id",

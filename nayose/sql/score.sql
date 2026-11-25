@@ -23,11 +23,10 @@
 --                   only its record's blocks (nayose.lookup). In any other job, it is 0.
 -- Writes:
 --   rule_keys and every_key   each record's keys, which are the index a lookup reads by key
---   rule_pairs                each pair a rule finds, with the first rule in order that finds it
 --   cands                     the pairs the batch's keys list, each with the keys that listed it (sources)
 --   gated                     each oversized block that touches the batch, its sample, and whether it was kept
 --   scored                    every pair kept
--- rule_pairs and scored hold every batch's pairs. Each batch adds the pairs that touch its records.
+-- scored holds every batch's pairs. Each batch adds the pairs that touch its records, a rule's pair with its rule.
 
 -- 0. The batch's records, the generators and the rules.
 CREATE OR REPLACE TEMP TABLE fresh AS SELECT id FROM records WHERE batch = (SELECT batch FROM this_batch);
@@ -44,13 +43,11 @@ SELECT g, name, name IN UNNEST(@keys) AS used FROM UNNEST([
 ]) AS name WITH OFFSET AS g;
 
 CREATE OR REPLACE TEMP TABLE rules AS
-SELECT i, rule, stage, rule IN UNNEST(@rules) AS used FROM UNNEST([
-  STRUCT(0 AS i, 'X1_CIF_PERSON_NAME' AS rule, 'exact' AS stage), STRUCT(1, 'X2_CIF_COMPANY_NAME', 'exact'),
-  STRUCT(2, 'X3_CIF_PHONE', 'exact'), STRUCT(3, 'X4_PERSON_NAME_ADDRCD_PHONE', 'exact'),
-  STRUCT(4, 'X5_COMPANY_NAME_ADDRCD_PHONE', 'exact'), STRUCT(5, 'F1_NAME~_ADDRCD_PHONE', 'fuzzy'),
-  STRUCT(6, 'F2_NAME~_ADDRESS~_PHONE', 'fuzzy'), STRUCT(7, 'F3_NAME~_CIF', 'fuzzy'), STRUCT(8, 'F4_NAME_ADDRCD_PHONE~', 'fuzzy'),
-  STRUCT(9, 'F5_COMPANY~_PHONE_POSTAL', 'fuzzy'), STRUCT(10, 'F6_COMPANY~_ADDRCD_PHONE', 'fuzzy'), STRUCT(11, 'F7_GIVEN_ADDRCD_PHONE', 'fuzzy')
-]);
+SELECT i, rule, rule IN UNNEST(@rules) AS used FROM UNNEST([
+  'X1_CIF_PERSON_NAME', 'X2_CIF_COMPANY_NAME', 'X3_CIF_PHONE', 'X4_PERSON_NAME_ADDRCD_PHONE',
+  'X5_COMPANY_NAME_ADDRCD_PHONE', 'F1_NAME~_ADDRCD_PHONE', 'F2_NAME~_ADDRESS~_PHONE', 'F3_NAME~_CIF',
+  'F4_NAME_ADDRCD_PHONE~', 'F5_COMPANY~_PHONE_POSTAL', 'F6_COMPANY~_ADDRCD_PHONE', 'F7_GIVEN_ADDRCD_PHONE'
+]) AS rule WITH OFFSET AS i;
 
 SELECT IF(COUNT(*) > 0, ERROR(CONCAT('config.toml [score]: no generator or rule is named ', STRING_AGG(x, ', '),
                                      '; name those score.sql lists')), 0)
@@ -83,8 +80,6 @@ SELECT i, k, id, n, id IN (SELECT id FROM fresh) AS new FROM (
   ) WHERE k IS NOT NULL AND i IN (SELECT i FROM rules WHERE used)
 );
 
-CREATE TABLE IF NOT EXISTS rule_pairs (l STRING, r STRING, rule STRING, stage STRING);
-
 CREATE OR REPLACE TEMP TABLE batch_rule_pairs AS
 WITH found AS (
   SELECT a.i, LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r
@@ -102,10 +97,8 @@ WITH found AS (
           WHEN 10 THEN near_company(x, y)                     -- F6_COMPANY~_ADDRCD_PHONE
           ELSE TRUE END
 )
-SELECT f.l, f.r, rules.rule, rules.stage
+SELECT f.l, f.r, rules.rule
 FROM (SELECT l, r, MIN(i) AS i FROM found GROUP BY l, r) AS f JOIN rules USING (i);
-
-INSERT INTO rule_pairs SELECT * FROM batch_rule_pairs;
 
 
 -- 2. The keys. Each generator makes a key for each record from one or more of its fields, joined by CHR(31). The

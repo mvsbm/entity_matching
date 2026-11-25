@@ -28,10 +28,10 @@
 CREATE TABLE IF NOT EXISTS records (
   id STRING, given_name STRING, any_name STRING, address STRING, address_code STRING, postal_code STRING,
   prefecture STRING, town_code STRING, city STRING, phone STRING, customer_id STRING, birth_date STRING,
-  kind_flag STRING, kind_name STRING, kind INT64, kind_p FLOAT64, kind_by STRING, name_p FLOAT64, kind_flagged BOOL,
-  full_name STRING, person_name STRING, company_name STRING, person_name__kana_fold STRING,
-  company_name__nfkc_strip_legal_form_kana_fold STRING, address__address STRING, postal_code__first3 STRING,
-  any_name__initial STRING, given_name__kana_fold STRING, address__address_first3 STRING,
+  kind INT64, kind_p FLOAT64, kind_by STRING, kind_flagged BOOL, full_name STRING, person_name STRING,
+  company_name STRING, person_name__kana_fold STRING, company_name__nfkc_strip_legal_form_kana_fold STRING,
+  address__address STRING, postal_code__first3 STRING, any_name__initial STRING, given_name__kana_fold STRING,
+  address__address_first3 STRING,
   person_name__kana_fold_long_vowel STRING, person_name__kana_fold_one_byte STRING,
   company_name__nfkc_strip_legal_form_kana_fold_one_byte STRING, address__address_one_byte_hash STRING,
   person_name__kana_fold_long_vowel_last3 STRING, person_name__kana_fold_letters_lo INT64,
@@ -165,11 +165,10 @@ decided AS (
   FROM sure
 )
 SELECT
-  * EXCEPT (written, logit, flag, name_p, sure_kind, kind, leaning),
+  * EXCEPT (kind_flag, kind_name, written, logit, flag, name_p, sure_kind, kind, leaning),
   kind,
   IF(kind_name IS NULL, NULL, leaning) AS kind_p,  -- NULL if the record has no name to judge.
   IF(sure_kind = 0 AND flag IS NOT NULL, 'flag', 'engine') AS kind_by,
-  name_p,
   (sure_kind <> 0 AND flag IS NOT NULL AND sure_kind <> flag) AS kind_flagged,
   -- The side tells section 4 which fields keep a name.
   CASE WHEN kind = 2 THEN 'company'
@@ -311,7 +310,7 @@ CREATE OR REPLACE TEMP TABLE redone AS SELECT id FROM records WHERE FALSE;
 -- when: EXISTS (SELECT 1 FROM redone)
 CREATE OR REPLACE TEMP TABLE redone_fields AS
 SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
-       birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name,
+       birth_date, kind, kind_p, kind_by, kind_flagged, full_name, person_name,
        company_name, batch
 FROM records WHERE id IN (SELECT id FROM redone);
 
@@ -319,7 +318,7 @@ FROM records WHERE id IN (SELECT id FROM redone);
 -- when: NOT EXISTS (SELECT 1 FROM redone)
 CREATE OR REPLACE TEMP TABLE redone_fields AS
 SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
-       birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name,
+       birth_date, kind, kind_p, kind_by, kind_flagged, full_name, person_name,
        company_name, batch
 FROM records WHERE FALSE;
 
@@ -331,12 +330,12 @@ INSERT INTO records
 -- made holds the batch's records and the run's records made again, with their fields but not yet their copies.
 WITH made AS (
   SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
-         birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name,
+         birth_date, kind, kind_p, kind_by, kind_flagged, full_name, person_name,
          company_name, (SELECT batch FROM this_batch) AS batch
   FROM sided
   UNION ALL
   SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
-         birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name,
+         birth_date, kind, kind_p, kind_by, kind_flagged, full_name, person_name,
          company_name, batch
   FROM redone_fields
 ),
@@ -407,7 +406,7 @@ lettered AS (
 )
 SELECT
   id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
-  birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name, company_name,
+  birth_date, kind, kind_p, kind_by, kind_flagged, full_name, person_name, company_name,
   person_name__kana_fold, company_name__nfkc_strip_legal_form_kana_fold, address__address, postal_code__first3,
   any_name__initial, given_name__kana_fold, address__address_first3, person_name__kana_fold_long_vowel,
   person_name__kana_fold_one_byte, company_name__nfkc_strip_legal_form_kana_fold_one_byte,
