@@ -49,7 +49,7 @@ def test_what_the_reader_fixes_sets_aside_and_reads_as_missing_is_as_recorded(tm
     blank_id["CONT_ID"] = "  "  # no ID: set aside
     pd.DataFrame([*rows, blank_id], columns=COLUMNS).astype("string").to_parquet(tmp_path / "in.parquet", index=False)
     new, engine = nayose_records(tmp_path / "in.parquet")
-    said = digest(new.drop(columns=["name_p", "batch", "person_name__kana_fold_letters_lo", "person_name__kana_fold_letters_hi"]).sort_values("id", ignore_index=True))
+    said = digest(new.drop(columns=["batch", "person_name__kana_fold_letters_lo", "person_name__kana_fold_letters_hi"]).sort_values("id", ignore_index=True))
     if os.environ.get("NAYOSE_PARITY_WRITE"):
         (ROOT / "tests" / "fixtures" / "expected.json").write_text(json.dumps({**EXPECTED, "handmade_records": said}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     assert said == json.loads((ROOT / "tests" / "fixtures" / "expected.json").read_text(encoding="utf-8"))["handmade_records"]

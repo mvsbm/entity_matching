@@ -121,7 +121,7 @@ flowchart TB
   match["match.sql (the match job): the pairs at a threshold,<br/>less those people said differ<br/>O(C + P·F)"]
   t_records[("records · this_batch · set_aside · placeholders")]
   t_fit[("fit_sample · fit_prior · em_patterns · u_outside · u_counted<br/>u_near · u_sampled · u_filled · model · fit")]
-  t_score[("rule_keys · every_key (the key index)<br/>rule_pairs · cands · gated · scored")]
+  t_score[("rule_keys · every_key (the key index)<br/>cands · gated · scored")]
   t_decide[("decisions · gold")]
   t_report[("report_counts · report_fields · report_scores<br/>report_patterns · report_keys · report_clusters")]
   t_matched[("matched")]
@@ -186,7 +186,7 @@ because in a bigger file a field agrees by chance less often. The `model` table 
 
 **score.sql · `O(Δ·b + C·K·L²) + O(N·L)`.** The batch's records are scored against all of the run's.
 
-1. The rules, in order, give the certain pairs (`rule_pairs`). A rule ignores a key value held by `oversized` records
+1. The rules, in order, give the certain pairs (`batch_rule_pairs`). A rule ignores a key value held by `oversized` records
    or more.
 2. The 22 key generators list the pairs worth comparing (`every_key`). Some match a value exactly, some a value with
    one character deleted, and some a name's reading.
@@ -209,7 +209,7 @@ The run's tables, those that outlive a job:
 |---|---|
 | records | `records` (a record a row: its fields, kind, copies and `batch`), `this_batch`, `set_aside`, `placeholders`, `name_weights` |
 | fit | `fit_sample`, `fit_prior`, `em_patterns`, `u_outside`, `u_counted`, `u_near`, `u_sampled`, `u_filled`, `model`, `fit` (λ, sizes, notes, and `fitted`: the model whole, which an update starts from) |
-| score | `rule_keys` and `every_key` (each record's keys: the index lookups read), `rule_pairs`, `cands`, `gated`, `scored` (each pair once: `id_l`, `id_r`, its levels, `match_weight`, `match_probability`, `rule`, `sources`) |
+| score | `rule_keys` and `every_key` (each record's keys: the index lookups read), `cands`, `gated`, `scored` (each pair once: `id_l`, `id_r`, its levels, `match_weight`, `match_probability`, `rule`, `sources`) |
 | decide | `decisions` (every decision that changed its pair, the latest flagged), `gold` (each record's `cluster_id`, its kind and its customer's) |
 | report | `report_counts`, `report_fields`, `report_scores`, `report_patterns`, `report_keys`, `report_clusters` |
 | match | `matched` (on BigQuery; here the job writes it to a file) |
@@ -246,7 +246,7 @@ names the latest. An update (`nayose.update`) runs the build's stages on a new b
   again only once its drift outweighs its sampling error (`em.stale`). That test runs on the exact counts first
   (`resampled`, a Python function like `fit_model`), so an update with none stale draws no sample at all, and
   `u_sampled` keeps the last sample drawn, which nothing reads until one is drawn again.
-- **score**: only the pairs touching the batch are scored, and they are added to `scored` and `rule_pairs`.
+- **score**: only the pairs touching the batch are scored, and they are added to `scored`.
 - **decide**: the entities are made again.
 
 An update costs `O(Δ·(L + b) + C_Δ·K·L²)`, plus `O(N)` scans of the run's records and keys.
