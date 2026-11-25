@@ -198,7 +198,7 @@ because in a bigger file a field agrees by chance less often. The `model` table 
 6. The scores: each kept pair gets its level of each comparison and its weight (`weight_of`). `scored` keeps every
    pair from `keep_from` bits up, and every rule pair.
 
-Making every record's keys again is the `O(N·L)` term. Nothing merges here.
+The key index is kept: a job makes the keys of its batch's records and of the records made again, and those join the index once the records made again have left it. Reading the index for the blocks the batch's keys name is the `O(N·L)` term, a scan. Nothing merges here.
 
 **decide.sql · `O(D + N)`**, then **report.sql · `O(N·F + C)`**: the entities ([6](#6--decisions)), then the run's
 numbers for `report.txt` (`report_*` tables), with no record's value in them.
@@ -246,7 +246,7 @@ names the latest. An update (`nayose.update`) runs the build's stages on a new b
   again only once its drift outweighs its sampling error (`em.stale`). That test runs on the exact counts first
   (`resampled`, a Python function like `fit_model`), so an update with none stale draws no sample at all, and
   `u_sampled` keeps the last sample drawn, which nothing reads until one is drawn again.
-- **score**: only the pairs touching the batch are scored, and they are added to `scored`.
+- **score**: the keys of the batch and of the records made again join the key index, and only the pairs touching the batch are scored, and added to `scored`.
 - **decide**: the entities are made again.
 
 An update costs `O(Δ·(L + b) + C_Δ·K·L²)`, plus `O(N)` scans of the run's records and keys.

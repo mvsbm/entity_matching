@@ -269,7 +269,7 @@ def score(engine, lookup: bool = False, scratch: set | None = None, until: str |
 
     With `lookup`, every candidate is scored, whatever its points, in `scratch`'s temporary tables, up to the table
     `until` makes; `outside` is how many of the run's records the records table doesn't hold (a lookup's holds its
-    blocks' records alone). O(Δ·b + C·K·L²), plus O(N·L) for the keys.
+    blocks' records alone). O(Δ·b + C·K·L²), plus O(Δ·L) for the keys and a scan of the key index.
     """
     stage(engine, "functions", scratch=scratch)
     stage(engine, "score", scratch=scratch, until=until, **(values_of("score", lookup=lookup) | {"outside": outside}))
@@ -316,9 +316,9 @@ def lookup(engine, record: str | None = None, values: dict | None = None, at_lea
 def asked_keys(engine, record: str | None, values: dict | None, asked_id: str) -> dict[str, set]:
     """Return the keys of the record asked about, made from it alone: its every_key and rule_keys rows (step 1)."""
     with engine.scratch():
-        score_in_scratch(engine, record, values, [asked_id] if record is not None else [], until="every_key")
-        return {"every_key": set(engine.rows("SELECT g, k FROM every_key WHERE id = @id", {"id": asked_id})),
-                "rule_keys": set(engine.rows("SELECT i, k FROM rule_keys WHERE id = @id", {"id": asked_id}))}
+        score_in_scratch(engine, record, values, [asked_id] if record is not None else [], until="made_keys")
+        return {"every_key": set(engine.rows("SELECT g, k FROM made_keys WHERE id = @id", {"id": asked_id})),
+                "rule_keys": set(engine.rows("SELECT i, k FROM made_rule_keys WHERE id = @id", {"id": asked_id}))}
 
 
 def read_index(engine, keys: dict[str, set], record: str | None, asked_id: str, big: int) -> tuple[set, dict]:

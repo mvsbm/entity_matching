@@ -8,7 +8,7 @@
 --
 -- Reads: fresh (the record asked about), batch_scored (score.sql, which scores every candidate
 -- of a lookup whatever keep_from says), gold (each stored record's entity), records, model (each level's label),
--- generators, rules, key_blocks, gated, rule_keys.
+-- generators, rules, key_blocks, gated, rule_blocks.
 -- Values:
 --   @at_least      an entity with this many points or more is shown
 --   @likely_from   a pair with this many points or more, whose names were compared, counts as likely
@@ -83,5 +83,5 @@ FROM generators LEFT JOIN normal USING (g) LEFT JOIN big USING (g)
 WHERE used
 UNION ALL
 SELECT 100 + r.i, CONCAT('rule ', r.rule), 0, FALSE, k.n, NULL
-FROM rules AS r JOIN rule_keys AS k ON k.i = r.i
+FROM rules AS r JOIN rule_blocks AS k ON k.i = r.i
 WHERE r.used AND k.id IN (SELECT id FROM fresh) AND k.n >= @oversized;

@@ -131,3 +131,22 @@ def test_a_build_runs_on_a_file_where_a_compared_field_is_never_filled(tmp_path,
     assert engine.value("SELECT COUNT(*) FROM gold") == len(df)
     bits = dict(engine.rows("SELECT comparison, MAX(ABS(bits)) FROM model WHERE comparison IN ('birth', 'cif') GROUP BY 1"))
     assert bits == {"birth": 0.0, "cif": 0.0}  # learned nothing about them: every level weighs nothing
+
+
+def test_an_update_leaves_the_key_index_a_build_of_the_same_records_makes(tmp_path, population):
+    df = population.df
+    first, rest = df.iloc[: len(df) // 2].copy(), df.iloc[len(df) // 2:].copy()
+    first.loc[first.index[:2], "PHONE_NUM_4"] = "4321"  # the batch makes this phone a placeholder: both made again
+    many = df.head(70).assign(CONT_ID=[f"9{i:09d}" for i in range(70)], PHONE_NUM_4="4321", CIF_ID=None)
+    first.to_parquet(tmp_path / "first.parquet", index=False)
+    pd.concat([rest, many]).to_parquet(tmp_path / "batch.parquet", index=False)
+    pd.concat([first, rest, many]).to_parquet(tmp_path / "all.parquet", index=False)
+    updated, built = DuckDB(), DuckDB()
+    nayose.build(updated, [tmp_path / "first.parquet"])
+    nayose.update(updated, [tmp_path / "batch.parquet"])
+    nayose.build(built, [tmp_path / "all.parquet"])
+    remade = updated.value("SELECT COUNT(*) FROM records WHERE id IN UNNEST(@ids) AND phone IS NULL",
+                           {"ids": list(first["CONT_ID"].head(2))})
+    index = lambda engine: {t: engine.con.execute(f"SELECT * FROM {t} ORDER BY ALL").fetchall()
+                            for t in ("every_key", "rule_keys")}
+    assert remade == 2 and index(updated) == index(built)
