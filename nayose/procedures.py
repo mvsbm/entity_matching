@@ -4,7 +4,19 @@ A procedure is its job's stages' statements in order, as the SQL files hold them
 run's tables named with its dataset (in_dataset), each @value a declared variable, each -- when: an IF, decided at
 the deploy where it reads only a declared TRUE or FALSE (folded) and asked once where IFs ask it again
 (queried_once). deploy/deploy.py runs what these return; the engines (nayose.engines) run the statements here and
-on DuckDB alike.
+on DuckDB alike. For example, score.sql's
+
+    -- when: NOT @lookup AND EXISTS (SELECT 1 FROM this_batch WHERE batch = 0)
+    CREATE OR REPLACE TEMP TABLE rule_blocks AS ... FROM rule_keys ...
+
+is in the build procedure, whose v_lookup is FALSE (values_of), as
+
+    SET v_condition_3 = (EXISTS(SELECT 1 FROM this_batch WHERE batch = 0));   asked once: key_blocks asks it too,
+    IF v_condition_3 THEN                                                        and the next two ask NOT it
+    CREATE OR REPLACE TEMP TABLE rule_blocks AS ... FROM `project.dataset`.rule_keys ...;
+    END IF
+
+(this_batch is the job's temporary table, so it keeps no dataset).
 """
 import re
 from pathlib import Path
@@ -55,6 +67,9 @@ def functions(dataset: str) -> list[str]:
     return out
 
 
+# A new job reaches, besides JOBS: values_of for a new stage (nayose/__init__.py), which the fingerprint hashes for
+# every stage named here; its local job and CLI command (nayose/__init__.py, nayose/__main__.py); deploy/run.py's
+# call_procedure, for the files it loads and the arguments it passes; and tests/test_deploy.py.
 # Each job BigQuery runs as a procedure of the run's dataset: its stages in order, each with what values_of() is told.
 # There is no lookup procedure: nayose.lookup runs its own statements, each step in a session of its own
 # (BigQuery.scratch), writing temporary tables alone.
@@ -157,7 +172,9 @@ def in_procedure(sql: str, dataset: str, temp: set, known: dict | None = None) -
     """
     sql = in_dataset(VALUE_OR_NOT_CODE.sub(as_variable, sql), dataset, temp)
     guard = nayose.when(sql)  # a comment, which in_dataset leaves: its tables are named here
-    if guard:
+    if guard:  # its -- when: line goes: the IF says it, where the deploy hasn't decided it
+        lead = re.match(nayose.LEAD, sql, re.S)["lead"]
+        sql = re.sub(r"^[ \t]*--\s*when:.*\n", "", lead, count=1, flags=re.M | re.I) + sql[len(lead):]
         guard = folded(guard, known or {})
         if guard is False:
             return None
@@ -174,8 +191,9 @@ def queried_once(body: list[str]) -> tuple[list[str], list[str]]:
     variables (condition_1, ...) that hold the answers, which the procedure declares.
 
     BigQuery runs each IF's condition as a query of its own, about a second. A condition and NOT it are one question.
-    It is asked once only where no statement from its first IF to its last writes a table it reads (written): the
-    variable then holds what each query would have found. Its first IF becomes SET v_condition_n = (condition), and
+    It is asked once only where no statement from its first IF to its last (the first's own statement in, the
+    last's out, as it runs after its condition) writes a table it reads (writes): the variable then holds what each
+    query would have found. Its first IF becomes SET v_condition_n = (condition), and
     each IF reads the variable, or NOT it.
     """
     places: dict[str, list[tuple[int, bool]]] = {}
@@ -187,7 +205,7 @@ def queried_once(body: list[str]) -> tuple[list[str], list[str]]:
     names = []
     for condition, at in places.items():
         reads = {t.name for t in sqlglot.parse_one(f"SELECT {condition}", read="bigquery").find_all(exp.Table)}
-        if len(at) < 2 or any((w := written(sql)) is None or w & reads for sql in body[at[0][0]:at[-1][0]]):
+        if len(at) < 2 or any((w := writes(sql)) is None or w & reads for sql in body[at[0][0]:at[-1][0]]):
             continue
         names.append(f"condition_{len(names) + 1}")
         for k, (i, negated) in enumerate(at):
@@ -197,15 +215,17 @@ def queried_once(body: list[str]) -> tuple[list[str], list[str]]:
 
 
 WRITES = (exp.Create, exp.Insert, exp.Delete, exp.Update, exp.Merge, exp.Drop, exp.Alter, exp.TruncateTable)
+ASKED = re.compile(r"SET v_\w+ = \(.*\);\n")  # the SET queried_once puts before an IF: a variable written, no table
 
 
-def written(sql: str) -> set[str] | None:
-    """Return the names of the tables a procedure's statement writes, or None for a statement this can't read (a CALL,
-    a SET), which may write any. A query writes none."""
+def writes(sql: str) -> set[str] | None:
+    """Return the names of the tables a procedure's statement writes, or None for a statement this can't read (a CALL),
+    which may write any. A query, and a SET, write none."""
+    sql = sql[m.end():] if (m := ASKED.match(sql)) else sql
     m = IF_BLOCK.fullmatch(sql)
     out = set()
     for tree in sqlglot.parse(m[2] if m else sql, read="bigquery"):
-        if tree is None or isinstance(tree, (exp.Semicolon, exp.Query)):  # nothing (a comment after a ;), or a read
+        if tree is None or isinstance(tree, (exp.Semicolon, exp.Query, exp.Set)):  # nothing (a comment after ;), a read
             continue
         if not isinstance(tree, WRITES):
             return None
