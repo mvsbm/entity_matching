@@ -8,10 +8,10 @@
 -- Reads: given, the job's table of id_l, id_r, decision and why (empty for a build), records, and decisions if the
 -- run has any.
 -- Values: none. A blank value is one that blank() finds (functions.sql): spaces alone, of any width.
--- Writes: decisions (each decision that changed its pair's standing, with its batch, and each pair's latest flagged)
--- and gold (each record's entity, what joined it, its kind and its customer's kind).
+-- Writes: decisions (each decision that changed its pair's standing, with its round, and each pair's latest flagged)
+-- and gold (each record's entity, what joined it, its kind and its entity's kind). A round is one call of this job.
 
-CREATE TABLE IF NOT EXISTS decisions (id_l STRING, id_r STRING, decision STRING, why STRING, batch INT64, latest BOOL);
+CREATE TABLE IF NOT EXISTS decisions (id_l STRING, id_r STRING, decision STRING, why STRING, round INT64, latest BOOL);
 
 -- 1. given_text reads what people said, each value as text. A blank value (spaces of any width) is missing, and the
 --    decision is put in lower case. An ID that a spreadsheet saved as a number (151 for 0000000151) then names no
@@ -53,22 +53,22 @@ WHERE id NOT IN (SELECT id FROM records);
 
 
 -- 2. decisions keeps the run's decisions and adds each new one that changes its pair's latest decision, so a table
---    given twice adds nothing. The new ones get the next batch number. Each pair's last decision is flagged latest.
+--    given twice adds nothing. The new ones get the next round's number. Each pair's last decision is flagged latest.
 CREATE OR REPLACE TABLE decisions AS
 WITH stored_and_said AS (
-  SELECT id_l, id_r, decision, why, batch FROM decisions
+  SELECT id_l, id_r, decision, why, round FROM decisions
   UNION ALL
-  SELECT s.id_l, s.id_r, s.decision, s.why, (SELECT COALESCE(MAX(batch), -1) + 1 FROM decisions)
+  SELECT s.id_l, s.id_r, s.decision, s.why, (SELECT COALESCE(MAX(round), -1) + 1 FROM decisions)
   FROM said AS s
   WHERE NOT EXISTS (SELECT 1 FROM decisions AS d
                     WHERE d.latest AND d.id_l = s.id_l AND d.id_r = s.id_r AND d.decision = s.decision)
 )
-SELECT *, ROW_NUMBER() OVER (PARTITION BY id_l, id_r ORDER BY batch DESC) = 1 AS latest FROM stored_and_said;
+SELECT *, ROW_NUMBER() OVER (PARTITION BY id_l, id_r ORDER BY round DESC) = 1 AS latest FROM stored_and_said;
 
 
 -- 3. Each record is its own entity until the pairs whose latest decision is match join it to others. Only pairs of
 --    this run's records join, because a decision kept from an earlier run may name records the run no longer holds.
---    resolved_by is review if people's decisions put the record with another record. customer_kind, the entity's
+--    resolved_by is review if people's decisions put the record with another record. entity_kind, the entity's
 --    kind, is 2 (company) if any of its records is a company. It is 1 (person) if none of its records leans company
 --    (kind_p under 0.5) and one is a person, and 0 (not sure) otherwise.
 -- shortcut: entities_of takes every match decision in one call, a few MB for each 100,000 decisions. Past millions of
@@ -87,16 +87,16 @@ FROM asked, UNNEST(JSON_QUERY_ARRAY(entities_of(asked.pairs))) AS e;
 
 CREATE OR REPLACE TABLE gold CLUSTER BY id AS  -- a lookup reads gold by its records' IDs
 WITH placed AS (
-  SELECT rec.id, COALESCE(j.entity, rec.id) AS cluster_id, rec.kind, rec.kind_p, rec.kind_by, rec.kind_flagged
+  SELECT rec.id, COALESCE(j.entity, rec.id) AS entity, rec.kind, rec.kind_p, rec.kind_by, rec.kind_flagged
   FROM records AS rec LEFT JOIN joined AS j USING (id)
 ),
-entity AS (
-  SELECT cluster_id, COUNT(*) AS n,
+entities AS (
+  SELECT entity, COUNT(*) AS n,
          CASE WHEN LOGICAL_OR(kind = 2) THEN 2
               WHEN COALESCE(MAX(kind_p), 0) < CAST(0.5 AS FLOAT64) AND LOGICAL_OR(kind = 1) THEN 1
-              ELSE 0 END AS customer_kind
-  FROM placed GROUP BY cluster_id
+              ELSE 0 END AS entity_kind
+  FROM placed GROUP BY entity
 )
-SELECT p.id, p.cluster_id, IF(e.n > 1, 'review', NULL) AS resolved_stage, IF(e.n > 1, 'review', NULL) AS resolved_by,
-       p.kind, p.kind_p, p.kind_by, p.kind_flagged, e.customer_kind
-FROM placed AS p JOIN entity AS e USING (cluster_id);
+SELECT p.id, p.entity, IF(e.n > 1, 'review', NULL) AS resolved_by,
+       p.kind, p.kind_p, p.kind_by, p.kind_flagged, e.entity_kind
+FROM placed AS p JOIN entities AS e USING (entity);

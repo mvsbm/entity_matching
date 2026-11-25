@@ -13,9 +13,10 @@
 -- locally, and the deployed procedure wraps the statement in IF … END IF.
 --
 -- Reads: records, levels (functions.sql), and with @refit false the model given (fit).
--- Values: @fit_rows, @seed, @fit_u_max_pairs, @u_max_pairs and @settings come from config.toml [fit]. @fit_rows is the
--- sample's size, in records. @seed seeds the hash that draws u's sampled pairs. @fit_u_max_pairs and @u_max_pairs are
--- about how many pairs u samples on the sample and on the file. @settings is all of [fit] as JSON, for fit_model.
+-- Values: @fit_records, @seed, @fit_u_max_pairs, @u_max_pairs and @settings come from config.toml [fit]. @fit_records
+-- is the sample's size, in records. @seed seeds the hash that draws u's sampled pairs. @fit_u_max_pairs and
+-- @u_max_pairs are about how many pairs u samples on the sample and on the file. @settings is all of [fit] as JSON,
+-- for fit_model.
 -- @refit is false for a build given a model, which learns none.
 -- Writes:
 --   compared     a view of the columns that the fit and the scores read of a record
@@ -24,13 +25,13 @@
 --   fit          λ (probability), the sample's size, the file's size, prior_bits (the prior in bits at the file's
 --                size), the notes the report reads, and fitted (fit_model's whole answer)
 
-CREATE TABLE IF NOT EXISTS fit (probability FLOAT64, fit_rows INT64, records INT64, prior_bits FLOAT64, notes STRING,
+CREATE TABLE IF NOT EXISTS fit (probability FLOAT64, fit_records INT64, records INT64, prior_bits FLOAT64, notes STRING,
                                 fitted STRING);
 
 
 -- 1. compared holds the columns that the comparisons, the near-certain rules and EM's keys read. Only these columns
 --    are read, so only these are billed. The sample takes postal areas whole, in the order of their hash, until it
---    holds @fit_rows records, and cuts the last area by its records' hash. So a household's records stay together,
+--    holds @fit_records records, and cuts the last area by its records' hash. So a household's records stay together,
 --    but in that last area, and a smaller sample is part of a bigger one.
 CREATE OR REPLACE VIEW compared AS
 SELECT
@@ -44,11 +45,11 @@ FROM records;
 -- A build given a model (@refit false) learns none, so its sample is empty.
 CREATE OR REPLACE TEMP TABLE fit_sample AS
 SELECT compared.* FROM compared
-JOIN (SELECT id FROM records WHERE @refit ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_rows)
+JOIN (SELECT id FROM records WHERE @refit ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_records)
   USING (id);
 
 
--- 2. λ is how likely two random records are one customer. fit_model estimates it from prior_pairs, the pairs that
+-- 2. λ is how likely two random records are one entity. fit_model estimates it from prior_pairs, the pairs that
 --    any of the near-certain rules find in the sample, each pair counted once. Each rule's own count is kept too,
 --    because a rule that finds no pair in the sample is skipped, and the report names it.
 --    The near-certain rules are score.sql's X1, X2 and X4. X3 (customer ID and phone) and X5 (company name, address
@@ -99,7 +100,7 @@ FROM (
 GROUP BY session, name, company, address, phone, cif, birth;
 
 
--- 4. u is how often two different customers land in a level. It is counted on the sample, which the model is
+-- 4. u is how often two different entities land in a level. It is counted on the sample, which the model is
 --    learned with, and on the file, which the scores use. The two differ because in a bigger file, a field whose
 --    values grow with the file agrees by chance less often. A comparison's equality levels before its first fuzzy
 --    level are counted exactly, from how many records hold each value, never pair by pair. So is the one-edit level
@@ -185,7 +186,7 @@ FROM (
 )
 GROUP BY scope, comparison, label;
 
--- 4c. u_near counts the one-edit level ('one digit off') that follows equality for phone, cif and birth. It counts
+-- 4c. u_one_edit counts the one-edit level ('one digit off') that follows equality for phone, cif and birth. It counts
 --     by keys, never pair by pair. Two values of one length that differ by one substitution share exactly one key,
 --     the value without its i-th character, together with i. For cif and birth, Damerau–Levenshtein also counts two
 --     swapped neighbours as one edit. Two such values share exactly one swap key, the value with its i-th and
@@ -201,7 +202,7 @@ UNION ALL SELECT scope, 'cif', customer_id, COUNT(*), LENGTH(customer_id)
 UNION ALL SELECT scope, 'birth', birth_date, COUNT(*), LENGTH(birth_date)
           FROM u_records WHERE birth_date IS NOT NULL GROUP BY scope, birth_date;
 
-CREATE OR REPLACE TEMP TABLE u_near AS
+CREATE OR REPLACE TEMP TABLE u_one_edit AS
 WITH substituted AS (
   SELECT scope, comparison, SUM(DIV(s * s - ss, 2)) AS pairs
   FROM (SELECT scope, comparison, SUM(n) AS s, SUM(n * n) AS ss FROM u_values, UNNEST(GENERATE_ARRAY(1, len)) AS i
@@ -272,7 +273,7 @@ FROM (  -- one row per scope and comparison. counted_whole is TRUE if all its le
          COALESCE(c.pairs > 0 AND one_edit.pairs > 0 AND c.pairs + one_edit.pairs < o.pairs, FALSE) AS counted_whole
   FROM u_outside AS o
   LEFT JOIN u_counted AS c ON c.scope = o.scope AND c.comparison = o.comparison AND c.label = 'exact'
-  LEFT JOIN u_near AS one_edit ON one_edit.scope = o.scope AND one_edit.comparison = o.comparison
+  LEFT JOIN u_one_edit AS one_edit ON one_edit.scope = o.scope AND one_edit.comparison = o.comparison
 )
 GROUP BY scope;
 
@@ -328,7 +329,7 @@ CREATE OR REPLACE TEMP TABLE learned AS
 SELECT fit_model(TO_JSON_STRING(STRUCT(
   (SELECT ARRAY_AGG(t) FROM levels AS t) AS levels, (SELECT ARRAY_AGG(t) FROM fit_prior AS t) AS prior,
   (SELECT ARRAY_AGG(t) FROM em_patterns AS t) AS patterns, (SELECT ARRAY_AGG(t) FROM u_outside AS t) AS outside,
-  (SELECT ARRAY_AGG(t) FROM u_counted AS t) AS counted, (SELECT ARRAY_AGG(t) FROM u_near AS t) AS near,
+  (SELECT ARRAY_AGG(t) FROM u_counted AS t) AS counted, (SELECT ARRAY_AGG(t) FROM u_one_edit AS t) AS one_edit,
   (SELECT ARRAY_AGG(t) FROM u_sampled AS t) AS sampled, (SELECT ARRAY_AGG(t) FROM u_filled AS t) AS filled,
   (SELECT ARRAY_AGG(t) FROM u_plan AS t) AS plan
 )), @settings, IF(@refit, NULL, (SELECT fitted FROM fit))) AS out;
@@ -337,7 +338,7 @@ CREATE OR REPLACE TABLE model AS
 SELECT
   CAST(JSON_VALUE(lv, '$.position') AS INT64) AS position, JSON_VALUE(lv, '$.comparison') AS comparison,
   CAST(JSON_VALUE(lv, '$.gamma') AS INT64) AS gamma, JSON_VALUE(lv, '$.label') AS label,
-  JSON_VALUE(lv, '$.kind') AS kind,
+  JSON_VALUE(lv, '$.agreement') AS agreement,
   CAST(JSON_VALUE(lv, '$.m') AS FLOAT64) AS m, CAST(JSON_VALUE(lv, '$.u') AS FLOAT64) AS u,
   CAST(JSON_VALUE(lv, '$.file_m') AS FLOAT64) AS file_m, CAST(JSON_VALUE(lv, '$.file_u') AS FLOAT64) AS file_u,
   CAST(JSON_VALUE(lv, '$.bits') AS FLOAT64) AS bits
@@ -345,7 +346,7 @@ FROM learned, UNNEST(JSON_QUERY_ARRAY(out, '$.levels')) AS lv;
 
 CREATE OR REPLACE TABLE fit AS
 SELECT CAST(JSON_VALUE(out, '$.probability') AS FLOAT64) AS probability,
-       CAST(JSON_VALUE(out, '$.fit_rows') AS INT64) AS fit_rows,
+       CAST(JSON_VALUE(out, '$.fit_records') AS INT64) AS fit_records,
        CAST(JSON_VALUE(out, '$.records') AS INT64) AS records,
        CAST(JSON_VALUE(out, '$.prior_bits') AS FLOAT64) AS prior_bits, JSON_QUERY(out, '$.notes') AS notes, out AS fitted
 FROM learned;

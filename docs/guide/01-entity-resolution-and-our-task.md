@@ -21,23 +21,23 @@ The work splits into two questions.
 
 **Entity matching** asks: *are these two records the same person?* It looks at one pair at a time and answers yes or no, or gives a probability.
 
-**Entity resolution** asks: *across the whole file, which records belong to the same person?* Its answer is a set of groups, one per person or company.
+**Entity resolution** asks: *across the whole file, which records belong to the same person?* Its answer is the entities, one per person or company, each a set of records.
 
 Matching is one step inside resolution. Resolution adds two jobs of its own:
 
 1. **Choosing which pairs to compare.** A file of 10,000 records contains 50 million pairs. Comparing all of them is too slow, so resolution first picks a short list of likely pairs.
-2. **Turning answers about pairs into consistent groups.** Suppose matching says A and B are the same person, and so are B and C. Then A, B and C must be one group, even if A and C look nothing alike.
+2. **Turning answers about pairs into consistent entities.** Suppose matching says A and B are the same person, and so are B and C. Then A, B and C must be one entity, even if A and C look nothing alike.
 
 | | Entity matching | Entity resolution |
 |---|---|---|
 | Question | are these two records the same entity? | which records belong together? |
 | Looks at | one pair | the whole file |
-| Answer | yes / no, or a probability | groups of records, one per entity |
-| In this repo | `score.sql` (6. The scores), each comparison's level from `functions.sql` (`gamma_name` and the others) | `score.sql`'s keys (2. The keys), then its scores, then connected components over people's match decisions (`decide.sql`, `entities_of` in `nayose/entities.py`; the benchmark groups with the same function) |
+| Answer | yes / no, or a probability | the entities, each a set of records |
+| In this repo | `score.sql` (6. The scores), each comparison's level from `functions.sql` (`gamma_name` and the others) | `score.sql`'s keys (2. The keys), then its scores, then connected components over people's match decisions (`decide.sql`, `entities_of` in `nayose/entities.py`; the benchmark makes its entities with the same function) |
 
 The same problem goes by other names. *Deduplication* finds duplicates inside one file, which is our case. *Record linkage* connects records across two files. Linking records to a master list is a third variant.
 
-**In short:** matching judges pairs; resolution builds people.
+**In short:** matching judges pairs; resolution builds entities.
 
 ## How has this been solved before?
 
@@ -49,7 +49,7 @@ Research on the problem goes back more than sixty years. Four ideas shape this r
 
 **Learning from labelled examples.** From the 2000s on, researchers trained classifiers on pairs that people had labelled "match" or "not a match". Magellan (2016) packaged this into a toolkit. The `dedupe` library asks a person to label only the most useful pairs. DeepMatcher (2018) brought in deep learning and found it helps most with messy text, but not with tidy records like ours. Ditto (2020) used pre-trained language models and needed about half as many labels as earlier methods.
 
-**Measuring uncertainty about whole groups.** Bayesian methods treat the true people as unknowns, so they can say how sure we are about each grouping. Olivier Binette and Rebecca Steorts (2022) review this work, and the field as a whole.
+**Measuring uncertainty about whole entities.** Bayesian methods treat the true people as unknowns, so they can say how sure we are about each entity. Olivier Binette and Rebecca Steorts (2022) review this work, and the field as a whole.
 
 ## How is it done in practice?
 
@@ -69,7 +69,7 @@ We find duplicates within one file of Japanese customer records. Six things make
 
 - **One name, several katakana spellings.** Voicing marks get lost (ガ becomes カ), small kana are typed full-size (ッ becomes ツ), and long vowels are spelled in different ways (ー, ウ or オ). Some systems write names in half-width katakana (ｻﾄｳ) or with a space between surname and given name. On top of that come ordinary typos: a wrong or dropped character.
 - **Addresses come in many formats.** One address can be typed as 1丁目3番17号, as 1-3-17, or with full-width digits and a building name.
-- **Identifiers are weak.** We see only the last four digits of a phone number, and a duplicate record keeps its customer's CIF ID (the customer ID) only 3% of the time.
+- **Identifiers are weak.** We see only the last four digits of a phone number, and a duplicate record keeps its entity's CIF ID (the customer ID) only 3% of the time.
 - **People and companies change.** People move and marry; companies open branches. So one entity can have several phones, addresses and names.
 - **Many fields are empty.** Some columns are filled in for only 65% of records, and the birth date for 15%.
 - **Few duplicates are clear-cut.** About 1% of true pairs share the customer ID and the name, or the name, the address code and the phone. 11.3% share nothing usable at all, so no method can find them.
@@ -88,7 +88,7 @@ On real data there are no labelled examples. So the method must learn without la
   - **Recall:** of all pairs of records that truly belong together, the share we put together.
   - **False merges:** pairs of *different* entities we put together by mistake.
 
-  A missed duplicate costs a little: one customer is seen as two. A false merge costs a lot: one customer's mail or statements go to another. So we maximize recall while keeping false merges at (almost) zero.
+  A missed duplicate costs a little: one entity is seen as two. A false merge costs a lot: one entity's mail or statements go to another. So we maximize recall while keeping false merges at (almost) zero.
 - **Constraints:** no labels on real data; every merge explainable; the cost must grow about linearly with the file, so any size is feasible.
 
 ## What makes it hard, and how do we answer each challenge?
@@ -101,7 +101,7 @@ On real data there are no labelled examples. So the method must learn without la
 | C4 | Different people look alike | on train, 49,342 pairs of *different* entities share the last four phone digits | never trust one field; weigh them all | [4](04-certain-cases-first-rules.md), [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C5 | Evidence is partial and uncertain | one true pair has a name typo, a phone typo and a new CIF ID at once | add up evidence from every field, in bits | [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C6 | Fields are often empty | some columns are filled for only 65% of records | an empty field counts as no evidence either way | [5](05-uncertain-evidence-fellegi-sunter.md) |
-| C7 | Answers about pairs don't make groups | A matches B, and B matches C | group with connected components, behind a strict threshold | [5](05-uncertain-evidence-fellegi-sunter.md) |
+| C7 | Answers about pairs don't make entities | A matches B, and B matches C | entities by connected components, behind a strict threshold | [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C8 | No answer key, and every choice can overfit | real data has no truth to learn from or measure against | synthetic data with known truth; a rule for every choice; test used once | [1](#where-does-the-truth-come-from) |
 
 **Why two stages?** Rules are cheap, easy to audit and, on our data, never wrong. So they go first and find the clear cases: 11.9% of the true pairs on val. What remains is messy, with typos in two fields at once, or a move plus a new CIF ID. Messy pairs need evidence weighed, not all-or-nothing conditions, so a probabilistic model handles them.
@@ -110,10 +110,10 @@ Here is what happens to the validation file, with every pair at the method's thr
 
 ```mermaid
 flowchart LR
-  A["10,496 records<br/>2,494 true duplicate pairs"] -->|"exact rules"| B["3.6% found"]
-  B -->|"fuzzy rules"| C["11.9% found<br/>2,198 pairs still missed"]
+  A["10,496 records<br/>2,494 true duplicate pairs"] -->|"exact rules X1 to X5"| B["3.6% found"]
+  B -->|"fuzzy rules and X6"| C["11.9% found<br/>2,198 pairs still missed"]
   C -->|"22 candidate generators"| D["2,869 candidate pairs<br/>contain 79.6% of the 2,198"]
-  D -->|"Fellegi–Sunter ≥ 6 bits"| E["1,208 pairs<br/>none of them false"]
+  D -->|"Fellegi–Sunter ≥ 6 points"| E["1,208 pairs<br/>none of them false"]
   E -->|"connected components"| F["49.9% found<br/>0 false merges"]
 ```
 
@@ -138,9 +138,9 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 - **Typing errors:** 30% of name parts get one kana wrong or dropped; 10% of phones, birth dates and typed addresses one digit wrong (in an address, sometimes a dropped character).
 - **Notations:** 30% of person records put a space between surname and given name, 15% of records write every name in half-width katakana, a company's legal form is written four ways, or left out, and one company record in ten adds a branch.
 - **A CIF ID** is kept on 3% of the duplicate records, and in a tenth of those typed with one digit wrong. The other duplicates carry a new one.
-- **Empty fields:** the fill rate falls from 99.99% to 65% across the columns, and fields of one kind (name, postal code, address) tend to be empty together. A person's birth date is filled for 15%, independently of the rest.
+- **Empty fields:** the fill rate falls from 99.99% to 65% across the columns, and fields of one sort (name, postal code, address) tend to be empty together. A person's birth date is filled for 15%, independently of the rest.
 - **Households:** unrelated entities sometimes share an address, and 5% of persons have a household member, an entity of their own, who shares their family name and every address, and half the time their phone. They are look-alikes that must not be merged.
-- **Hard on purpose.** These rates make about 1% of true pairs direct, the kind exact rules settle. `design.generate.profile` measures it ([data.md](../data.md#how-hard-it-is)).
+- **Hard on purpose.** These rates make about 1% of true pairs direct, the sort exact rules settle. `design.generate.profile` measures it ([data.md](../data.md#how-hard-it-is)).
 
 **Split by entity, not by record.** The 40,000 entities are split 60 / 20 / 20 into train, validation (val) and test. A person's records always stay in one split, so test asks only about people that nothing was ever tuned on.
 
@@ -154,7 +154,7 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 
 Every choice of the method (`nayose/sql/`, and its values in `nayose/config.toml`) is measured at design time on these splits, by one rule:
 
-- **The threshold.** On cross-validated train (each third scored by a model fitted on the other two, so every score is out-of-fold), the lowest weight with no false pair and a false-pair rate bound of at most 5%, then one grid step stricter: 6 bits.
+- **The threshold.** On cross-validated train (each third scored by a model fitted on the other two, so every score is out-of-fold), the lowest threshold with no false pair and a false-pair rate bound of at most 5%, then one grid step stricter: 6 points.
 - **A change** is adopted if it is *better* (a significant paired gain on cross-validated train, p < 0.05, and no false pair added), *cheaper* (no true pair lost, no false pair added), *safer* (the same test, for a change that adds pairs whose gain shows only at scale) or *chosen* (the owner's call, for a gain too small to show on files of 10,000 records; no false pair added). Then, on val, a better, cheaper or safer change may not lose more true pairs than it gains.
 - **Households are counted apart.** Two people of one household share the family name, the address and the phone, so their pair can score as high as a duplicate. It is neither true nor false, and people decide it, labelled "maybe one household".
 
@@ -164,28 +164,34 @@ Every choice of the method (`nayose/sql/`, and its values in `nayose/config.toml
 
 | Term | Meaning | Chapter |
 |---|---|---|
-| record, entity | one row of a file; the person or company behind one or more records | 1 |
+| record | one row of a file | 1 |
+| entity | the person or company behind one or more records: the records people's match decisions join, directly or through others (`gold`'s `entity`) | 1, 5 |
+| customer | the holder of one customer ID; a record without one is a customer of its own (how a placeholder's crowd is counted) | [data](../data.md#placeholders) |
+| kind | person or company: a record's kind, and its entity's (`entity_kind`) | 6 |
 | true pair | two records of the same entity | 1 |
-| matching, resolution | deciding pair by pair; turning the matched pairs into groups | 1 |
+| matching, resolution | deciding pair by pair; turning the matched pairs into entities | 1 |
 | train, val, test | the three splits: fit and choose; confirm; report, once | 1 |
 | field | a logical part of a record (name, address, phone), mapped from the file's columns by `nayose/mapping.sql` | 2 |
 | standardize | rewrite each value in one form, so equal facts compare equal | 2 |
 | rule | a condition that pairs two records on strong evidence alone, such as the same customer ID and the same name | 4 |
-| key, block | a value records share, such as the same address and phone; records with one key form a block, and only pairs inside a block are listed | 3 |
-| candidate generator | one way of listing pairs: a key, or one-letter deletions of a value | 3 |
+| generator | one way of listing pairs: it makes keys for each record, such as its phone and prefecture, or a value with each letter deleted in turn (`[score] generators`) | 3 |
+| key, block | a value a generator makes for a record; the records that share a key form a block, and only pairs inside a block are listed. A pair's generators are those whose keys listed it | 3 |
+| verdict | the gate's word on an oversized block: joined, or skipped | 3 |
 | candidates | every generator's pairs together: with the rules' pairs, the only pairs scored | 3 |
 | potential match | a true pair whose fields would reach the threshold, if it were scored | 3 |
-| m | how often two records of the **same** entity land in a comparison level, such as "same address" | 5 |
+| level, agreement | where a pair lands in a comparison, such as "same address"; a level's agreement is exact, fuzzy or else | 5 |
+| m | how often **one** entity's two records land in a level | 5 |
 | u | how often two **different** entities land there by chance | 5 |
-| λ | the chance that two random records are the same entity: the starting point | 5 |
-| bits, match weight | log₂(λ / (1 − λ)) plus log₂(m / u) for each field; each bit doubles the odds | 5 |
-| threshold | the fewest bits a pair in a match run has: people set it; the method is measured at 6 bits | 1, 5 |
-| cluster | records joined by matched pairs, directly or through others: one entity | 5 |
+| λ | how likely two random records are one entity: the starting point | 5 |
+| bits | a level's weight, log₂(m / u), and the prior's, log₂(λ / (1 − λ)); each bit doubles the odds | 5 |
+| points | a pair's total: the prior's bits plus its levels' bits | 5 |
+| threshold | the fewest points a pair in a match run has: people set it; the method is measured at 6 points | 1, 5 |
+| gold | the medallion's gold layer (bronze → silver → gold): the run's resolved table, each record's entity. It is not labels | [data](../data.md#the-runs-answer-gold) |
 | recall | the share of true pairs found | 1 |
-| false merge | two different entities put in one cluster; "at most 0.26%" is the 95% upper bound when none was seen | 1 |
+| false merge | two different entities put in one; "at most 0.26%" is the 95% upper bound when none was seen | 1 |
 | cross-validation | fitting on two thirds of train and scoring the other third, three times, so a choice is never judged on the data it was fitted on | 1 |
-| the method | `nayose/sql/`: the fields, rules, keys and model every job runs, a file per stage; their values in `nayose/config.toml` | 1 |
-| build, update | a run's first batch of records; a batch added to a run, which scores only the pairs touching it | [architecture](../architecture.md#5--an-increment) |
+| the method | `nayose/sql/`: the fields, rules, generators and model every job runs, a file per stage; their values in `nayose/config.toml` | 1 |
+| build, update | a run's first batch of records; a batch added to a run, which scores only the pairs touching it | [architecture](../architecture.md#5--an-update) |
 
 ## In the code
 

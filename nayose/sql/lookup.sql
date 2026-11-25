@@ -2,8 +2,8 @@
 -- that record alone would compare it. records.sql and score.sql have already run on the record, with the run's model
 -- as it stands. They ran in temporary tables named like the run's, which hold only the records of the record's blocks
 -- (nayose.lookup), so a lookup writes nothing. The job gives each entity with @at_least points or more, or joined by a
--- rule, with its best record, its points, each comparison's level, the rule that would join it and the keys that
--- listed it. It also gives what was looked up, key by key.
+-- rule, with its best record, its points, each comparison's level, the rule that would join it and the generators
+-- whose keys listed it. It also gives what was looked up, generator by generator.
 -- O(G·b + C·K·L²) for the record's C candidates.
 --
 -- Reads: batch_records (the record asked about), batch_scored (score.sql, which scores every candidate
@@ -26,8 +26,8 @@ shown AS (  -- this is match.sql's shown without the bits, so a missing side's l
   SELECT comparison, gamma, label FROM model UNION ALL SELECT DISTINCT comparison, -1, 'missing' FROM model
 )
 SELECT
-  p.other AS id, gd.cluster_id AS entity, p.match_weight AS points, p.rule, ru.i AS rule_rank, p.sources,
-  p.match_weight >= @likely_from AND (p.gamma_name >= 0 OR p.gamma_company >= 0) AS likely,
+  p.other AS id, gd.entity, p.points, p.rule, ru.i AS rule_rank, p.generators,
+  p.points >= @likely_from AND (p.gamma_name >= 0 OR p.gamma_company >= 0) AS likely,
   nm.label AS level_name, c.label AS level_company, d.label AS level_address, h.label AS level_phone,
   i.label AS level_cif, b.label AS level_birth,
   x.full_name, x.person_name, x.company_name, x.address, x.postal_code, x.phone, x.birth_date, x.customer_id
@@ -61,25 +61,25 @@ SELECT rk.* EXCEPT (nth, rule, rule_rank, likely), j.rule, rk.likely OR j.rule I
 FROM ranked AS rk LEFT JOIN joined AS j USING (entity)
 WHERE rk.nth = 1 AND (rk.points >= @at_least OR j.rule IS NOT NULL);
 
--- checked reports what was looked up. For each key the run uses, it gives how many records the record's blocks of
--- normal size hold (found), whether the record lacks the key (lacks), and the record's oversized blocks with the
--- gate's decision (big). found counts a stored record asked about, but not a typed one. Then, for each rule whose
--- key value is held by @oversized records or more, untrusted gives how many records hold it.
+-- checked reports what was looked up. For each generator the run uses, it gives how many records the record's blocks
+-- of normal size hold (records), whether the record lacks its key (lacks), and the record's oversized blocks with the
+-- gate's verdict (oversized). records counts a stored record asked about, but not a typed one. Then, for each rule
+-- whose key value is held by @oversized records or more, untrusted gives how many records hold it.
 CREATE OR REPLACE TEMP TABLE checked AS
 WITH mine AS (
-  SELECT g, k, n FROM key_blocks WHERE id IN (SELECT id FROM batch_records)
+  SELECT g, key, n FROM key_blocks WHERE id IN (SELECT id FROM batch_records)
 ),
 normal AS (
-  SELECT m.g, COUNT(DISTINCT b.id) - IF(@stored, 0, 1) AS found
-  FROM mine AS m JOIN key_blocks AS b USING (g, k) WHERE m.n < @oversized GROUP BY m.g
+  SELECT m.g, COUNT(DISTINCT b.id) - IF(@stored, 0, 1) AS records
+  FROM mine AS m JOIN key_blocks AS b USING (g, key) WHERE m.n < @oversized GROUP BY m.g
 ),
-big AS (
-  SELECT m.g, ARRAY_AGG(STRUCT(m.n AS records, z.sampled, z.best, z.decision) ORDER BY m.k) AS blocks
-  FROM mine AS m JOIN gated AS z ON z.g = m.g AND z.value = m.k WHERE m.n >= @oversized GROUP BY m.g
+oversized_blocks AS (
+  SELECT m.g, ARRAY_AGG(STRUCT(m.n AS records, z.sampled, z.best, z.verdict) ORDER BY m.key) AS blocks
+  FROM mine AS m JOIN gated AS z ON z.g = m.g AND z.key = m.key WHERE m.n >= @oversized GROUP BY m.g
 )
-SELECT g AS position, name AS key, COALESCE(normal.found, 0) AS found, g NOT IN (SELECT g FROM mine) AS lacks,
-       CAST(NULL AS INT64) AS untrusted, big.blocks AS big
-FROM generators LEFT JOIN normal USING (g) LEFT JOIN big USING (g)
+SELECT g AS position, name AS generator, COALESCE(normal.records, 0) AS records, g NOT IN (SELECT g FROM mine) AS lacks,
+       CAST(NULL AS INT64) AS untrusted, oversized_blocks.blocks AS oversized
+FROM generators LEFT JOIN normal USING (g) LEFT JOIN oversized_blocks USING (g)
 WHERE used
 UNION ALL
 SELECT 100 + ru.i, CONCAT('rule ', ru.rule), 0, FALSE, rb.n, NULL

@@ -5,7 +5,7 @@
 -- Reads: records, this_batch, set_aside, gold, decisions, cands, batch_pairs and batch_scored (score.sql), key_blocks,
 -- gated and generators. nayose.report_text reads placeholders, model and fit itself.
 -- Values:
---   @patterns   as JSON, the regular expression that each field's values look like (config.toml [report.patterns],
+--   @looks      as JSON, the regular expression that each field's values look like (config.toml [report.looks],
 --               and for company_name the legal forms)
 --   @edges      the points at which each score band starts
 --   @floor      the review floor, in points
@@ -13,7 +13,7 @@
 --   @sample_records, @patterns_shown   the records FIELDS samples, and the patterns each band shows (config.toml
 --               [report])
 -- Writes (read by nayose.report_text, here or after a BigQuery procedure): report_counts, report_fields,
--- report_scores, report_patterns, report_keys, report_clusters.
+-- report_scores, report_patterns, report_generators, report_entities.
 
 
 -- report_counts holds one row of counts about the run, its latest batch, its entities and kinds, its oversized
@@ -27,18 +27,18 @@ SELECT
   (SELECT COUNT(*) FROM cands) AS candidates,
   (SELECT COUNT(*) FROM batch_scored) AS scored,
   (SELECT COUNT(*) FROM batch_scored WHERE rule IS NOT NULL) AS ruled,
-  (SELECT COUNT(DISTINCT cluster_id) FROM gold) AS entities,
+  (SELECT COUNT(DISTINCT entity) FROM gold) AS entities,
   (SELECT COUNT(*) FROM gold WHERE resolved_by = 'review') AS by_people,
-  (SELECT MAX(n) FROM (SELECT COUNT(*) AS n FROM gold GROUP BY cluster_id)) AS largest,
+  (SELECT MAX(n) FROM (SELECT COUNT(*) AS n FROM gold GROUP BY entity)) AS largest,
   (SELECT COUNT(*) FROM decisions WHERE latest) AS decided,
   (SELECT COUNT(*) FROM gold WHERE kind = 2) AS companies, (SELECT COUNT(*) FROM gold WHERE kind = 1) AS persons,
   (SELECT COUNT(*) FROM gold WHERE kind = 0) AS unsure,
-  (SELECT COUNT(DISTINCT cluster_id) FROM gold WHERE customer_kind = 2) AS company_customers,
-  (SELECT COUNT(DISTINCT cluster_id) FROM gold WHERE customer_kind = 1) AS person_customers,
-  (SELECT COUNT(DISTINCT cluster_id) FROM gold WHERE customer_kind = 0) AS unsure_customers,
+  (SELECT COUNT(DISTINCT entity) FROM gold WHERE entity_kind = 2) AS company_entities,
+  (SELECT COUNT(DISTINCT entity) FROM gold WHERE entity_kind = 1) AS person_entities,
+  (SELECT COUNT(DISTINCT entity) FROM gold WHERE entity_kind = 0) AS unsure_entities,
   (SELECT COUNT(*) FROM gold WHERE kind_flagged) AS flagged,
-  (SELECT COUNT(*) FROM gated WHERE decision = 'kept') AS oversized_kept,
-  (SELECT COUNT(*) FROM gated WHERE decision <> 'kept') AS oversized_skipped,
+  (SELECT COUNT(*) FROM gated WHERE verdict = 'joined') AS oversized_joined,
+  (SELECT COUNT(*) FROM gated WHERE verdict <> 'joined') AS oversized_skipped,
   COUNT(full_name) AS full_name, COUNT(person_name) AS person_name, COUNT(given_name) AS given_name,
   COUNT(company_name) AS company_name, COUNT(any_name) AS any_name, COUNT(address) AS address,
   COUNT(address_code) AS address_code, COUNT(postal_code) AS postal_code, COUNT(prefecture) AS prefecture,
@@ -67,7 +67,7 @@ top AS (
   GROUP BY field
 )
 SELECT
-  field, AVG(CAST(REGEXP_CONTAINS(v, JSON_VALUE(@patterns, CONCAT('$.', field))) AS INT64)) AS looks_right,
+  field, AVG(CAST(REGEXP_CONTAINS(v, JSON_VALUE(@looks, CONCAT('$.', field))) AS INT64)) AS looks_right,
   ANY_VALUE(top.top_value) AS top_value, AVG(CAST(NOT REGEXP_CONTAINS(v, r'[\pL\pN]') AS INT64)) AS no_letters,
   AVG(LENGTH(v)) AS length, MAX(LENGTH(v)) AS longest
 FROM v LEFT JOIN top USING (field)
@@ -78,36 +78,36 @@ GROUP BY field;
 -- those are the pairs that scored below 0 points, and the pairs that the bound kept from being scored.
 CREATE OR REPLACE TEMP TABLE report_scores AS
 SELECT band, COUNT(*) AS pairs
-FROM (SELECT ARRAY_LENGTH(ARRAY(SELECT e FROM UNNEST(@edges) AS e WHERE e <= match_weight)) AS band
-      FROM batch_scored WHERE match_weight >= 0)
+FROM (SELECT ARRAY_LENGTH(ARRAY(SELECT e FROM UNNEST(@edges) AS e WHERE e <= points)) AS band
+      FROM batch_scored WHERE points >= 0)
 GROUP BY band
 UNION ALL
-SELECT -1, (SELECT COUNT(*) FROM batch_pairs) - (SELECT COUNT(*) FROM batch_scored WHERE match_weight >= 0);
+SELECT -1, (SELECT COUNT(*) FROM batch_pairs) - (SELECT COUNT(*) FROM batch_scored WHERE points >= 0);
 
 -- report_patterns splits the batch's pairs at 0 points or more into two bands, below the review floor (@floor) and
 -- from it up. For each band it keeps the @patterns_shown most common patterns of levels, each with its pairs and their
--- mean points. It also gives the band's total pairs and how many patterns the band holds (kinds).
+-- mean points. It also gives the band's total pairs and how many patterns the band holds (patterns).
 CREATE OR REPLACE TEMP TABLE report_patterns AS
 WITH p AS (
-  SELECT match_weight >= @floor AS up, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth,
-         COUNT(*) AS n, AVG(match_weight) AS mean_points
-  FROM batch_scored WHERE match_weight >= 0
+  SELECT points >= @floor AS up, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth,
+         COUNT(*) AS n, AVG(points) AS mean_points
+  FROM batch_scored WHERE points >= 0
   GROUP BY up, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth
 )
 SELECT * FROM (
-  SELECT *, SUM(n) OVER (PARTITION BY up) AS total, COUNT(*) OVER (PARTITION BY up) AS kinds,
+  SELECT *, SUM(n) OVER (PARTITION BY up) AS total, COUNT(*) OVER (PARTITION BY up) AS patterns,
          ROW_NUMBER() OVER (PARTITION BY up ORDER BY n DESC, mean_points DESC, gamma_name, gamma_company,
                                                      gamma_address, gamma_phone, gamma_cif, gamma_birth) AS nth
   FROM p
 ) WHERE nth <= @patterns_shown;
 
--- report_keys describes each key that the run uses. pairs counts the candidates it listed, each pair once, even if
--- a deletion key listed the pair through several of its deletions. largest is the size of its largest block that
--- holds a batch record, and oversized counts its blocks of @oversized records or more.
-CREATE OR REPLACE TEMP TABLE report_keys AS
-WITH listing AS (SELECT name, COUNT(*) AS pairs FROM cands, UNNEST(SPLIT(sources, '+')) AS name GROUP BY name),
+-- report_generators describes each generator that the run uses. pairs counts the candidates its keys listed, each
+-- pair once, even if a deletion generator listed the pair through several of its deletions. largest is the size of
+-- its largest block that holds a batch record, and oversized counts its blocks of @oversized records or more.
+CREATE OR REPLACE TEMP TABLE report_generators AS
+WITH listing AS (SELECT name, COUNT(*) AS pairs FROM cands, UNNEST(SPLIT(generators, '+')) AS name GROUP BY name),
 blocks AS (
-  SELECT g, MAX(n) AS largest, COUNT(DISTINCT CASE WHEN n >= @oversized THEN k END) AS oversized
+  SELECT g, MAX(n) AS largest, COUNT(DISTINCT CASE WHEN n >= @oversized THEN key END) AS oversized
   FROM key_blocks GROUP BY g
 )
 SELECT gen.g, gen.name, COALESCE(ls.pairs, 0) AS pairs, COALESCE(b.largest, 0) AS largest,
@@ -115,6 +115,6 @@ SELECT gen.g, gen.name, COALESCE(ls.pairs, 0) AS pairs, COALESCE(b.largest, 0) A
 FROM generators AS gen LEFT JOIN listing AS ls USING (name) LEFT JOIN blocks AS b USING (g)
 WHERE gen.used;
 
--- report_clusters counts the entities of each size.
-CREATE OR REPLACE TEMP TABLE report_clusters AS
-SELECT n AS size, COUNT(*) AS entities FROM (SELECT COUNT(*) AS n FROM gold GROUP BY cluster_id) GROUP BY n;
+-- report_entities counts the entities of each size.
+CREATE OR REPLACE TEMP TABLE report_entities AS
+SELECT n AS size, COUNT(*) AS entities FROM (SELECT COUNT(*) AS n FROM gold GROUP BY entity) GROUP BY n;

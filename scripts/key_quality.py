@@ -1,12 +1,14 @@
-"""Each key's candidates in a run, and the matches among them, as counts alone (no record's value), so a run on real
-records can be read anywhere: which keys find a match no other key or rule finds, and which can go together losing none.
+"""Each generator's candidates in a run, and the matches among them, as counts alone (no record's value), so a run on
+real records can be read anywhere: which generators find a match no other generator or rule finds, and which can go
+together losing none.
 
     python scripts/key_quality.py RUN [--truth TRUTH.parquet] [--points 6]
 
 RUN: a build's run folder (its run.duckdb, read-only; an update keeps its last batch's candidates alone, so refused).
 A match: a pair the run scored at --points or more with a name compared ([lookup] likely_from: as people review), or a
-rule's pair. A key's candidates: the pairs it lists (cands' sources). Only it: a match no other key lists and no rule
-finds, lost were the key to go. Can go together: the keys that list no match alone, less, one at a time, the one whose
+rule's pair. A generator's candidates: the pairs its keys list (cands' generators). Only it: a match no other generator
+lists and no rule finds, lost were the generator to go. Can go together: the generators that list no match alone, less,
+one at a time, the one whose
 return keeps the most matches, until none is lost. TRUTH (a generated population's: CONT_ID, ENTITY_ID) splits each
 count into true and false. O(C·G) for C candidates.
 """
@@ -26,7 +28,7 @@ def measure(run: Path, truth: Path | None, points: float) -> dict:
     con = engine.con
     if con.execute("SELECT MAX(batch) FROM records").fetchone()[0]:
         raise SystemExit(f"{run}: updated since its build, and cands holds its last batch's pairs alone: count a build's run")
-    engine.run(nayose.statement_making("score", "generators"), {"keys": list(nayose.config()["score"]["keys"])})  # score.sql's: each one's bit
+    engine.run(nayose.statement_making("score", "generators"), {"generators": list(nayose.config()["score"]["generators"])})  # score.sql's: each one's bit
     made = engine.rows("SELECT name, used FROM generators ORDER BY g")
     names, used = [n for n, _ in made], {n for n, on in made if on}
     same = "a.entity = b.entity" if truth else "NULL"
@@ -36,38 +38,38 @@ def measure(run: Path, truth: Path | None, points: float) -> dict:
             raise SystemExit(f"{truth}: it lacks some of the run's IDs (read as text, as the run's are)")
     join = "LEFT JOIN truth AS a ON a.id = s.id_l LEFT JOIN truth AS b ON b.id = s.id_r" if truth else ""
     con.execute(f"""CREATE TEMP TABLE m AS
-        SELECT string_split(COALESCE(s.sources, ''), '+') AS keys, s.rule IS NOT NULL AS ruled, {same} AS same
-        FROM scored AS s {join} WHERE s.rule IS NOT NULL OR (s.match_weight >= ? AND s.named)""", [points])
-    rows = []  # each key the run uses, one with no rows too: 0, and it can go
+        SELECT string_split(COALESCE(s.generators, ''), '+') AS generators, s.rule IS NOT NULL AS ruled, {same} AS same
+        FROM scored AS s {join} WHERE s.rule IS NOT NULL OR (s.points >= ? AND s.named)""", [points])
+    rows = []  # each generator the run uses, one with no rows too: 0, and it can go
     for g, k in enumerate(names):
         if k not in used:
             continue
-        cands = con.execute("SELECT COUNT(*) FROM cands WHERE list_contains(string_split(sources, '+'), ?)", [k]).fetchone()[0]
-        got = con.execute("""SELECT COUNT(*), COUNT(CASE WHEN same THEN 1 END), COUNT(CASE WHEN NOT ruled AND keys = [?] THEN 1 END),
-                                    COUNT(CASE WHEN NOT ruled AND keys = [?] AND same THEN 1 END) FROM m WHERE list_contains(keys, ?)""", [k, k, k]).fetchone()
+        cands = con.execute("SELECT COUNT(*) FROM cands WHERE list_contains(string_split(generators, '+'), ?)", [k]).fetchone()[0]
+        got = con.execute("""SELECT COUNT(*), COUNT(CASE WHEN same THEN 1 END), COUNT(CASE WHEN NOT ruled AND generators = [?] THEN 1 END),
+                                    COUNT(CASE WHEN NOT ruled AND generators = [?] AND same THEN 1 END) FROM m WHERE list_contains(generators, ?)""", [k, k, k]).fetchone()
         index = con.execute("SELECT COUNT(*) FROM every_key WHERE g = ?", [g]).fetchone()[0]
-        rows.append(dict(key=k, candidates=cands, matches=got[0], true=got[1], only=got[2], only_true=got[3], index=index))
+        rows.append(dict(generator=k, candidates=cands, matches=got[0], true=got[1], only=got[2], only_true=got[3], index=index))
 
-    def lost(drop: list[str]) -> int:  # matches every key of which would go, and no rule finds
-        return con.execute("SELECT COUNT(*) FROM m WHERE NOT ruled AND keys <> [''] AND list_has_all(?, keys)", [drop]).fetchone()[0] if drop else 0
-    drop = [r["key"] for r in rows if r["only"] == 0]
+    def lost(drop: list[str]) -> int:  # matches every generator of which would go, and no rule finds
+        return con.execute("SELECT COUNT(*) FROM m WHERE NOT ruled AND generators <> [''] AND list_has_all(?, generators)", [drop]).fetchone()[0] if drop else 0
+    drop = [r["generator"] for r in rows if r["only"] == 0]
     while lost(drop):
         drop.remove(min(drop, key=lambda k: lost([x for x in drop if x != k])))
     totals = con.execute("SELECT COUNT(*), COUNT(CASE WHEN same THEN 1 END) FROM m").fetchone()
     index_all = con.execute("SELECT COUNT(*) FROM every_key").fetchone()[0]
     index_drop = con.execute("SELECT COUNT(*) FROM every_key WHERE list_contains(?, g)", [[names.index(k) for k in drop]]).fetchone()[0]
-    cands_all, cands_drop = con.execute("SELECT COUNT(*), COUNT(CASE WHEN list_has_all(?, string_split(sources, '+')) THEN 1 END) FROM cands", [drop]).fetchone()
+    cands_all, cands_drop = con.execute("SELECT COUNT(*), COUNT(CASE WHEN list_has_all(?, string_split(generators, '+')) THEN 1 END) FROM cands", [drop]).fetchone()
     records = con.execute("SELECT COUNT(*) FROM records").fetchone()[0]
-    return dict(records=records, matches=totals[0], true=totals[1] if truth else None, keys=rows, drop=sorted(drop),
+    return dict(records=records, matches=totals[0], true=totals[1] if truth else None, generators=rows, drop=sorted(drop),
                 index=(index_drop, index_all), candidates=(cands_drop, cands_all))
 
 
 def report(got: dict, truth: bool) -> str:
-    head = ["key", "candidates", "matches", "share", "only it"] + (["true", "only it, true"] if truth else []) + ["index rows"]
+    head = ["generator", "candidates", "matches", "share", "only it"] + (["true", "only it, true"] if truth else []) + ["index rows"]
     lines = [" | ".join(head), " | ".join("---" for _ in head)]
-    for r in sorted(got["keys"], key=lambda r: (-(r["only_true"] if truth else r["only"]), -r["candidates"])):
+    for r in sorted(got["generators"], key=lambda r: (-(r["only_true"] if truth else r["only"]), -r["candidates"])):
         share = f"{100 * r['matches'] / r['candidates']:.1f}%" if r["candidates"] else "—"
-        cells = [r["key"], f"{r['candidates']:,}", f"{r['matches']:,}", share, f"{r['only']:,}"]
+        cells = [r["generator"], f"{r['candidates']:,}", f"{r['matches']:,}", share, f"{r['only']:,}"]
         cells += [f"{r['true']:,}", f"{r['only_true']:,}"] if truth else []
         lines.append(" | ".join(cells + [f"{r['index']:,}"]))
     (di, ai), (dc, ac) = got["index"], got["candidates"]

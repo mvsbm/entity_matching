@@ -80,7 +80,7 @@ def accepted(engine: DuckDB) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
     pair, and the model's pairs there or above with a name compared (named), from the run's scored; the records'
     entities by transitive closure (nayose.entities). Each record's entity, the rules' alone, and the model's pairs taken."""
     scored = engine.frame("SELECT * FROM scored")
-    model = scored[scored["sources"].notna() & scored["named"] & (scored["match_weight"] >= LINE)]
+    model = scored[scored["generators"].notna() & scored["named"] & (scored["points"] >= LINE)]
     rules = scored.loc[scored["rule"].notna(), ["id_l", "id_r"]]
     ids = engine.frame("SELECT id FROM records ORDER BY id")["id"]
 
@@ -255,7 +255,7 @@ def main() -> None:
               "`wrong_*` the records called 2 that are persons and called 1 that are companies.", "", markdown(kind), "",
               f"## Cost: files of growing size (time grows like N^{curve.attrs['alpha']})", "",
               f"Each file is resolved by `python -m nayose build` in a process of its own, fitted on the file itself; DuckDB memory limit: "
-              f"{limit}. Peak memory is the process's, Python included. Each stage's seconds: its own column. `fit` (on {int(c['fit']['fit_rows']):,} "
+              f"{limit}. Peak memory is the process's, Python included. Each stage's seconds: its own column. `fit` (on {int(c['fit']['fit_records']):,} "
               f"records) and the u sample of the file inside it ({float(c['fit']['u_max_pairs']):,.0f} pairs) grow far slower than the file (the fit's sample is fixed; only u's exact counts read every record), so at "
               f"these sizes the total grows far slower than N. Above {len(PERSONS):,} entities personas repeat, so those rows measure "
               "cost only.", "", markdown(curve), ""]

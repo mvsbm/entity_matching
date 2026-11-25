@@ -40,7 +40,7 @@ The CIF ID is a special case. In our synthetic data, it is never shared by two e
 
 ### Two stages: exact, then fuzzy
 
-**Exact rules** ask for exact agreement, for example *CIF ID and full name*. There are five:
+**Exact rules** ask for exact agreement, for example *CIF ID and full name*. There are six:
 
 | Rule | Fields that must be equal |
 |---|---|
@@ -49,8 +49,9 @@ The CIF ID is a special case. In our synthetic data, it is never shared by two e
 | X3 | CIF ID + phone |
 | X4 | full name + address code + phone |
 | X5 | company name + address code + phone |
+| X6 | given name + address code + phone (a surname change after marriage) |
 
-**Fuzzy rules** allow one or two fields to be *close* instead of equal, using the similarity functions from [chapter 2](02-the-same-fact-written-differently.md). For example, rule F1 needs *the name close, plus the same address code and the same phone*. There are seven, including one for a surname change after marriage: same given name, address code and phone.
+**Fuzzy rules** allow one or two fields to be *close* instead of equal, using the similarity functions from [chapter 2](02-the-same-fact-written-differently.md). For example, rule F1 needs *the name close, plus the same address code and the same phone*. There are six, F1 to F6.
 
 The close-enough tests are chosen by the decision rule ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)), and are in `functions.sql` (`near_name`, `near_company`, `near_address`, `near_phone`):
 
@@ -61,9 +62,9 @@ The close-enough tests are chosen by the decision rule ([chapter 1](01-entity-re
 | address | normalized addresses have Jaro–Winkler ≥ 0.9 |
 | phone | at most one digit wrong (Hamming ≤ 1) |
 
-**How a rule runs.** Each rule is a plain SQL join on its exact fields: `score.sql` writes each record's key for every rule into one table, and joins it once. Its fuzzy conditions are then checked only on the pairs that join, and two equal values pass without calling the string function at all. Rule F2 (name and address close, same phone) also joins on the first three characters of the normalized address, where the city starts, so it does not pair everyone who shares four phone digits. A pair found by several rules belongs to the first in order. A rule also leaves out any key value held by 64 records or more (`[score] oversized`): one customer ID on thousands of records is not one customer's.
+**How a rule runs.** Each rule is a plain SQL join on its exact fields: `score.sql` writes each record's key for every rule into one table, and joins it once. Its fuzzy conditions are then checked only on the pairs that join, and two equal values pass without calling the string function at all. Rule F2 (name and address close, same phone) also joins on the first three characters of the normalized address, where the city starts, so it does not pair everyone who shares four phone digits. A pair found by several rules belongs to the first in order. A rule also leaves out any key value held by 64 records or more (`[score] oversized`): one customer ID on thousands of records is not one entity's.
 
-The exact rules come first in that order, and the first rule to find a pair names it, so a pair keeps the name of the strictest rule that finds it. No rule pair merges by itself: each is kept in the run's `scored` table with its rule, whatever its score, for a match run to offer people, so none hides another pair. The probabilistic stage scores every pair the keys list, the rules' too.
+The exact rules X1 to X5 come first in that order, the fuzzy rules next and X6 last, and the first rule to find a pair names it, so a pair keeps the name of the strictest rule that finds it. No rule pair merges by itself: each is kept in the run's `scored` table with its rule, whatever its score, for a match run to offer people, so none hides another pair. The probabilistic stage scores every pair the keys list, the rules' too.
 
 ### Why this solution
 
@@ -76,10 +77,10 @@ The exact rules come first in that order, and the first rule to find a pair name
 | Split | Recall | 95% interval | False merges | False-merge rate at most |
 |---|---|---|---|---|
 | train | 10.5% | 9.8–11.3% | 0 | 0.40% |
-| val | 11.9% (exact rules alone: 3.6%) | 10.7–13.2% | 0 | 1.01% |
+| val | 11.9% (X1 to X5 alone: 3.6%) | 10.7–13.2% | 0 | 1.01% |
 | **test** | **9.6%** | 8.5–10.9% | **0** | 1.32% |
 
-The exact rules find 3–4% of the true pairs. The fuzzy rules lift that to 10–12%. No split has a single false merge. A few pairs join two people of one household (18 on train, 5 on val, 5 on test), counted apart, neither true nor false ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)). The numbers are low by design: the synthetic duplicates rarely agree exactly, as real ones don't ([data](../data.md#how-hard-it-is)).
+Exact rules X1 to X5 find 3–4% of the true pairs. The fuzzy rules and X6 lift that to 10–12%. No split has a single false merge. A few pairs join two people of one household (18 on train, 5 on val, 5 on test), counted apart, neither true nor false ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)). The numbers are low by design: the synthetic duplicates rarely agree exactly, as real ones don't ([data](../data.md#how-hard-it-is)).
 
 **Variants measured at design time.** Each is compared with the rules as written, on the same validation pairs:
 

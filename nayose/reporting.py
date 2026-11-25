@@ -30,21 +30,22 @@ def report_text(engine: Engine, steps: dict[str, float], job: str) -> str:
     """Return report.txt from report.sql's tables: the run on a page, with no record's value in it.
 
     `steps` holds each stage's seconds. The page has a section each: what ran, the summary, each field's fill and look,
-    the input's columns no field reads, the batch's candidates by bits and each band's commonest patterns, the
-    entities' sizes, each stage, each key's pairs, the model and the largest blocks. O(F + C) over the report's tables.
+    the input's columns no field reads, the batch's candidates by points and each band's commonest patterns, the
+    entities' sizes, each stage, each generator's pairs, the model and the largest blocks. O(F + C) over the report's
+    tables.
     """
     c, values = nayose.config(), nayose.values_of("report")
     counts = engine.frame("SELECT * FROM report_counts").iloc[0]
     added = None if job == "build" else int(counts["added"])
     fill = {f: counts[f] / max(counts["records"], 1) for f in FIELDS}
-    keys = engine.frame("SELECT * FROM report_keys ORDER BY pairs DESC, g")
+    generators = engine.frame("SELECT * FROM report_generators ORDER BY pairs DESC, g")
     notes = json.loads(engine.value("SELECT notes FROM fit"))
     sections = [report_header(engine, steps, added), report_summary(engine, c, counts, added, fill),
-                report_fields(engine, fill), report_unmapped(engine, c, json.loads(values["patterns"])),
+                report_fields(engine, fill), report_unmapped(engine, c, json.loads(values["looks"])),
                 report_scores(engine, values["edges"]),
                 report_patterns(engine, values["floor"], values["patterns_shown"]),
-                report_clusters(engine), report_steps(counts, notes, steps, job), report_keys(keys),
-                report_model(engine, c, notes), report_blocks(keys, counts)]
+                report_entities(engine), report_steps(counts, notes, steps, job), report_generators(generators),
+                report_model(engine, c, notes), report_blocks(generators, counts)]
     return "\n".join(line for section in sections for line in section) + "\n"
 
 
@@ -81,7 +82,7 @@ def report_header(engine: Engine, steps: dict[str, float], added: int | None) ->
         threads, memory = engine.rows("SELECT current_setting('threads'), current_setting('memory_limit')")[0]
     else:
         threads, memory = "—", "—"
-    run = "full run" if added is None else f"increment of {added:,} new records"
+    run = "build" if added is None else f"update of {added:,} new records"
     machine = f"{platform.system()} {platform.machine()}"
     return [f"RUN REPORT · {datetime.now():%Y-%m-%d %H:%M} · {run} · no record's value in it",
             f"code {code_version()} · method {nayose.fingerprint()[:12]}",
@@ -90,7 +91,8 @@ def report_header(engine: Engine, steps: dict[str, float], added: int | None) ->
 
 
 def report_summary(engine: Engine, c: dict, counts, added: int | None, fill: dict) -> list[str]:
-    """Return the SUMMARY section: records, candidates, entities, kinds, and notes on placeholders and empty fields."""
+    """Return the SUMMARY section: records, pairs scored, entities, kinds, and notes on placeholders and empty
+    fields."""
     n = number_of(counts)
     placeholders = engine.rows("SELECT p.field, COUNT(*) FROM placeholders AS p GROUP BY p.field ORDER BY p.field")
     without = {f: int(counts["records"] - counts[f]) for f, _ in placeholders if f in counts}
@@ -101,30 +103,30 @@ def report_summary(engine: Engine, c: dict, counts, added: int | None, fill: dic
     section = c["records"]
     summary = [
         ("records", records_line),
-        ("candidates", f"{n('scored')} pairs scored{in_batch}, {n('ruled')} of them a rule's too: "
-                       "scored, which a match run reads at its threshold (python -m nayose match)"),
+        ("scored", f"{n('scored')} pairs scored{in_batch}, {n('ruled')} of them a rule's too: "
+                   "scored, which a match run reads at its threshold (python -m nayose match)"),
         ("entities", f"{n('entities')}; {n('by_people')} records joined by people's decisions; "
                      f"the largest holds {n('largest')} record{'s' * bool(counts['largest'] != 1)}"),
         ("kinds", f"{n('companies')} × 2 company · {n('persons')} × 1 person · "
                   f"{n('unsure')} × 0 not sure (records)"),
-        ("kinds", f"{n('company_customers')} × 2 company · {n('person_customers')} × 1 person · "
-                  f"{n('unsure_customers')} × 0 not sure (customers)"),
+        ("kinds", f"{n('company_entities')} × 2 company · {n('person_entities')} × 1 person · "
+                  f"{n('unsure_entities')} × 0 not sure (entities)"),
     ]
     if counts["flagged"]:
         summary.append(("flagged", f"{n('flagged')} records the engine is sure of against the flag: "
                                    "matched as the engine says (gold: kind_flagged)"))
     summary.append(("kinds from", "the file's flag, as it is (trust_flag)" if section["trust_flag"]
                     else f"a written legal form, or a name {section['name_line']:.0%} sure; else the flag"))
-    summary += [("note", placeholder_note(f, k, without[f], section["min_block"]))
+    summary += [("note", placeholder_note(f, k, without[f], section["placeholder_min"]))
                 for f, k in placeholders if f in without]
     summary += [("note", f"{f} only {x:.1%} filled: check its mapping") for f, x in fill.items() if x < 0.05]
     return ["SUMMARY", *(f"  {what:<12} {value}" for what, value in summary), ""]
 
 
-def placeholder_note(field: str, count: int, without: int, min_block: int) -> str:
+def placeholder_note(field: str, count: int, without: int, placeholder_min: int) -> str:
     """Return the SUMMARY's note on a field's `count` placeholders, and the records `without` a value since."""
     owner = "one entity" if field == "customer_id" else "evidence"
-    return (f"{field}: {count:,} value{'s' * bool(count != 1)} held by {min_block}+ records read as missing, "
+    return (f"{field}: {count:,} value{'s' * bool(count != 1)} held by {placeholder_min}+ records read as missing, "
             f"a placeholder and not {owner}'s ({without:,} records without one)")
 
 
@@ -143,9 +145,9 @@ def report_fields(engine: Engine, fill: dict) -> list[str]:
             *text_table(pd.DataFrame(rows)), ""]
 
 
-def report_unmapped(engine: Engine, c: dict, patterns: dict[str, str]) -> list[str]:
+def report_unmapped(engine: Engine, c: dict, looks: dict[str, str]) -> list[str]:
     """Return the COLUMNS NOT MAPPED section, on DuckDB only, where the input's own columns can be read by name."""
-    columns = unmapped(engine, c, patterns) if engine.name == "duckdb" else None
+    columns = unmapped(engine, c, looks) if engine.name == "duckdb" else None
     if columns is None or not len(columns):
         return []
     shown = columns.head(30)
@@ -158,7 +160,7 @@ def report_unmapped(engine: Engine, c: dict, patterns: dict[str, str]) -> list[s
 
 
 def report_scores(engine: Engine, edges: list[float]) -> list[str]:
-    """Return the SCORES section: the candidates scored, by bands of bits between `edges`."""
+    """Return the SCORES section: the candidates scored, by bands of points between `edges`."""
     scored = dict(engine.rows("SELECT band, pairs FROM report_scores"))
 
     def label(i: int) -> str:
@@ -170,8 +172,8 @@ def report_scores(engine: Engine, edges: list[float]) -> list[str]:
             return f"{edges[-1]:g} and up"
         return f"{edges[i - 1]:g} to {edges[i]:g}"
 
-    rows = [dict(bits=label(i), candidates=f"{scored[i]:,}") for i in sorted(scored) if scored[i]]
-    return ["SCORES  (the candidates scored, by bits)", *text_table(pd.DataFrame(rows)), ""]
+    rows = [dict(points=label(i), candidates=f"{scored[i]:,}") for i in sorted(scored) if scored[i]]
+    return ["SCORES  (the candidates scored, by points)", *text_table(pd.DataFrame(rows)), ""]
 
 
 def report_patterns(engine: Engine, floor: float, shown: int) -> list[str]:
@@ -188,47 +190,47 @@ def report_patterns(engine: Engine, floor: float, shown: int) -> list[str]:
         gamma = x[f"gamma_{k}"]
         return "missing" if pd.isna(gamma) or gamma < 0 else label_of[k, int(gamma)]
 
-    rows = [dict(band=band(x["up"]), pairs=number(x["n"]), bits=f"{x['mean_points']:.1f}",
+    rows = [dict(band=band(x["up"]), pairs=number(x["n"]), points=f"{x['mean_points']:.1f}",
                  **{k: level(x, k) for k in COMPARISONS}) for _, x in patterns.iterrows()]
     more = []  # a band with more than the patterns shown: how many more, and their pairs
     for up, band_rows in patterns.groupby("up", sort=False):
-        if band_rows["kinds"].iloc[0] > shown:
+        if band_rows["patterns"].iloc[0] > shown:
             pairs = int(band_rows["total"].iloc[0]) - int(band_rows["n"].sum())
-            more.append(f"  {band(up)}: {int(band_rows['kinds'].iloc[0]) - shown:,} patterns more, {pairs:,} pairs")
-    return ["PATTERNS BY SCORE  (the keys' pairs at 0 bits and up, below and from the review floor: "
+            more.append(f"  {band(up)}: {int(band_rows['patterns'].iloc[0]) - shown:,} patterns more, {pairs:,} pairs")
+    return ["PATTERNS BY SCORE  (the keys' pairs at 0 points and up, below and from the review floor: "
             f"each band's {shown} most common levels)", *text_table(pd.DataFrame(rows)), *more, ""]
 
 
-def report_clusters(engine: Engine) -> list[str]:
-    """Return the CLUSTERS section: how many entities hold each number of records."""
-    sizes = dict(engine.rows("SELECT size, entities FROM report_clusters"))
+def report_entities(engine: Engine) -> list[str]:
+    """Return the ENTITIES section: how many entities hold each number of records."""
+    sizes = dict(engine.rows("SELECT size, entities FROM report_entities"))
     bins = [("1", 1, 1), ("2", 2, 2), ("3", 3, 3), ("4", 4, 4), ("5–9", 5, 9), ("10–49", 10, 49),
             ("50+", 50, math.inf)]
     counted = []
     for name, low, high in bins:
         if total := sum(v for k, v in sizes.items() if low <= k <= high):
             counted.append(f"{name}: {total:,}")
-    return ["CLUSTERS  (size: how many)", "  " + " · ".join(counted), ""]
+    return ["ENTITIES  (size: how many)", "  " + " · ".join(counted), ""]
 
 
 def report_steps(counts, notes: dict, steps: dict[str, float], job: str) -> list[str]:
     """Return the STEPS section: each stage's seconds, with what it made."""
     n = number_of(counts)
     facts = dict(
-        records=f"records {n('added')} · set_aside {n('set_aside')} · companies {n('companies')} · "
+        records=f"added {n('added')} · set_aside {n('set_aside')} · companies {n('companies')} · "
                 f"persons {n('persons')} · not sure {n('unsure')}",
-        fit=f"fit_rows {notes['fit_rows']:,}",
-        score=f"candidates {n('candidates')} · stored {n('scored')} · rule pairs {n('ruled')} · "
-              f"oversized_kept {n('oversized_kept')} · oversized_skipped {n('oversized_skipped')}",
+        fit=f"fit_records {notes['fit_records']:,}",
+        score=f"candidates {n('candidates')} · scored {n('scored')} · rule pairs {n('ruled')} · "
+              f"oversized_joined {n('oversized_joined')} · oversized_skipped {n('oversized_skipped')}",
         decide=f"decided {n('decided')} · entities {n('entities')}")
     rows = [dict(step=s, seconds=f"{x:.2f}", facts=facts.get(s, "")) for s, x in steps.items()]
     return ["STEPS", *text_table(pd.DataFrame(rows)), ""]
 
 
-def report_keys(keys: pd.DataFrame) -> list[str]:
-    """Return the KEYS section: the pairs each key lists, most first."""
-    table = pd.DataFrame(dict(key=keys["name"], pairs=keys["pairs"].map(number)))
-    return ["KEYS  (pairs each lists, most first)", *text_table(table), ""]
+def report_generators(generators: pd.DataFrame) -> list[str]:
+    """Return the GENERATORS section: the pairs each generator's keys list, most first."""
+    table = pd.DataFrame(dict(generator=generators["name"], pairs=generators["pairs"].map(number)))
+    return ["GENERATORS  (pairs each lists, most first)", *text_table(table), ""]
 
 
 def report_model(engine: Engine, c: dict, notes: dict) -> list[str]:
@@ -238,7 +240,7 @@ def report_model(engine: Engine, c: dict, notes: dict) -> list[str]:
     prior = json.loads(fit_row["fitted"])["prior_bits"]
     skipped = f"; learned nothing about {', '.join(notes['skipped'])}" if notes.get("skipped") else ""
     head = (f"MODEL  (prior {prior:.2f} bits at the build's {number(fit_row['records'])} records; "
-            f"fitted on {number(fit_row['fit_rows'])} records{skipped})")
+            f"fitted on {number(fit_row['fit_records'])} records{skipped})")
     grown = engine.value("SELECT COUNT(*) FROM records") / max(int(fit_row["records"]), 1) - 1
     if grown >= float(c["fit"]["rebuild_after"]):  # a pair drifts k·log2(1 + grown) bits: k exact levels
         head += f"\n  the run has grown {grown:.0%} since its build, whose u it scores with: build again"
@@ -253,23 +255,24 @@ def report_model(engine: Engine, c: dict, notes: dict) -> list[str]:
     return [head, *em, *text_table(table), *adjusted, ""]
 
 
-def report_blocks(keys: pd.DataFrame, counts) -> list[str]:
-    """Return the BLOCKS section: the keys with oversized blocks, and the six that list the most pairs a record."""
-    blocks = keys.assign(per_record=keys["pairs"] / max(int(counts["records"]), 1))
+def report_blocks(generators: pd.DataFrame, counts) -> list[str]:
+    """Return the BLOCKS section: the generators with oversized blocks, and the six that list the most pairs a
+    record."""
+    blocks = generators.assign(per_record=generators["pairs"] / max(int(counts["records"]), 1))
     busiest = blocks.nlargest(6, "per_record")["name"]
     shown = blocks[(blocks["oversized"] > 0) | blocks["name"].isin(busiest)]
     shown = shown.sort_values("per_record", ascending=False, kind="stable")
-    table = pd.DataFrame(dict(kind="generator", name=shown["name"],
-                              per_record=shown["per_record"].map(lambda x: f"{x:.2f}"),
+    table = pd.DataFrame(dict(generator=shown["name"], per_record=shown["per_record"].map(lambda x: f"{x:.2f}"),
                               largest=shown["largest"].map(number), oversized=shown["oversized"].map(number)))
-    return [f"BLOCKS  ({number(keys['pairs'].sum())} pairs the keys list, before dedupe)", *text_table(table)]
+    return [f"BLOCKS  ({number(generators['pairs'].sum())} pairs the generators' keys list, before dedupe)",
+            *text_table(table)]
 
 
-def unmapped(engine: Engine, c: dict, patterns: dict[str, str]) -> pd.DataFrame | None:
+def unmapped(engine: Engine, c: dict, looks: dict[str, str]) -> pd.DataFrame | None:
     """Return the input's columns that no field reads (config.toml's [input] columns), on its first rows.
 
-    For each column: the share filled, the share of filled values held once, and the field whose look ([report]
-    patterns) its values have most, with that share; best fit first. DuckDB only: it reads the file's own columns by
+    For each column: the share filled, the share of filled values held once, and the field whose look ([report.looks])
+    its values have most, with that share; best fit first. DuckDB only: it reads the file's own columns by
     their names. O(sample · columns · fields).
     """
     read = {x.casefold() for x in c["input"]["columns"]}
@@ -289,7 +292,7 @@ def unmapped(engine: Engine, c: dict, patterns: dict[str, str]) -> pd.DataFrame 
     counted = con.execute(f"SELECT c, COUNT(*), COUNT(DISTINCT v) FROM ({filled}) GROUP BY c", [BLANK]).fetchall()
     shape = {x: (k / n, d / max(1, k)) for x, k, d in counted}
     fits = {x: {} for x in columns}
-    for field, pattern in patterns.items():
+    for field, pattern in looks.items():
         matched = con.execute(f"SELECT c, AVG(regexp_matches(v, ?)::INT) FROM ({filled}) GROUP BY c", [pattern, BLANK])
         for x, share in matched.fetchall():
             fits[x][field] = share

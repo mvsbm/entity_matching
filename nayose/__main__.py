@@ -156,14 +156,20 @@ def build(a: argparse.Namespace) -> dict:
 
 
 def saved_decisions(out: Path) -> str | None:
-    """Write the run's decisions to a Parquet file beside it, for the run that replaces it, and return its path."""
+    """Write the run's decisions to a Parquet file beside it, for the run that replaces it, and return its path.
+
+    A run built before the column round was named holds it as batch: the file names it round.
+    """
     con = duckdb.connect(str(out / RUN), read_only=True)
     try:
-        found = con.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'decisions'").fetchall()
-        if not found[0][0]:
+        columns = {c for (c,) in con.execute("SELECT column_name FROM information_schema.columns "
+                                             "WHERE table_name = 'decisions'").fetchall()}
+        if not columns:
             return None
         path = out / "decisions.parquet"
-        con.execute(f"COPY decisions TO '{path}' (FORMAT parquet)")
+        round_ = "batch AS round" if "batch" in columns else "round"
+        con.execute(f"COPY (SELECT id_l, id_r, decision, why, {round_}, latest FROM decisions) "
+                    f"TO '{path}' (FORMAT parquet)")
         return str(path)
     finally:
         con.close()
@@ -197,7 +203,7 @@ def decide(a: argparse.Namespace) -> dict:
         nayose.decide(engine, files(a.given))
         stored, matches, entities = engine.rows(
             "SELECT (SELECT COUNT(*) FROM decisions), COUNT(CASE WHEN latest AND decision = 'match' THEN 1 END), "
-            "(SELECT COUNT(DISTINCT cluster_id) FROM gold) FROM decisions")[0]
+            "(SELECT COUNT(DISTINCT entity) FROM gold) FROM decisions")[0]
     seconds = round(time.perf_counter() - t, 2)
     return dict(decisions=stored - before, matches=matches, entities=entities, seconds=seconds)
 
@@ -222,16 +228,17 @@ def lookup(a: argparse.Namespace) -> dict:
                          fix="for example: python -m nayose lookup --out runs/main --record 1234")
     with reading(a.out, copy=False) as engine:
         if not a.file:
-            return nayose.lookup(engine, record=a.record, values=values or None, at_least=a.at_least, most=a.count)
+            return nayose.lookup(engine, record=a.record, values=values or None, at_least=a.at_least, most=a.most)
         inputs = nayose.config()["input"]
         id_column, columns, out = inputs["id"], set(inputs["columns"]), []
         for rec in pq.read_table(files(a.file)[0]).to_pylist():
             asked = {k: str(v) for k, v in rec.items() if k in columns and k != id_column and v is not None}
-            entities = (nayose.lookup(engine, values=asked, at_least=a.at_least, most=a.count)["entities"]
+            entities = (nayose.lookup(engine, values=asked, at_least=a.at_least, most=a.most)["entities"]
                         if asked else [])
             rows = [dict(asked=rec.get(id_column), entity=e["entity"], record=e["record"], points=e["points"],
-                         rule=e["rule"], keys=e["keys"]) for e in entities]
-            out += rows or [dict(asked=rec.get(id_column), entity=None, record=None, points=None, rule=None, keys=[])]
+                         rule=e["rule"], generators=e["generators"]) for e in entities]
+            out += rows or [dict(asked=rec.get(id_column), entity=None, record=None, points=None, rule=None,
+                                 generators=[])]
         return dict(records=out)
 
 
@@ -288,9 +295,9 @@ def parser() -> argparse.ArgumentParser:
                  nargs="*")
     lookup.add_argument("--record", help="a stored record's ID, looked up as if it were new")
     lookup.add_argument("--file", help="a file of records, each looked up by its values")
-    lookup.add_argument("--from", dest="at_least", type=float,
+    lookup.add_argument("--at-least", type=float,
                         help="the fewest points an entity shown has (default: config.toml [lookup] at_least)")
-    lookup.add_argument("--count", type=int, help="the most entities shown (default: config.toml [lookup] most)")
+    lookup.add_argument("--most", type=int, help="the most entities shown (default: config.toml [lookup] most)")
     return p
 
 

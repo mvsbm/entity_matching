@@ -1,6 +1,6 @@
 # The values nayose's SQL reads, a section per stage file (nayose/sql/). The method itself (the fields, keys, rules and
 # comparisons) is the SQL; what is here are its numbers and lists. A change here changes the run's fingerprint, so
-# increments refuse until a full run (nayose.fingerprint).
+# updates refuse until a build (nayose.fingerprint).
 
 [records]  # sql/records.sql
 kana_fold_from = "ガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴァィゥェォッャュョヮヵヶヲー"  # kana folding, character by character: voiced → unvoiced, small → large, ヴ/ヂ/ヅ/ヲ, ー → ウ
@@ -36,9 +36,9 @@ name_line = 0.99  # the name model calls a kind it is at least this sure of
 ngram = 3  # the name model reads a name's character n-grams of 1 to this many characters (config/kind_names.npz)
 trust_flag = false  # true: the file's flag decides every record's kind
 shared_name_column = false  # true: one column holds every name, a person's or a company's; each goes to the side its kind leans to
-min_block = 64  # records: the fewest a placeholder is held by
+placeholder_min = 64  # records: the fewest a placeholder is held by
 spread = 10  # a placeholder is held by this many times the field's records per value, or more
-crowd = 64  # the fewest customers a compared field's placeholder is held by
+crowd = 64  # the fewest customers (customer IDs, or records without one) a compared field's placeholder is held by
 
 [input]  # sql/functions.sql's intake, and mapping.sql
 nulls = ["NULL", "null", "Null", "\\N", "NaN", "nan", "None", "none", "N/A", "n/a", "#N/A", "-", "－"]  # a value written as one of these is missing
@@ -49,7 +49,7 @@ columns = ["CONT_ID", "FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", 
            "PHONE_NUM_4", "CIF_ID", "BIRTH_DATE", "PERSON_ORG_CODE"]
 
 [fit]  # sql/fit.sql, nayose/em.py
-fit_rows = 100000             # the sample the model is learned on: whole postal areas by hash, the last one cut
+fit_records = 100000          # the sample the model is learned on: whole postal areas by hash, the last one cut
 prior_recall = 0.0217         # the share of all matches the near-certain rules are thought to find
 fit_u_max_pairs = 1000000     # u sampled on the fit's sample: about this many pairs
 u_max_pairs = 10000000        # u sampled on the file to be scored: about this many pairs
@@ -57,22 +57,23 @@ rebuild_after = 0.1           # report.txt says to build again once the run has 
 seed = 0                      # the sample's hash seed
 # the EM sessions, in order: each learns from the sample's pairs sharing its key (fit.sql em_patterns); `start`: the
 # exact levels the key guarantees, whose evidence λ among its pairs starts from
-sessions = [{ key = "phone", start = [["phone", "exact"]] }, { key = "address", start = [] }]
+em_sessions = [{ key = "phone", start = [["phone", "exact"]] }, { key = "address", start = [] }]
 
 [score]  # sql/score.sql
 # the generators and rules a run uses, by the names score.sql gives them (each written once there; its order sets a
-# generator's bit in sources and a rule's rank): leave one out to run without it
-keys = ["cif", "phone_prefecture", "phone_postal_area", "phone_name_initial", "person_name", "company_name", "company_name_deletions",
-        "person_name_deletions_postal_area", "given_name_postal", "address_phone", "address_code_phone", "address_name_initial",
-        "address_code_name_initial", "given_name_address_code", "cif_deletions", "birth_date", "given_name_phone",
-        "birth_date_deletions_prefecture", "name_reading", "phone_given_tail", "postal_given_tail", "postal_area_given_tail"]
-rules = ["X1_CIF_PERSON_NAME", "X2_CIF_COMPANY_NAME", "X3_CIF_PHONE", "X4_PERSON_NAME_ADDRCD_PHONE", "X5_COMPANY_NAME_ADDRCD_PHONE",
+# generator's bit in a pair's mask and a rule's rank): leave one out to run without it
+generators = ["customer_id", "phone_prefecture", "phone_postal_area", "phone_name_initial", "person_name", "company_name",
+              "company_name_deletions", "person_name_deletions_postal_area", "given_name_postal", "address_phone",
+              "address_code_phone", "address_name_initial", "address_code_name_initial", "given_name_address_code",
+              "customer_id_deletions", "birth_date", "given_name_phone", "birth_date_deletions_prefecture", "name_reading",
+              "phone_name_tail", "postal_name_tail", "postal_area_name_tail"]
+rules = ["X1_CIF_FULL_NAME", "X2_CIF_COMPANY_NAME", "X3_CIF_PHONE", "X4_FULL_NAME_ADDRCD_PHONE", "X5_COMPANY_NAME_ADDRCD_PHONE",
          "F1_NAME~_ADDRCD_PHONE", "F2_NAME~_ADDRESS~_PHONE", "F3_NAME~_CIF", "F4_NAME_ADDRCD_PHONE~", "F5_COMPANY~_PHONE_POSTAL",
-         "F6_COMPANY~_ADDRCD_PHONE", "F7_GIVEN_ADDRCD_PHONE"]
+         "F6_COMPANY~_ADDRCD_PHONE", "X6_GIVEN_ADDRCD_PHONE"]
 keep_from = 0.0      # points: scored pairs are kept from here up (and every rule pair): what a match run can offer
 search_floor = 0.0   # points: a sampled pair at or above it keeps its oversized block (people review from 4 points)
-oversized = 64       # records: a block this big or bigger is checked on a sample of as many of its records first;
-                     # a rule leaves out a value of its keys held by this many records
+oversized = 64       # records: a block this big or bigger is checked on a sample of as many of its records first,
+                     # and joined only if it holds a pair at search_floor; a rule leaves out a key held by this many records
 
 [lookup]  # sql/lookup.sql
 at_least = 4.0     # points: the entities a lookup shows by default, from here up (the review floor), and every one a rule joins
@@ -83,7 +84,7 @@ most = 20          # the most entities a lookup shows
 sample_records = 10000  # records: FIELDS reads a sample of this many by hash, COLUMNS NOT MAPPED the input's first this many
 patterns_shown = 12     # PATTERNS BY SCORE shows each band's this many most common patterns of levels
 
-[report.patterns]  # sql/report.sql, nayose.report: what each field's values look like, for FIELDS' "looks right" and
+[report.looks]  # sql/report.sql, nayose.report: what each field's values look like, for FIELDS' "looks right" and
 # COLUMNS NOT MAPPED's "looks like" (RE2; company_name's: a legal form, [records]'s)
 full_name = '^[ァ-ヴー・ｦ-ﾟ\s　]+$'
 person_name = '^[ァ-ヴー・ｦ-ﾟ\s　]+$'

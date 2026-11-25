@@ -2,7 +2,7 @@
 
 # 5. Uncertain evidence: the Fellegi–Sunter model
 
-*Challenges C4 (look-alikes), C5 (partial evidence), C6 (empty fields) and C7 (pairs vs groups).*
+*Challenges C4 (look-alikes), C5 (partial evidence), C6 (empty fields) and C7 (pairs vs entities).*
 
 ## Challenge: how sure can we be about a pair?
 
@@ -26,12 +26,12 @@ The ratio m / u says how much more likely the observation is under "same" than u
 
 | Phone observation | m: same entity | u: different entities | Evidence |
 |---|---|---|---|
-| exactly equal | 0.259 | about 1 in 9,400 | +11.3 bits |
+| exact (exactly equal) | 0.259 | about 1 in 9,400 | +11.3 bits |
 | one digit off | 0.061 | about 1 in 277 | +4.1 bits |
-| different | 0.681 | 0.996 | −0.5 bits |
+| else (different) | 0.681 | 0.996 | −0.5 bits |
 
 u is rounded to three decimals; the "1 in" values follow from m and the weight. Both can be checked by counting:
-- **Exactly equal:** two strangers share a random last four digits about 1 time in 10,000.
+- **Exact:** two strangers share a random last four digits about 1 time in 10,000.
 - **One digit off:** each number has 36 neighbours that differ in exactly one digit, and 36 in 10,000 is about 1 in 278.
 - **m is not 1:** a true pair has a *different* phone two times in three, because people change phones and own several.
 
@@ -39,7 +39,7 @@ u is rounded to three decimals; the "1 in" values follow from m and the weight. 
 
 $$\underbrace{\frac{P(\text{same} \mid \gamma)}{P(\text{different} \mid \gamma)}}_{\text{odds after looking}} \;=\; \underbrace{\frac{\lambda}{1-\lambda}}_{\text{odds before looking}} \;\times\; \prod_{k} \frac{m_k(\gamma_k)}{u_k(\gamma_k)}$$
 
-Here λ is the chance that two random records are the same entity. Taking log₂ of both sides turns the product into a sum, which gives the **match weight**:
+Here λ is how likely two random records are one entity. Taking log₂ of both sides turns the product into a sum, which gives the pair's **points**:
 
 $$w \;=\; \log_2\frac{\lambda}{1-\lambda} \;+\; \sum_k \log_2\frac{m_k}{u_k}$$
 
@@ -50,19 +50,19 @@ Each term is a number of **bits**, and each bit doubles the odds. So +10 bits mu
 | Evidence | Observation | Bits |
 |---|---|---|
 | before looking | two random records match about 1 in 23,000 | −14.49 |
-| name | different | −3.19 |
+| name | else (different) | −3.19 |
 | company | missing (a person has no company name) | 0.00 |
-| address | the same address | +12.76 |
-| phone | exactly equal | +11.14 |
-| CIF ID | different | −0.03 |
+| address | same address | +12.76 |
+| phone | exact (exactly equal) | +11.14 |
+| CIF ID | else (different) | −0.03 |
 | birth date | missing | 0.00 |
-| **total** | | **+6.19** |
+| **total: the points** | | **+6.19** |
 
-The total is from unrounded parts. Back from bits to a probability:
+The total is from unrounded parts. Back from points to a probability:
 
 $$p = \frac{2^{w}}{1 + 2^{w}} = \frac{2^{6.19}}{1 + 2^{6.19}} = 98.6\%$$
 
-That clears the method's 6-bit threshold (below) by 0.19 bits. A different CIF ID costs almost nothing: true pairs have different CIF IDs 98.3% of the time (m = 0.983), nearly as often as strangers.
+That clears the method's 6-point threshold (below) by 0.19 points. A different CIF ID costs almost nothing: true pairs have different CIF IDs 98.3% of the time (m = 0.983), nearly as often as strangers.
 
 ### Why this solution
 
@@ -79,14 +79,14 @@ So correlated fields form **one comparison** with ordered levels. The first leve
 
 | Comparison | Levels, strongest first |
 |---|---|
-| name | exact · exact after folding · same reading · very close (Jaro–Winkler ≥ 0.95 after folding) · same given name · close (≥ 0.75) · else |
-| company | exact (legal form removed, kana folded) · close (Jaro–Winkler ≥ 0.8) · else |
-| address | same address code or address · address within 2 edits · same postal code · else |
+| name | exact · fold exact (exact after folding) · same reading · fold JW high (Jaro–Winkler ≥ 0.95 after folding) · given name (the same given name) · fold JW low (≥ 0.75) · else |
+| company | exact (legal form removed, kana folded) · JW low (Jaro–Winkler ≥ 0.8) · else |
+| address | same address (the same address code or address) · address close (within 2 edits) · same postal (the same postal code) · else |
 | phone | exact · one digit off · else |
-| CIF ID | exact · one edit off (a digit wrong, added or dropped, or two neighbours swapped) · else |
-| birth date | exact · one edit off (a digit wrong, added or dropped, or two neighbours swapped) · else |
+| cif (the CIF ID) | exact · one digit off (a digit wrong, added or dropped, or two neighbours swapped) · else |
+| birth (the birth date) | exact · one digit off (a digit wrong, added or dropped, or two neighbours swapped) · else |
 
-The "same reading" level catches a long vowel written another way (サトウ and サトオ). The "same given name" level catches a surname change after marriage.
+A missing side is level -1, shown as missing. The "same reading" level catches a long vowel written another way (サトウ and サトオ). The "given name" level catches a surname change after marriage.
 
 **In short:** every field adds evidence in bits; correlated fields share one comparison.
 
@@ -98,7 +98,7 @@ In a real file, nobody tells us which pairs match. Each parameter must come from
 - **The leading exact levels** of each comparison (an exact name, the same address, the same CIF ID): from how often each value occurs.
 - **A one-edit level right after them on the same column** (the CIF ID, phone or birth date one digit off): through one-deletion keys, since two values one edit apart always share a key. The CIF ID, phone and birth date comparisons then need no sample at all.
 
-The other levels (a close name, a nearby address) come from 10 million random pairs, every one of them scored. Counting matters because a sample of 10 million pairs cannot see an agreement rarer than about one in a billion pairs, which an exact name or CIF ID becomes in a big file.
+The other levels (such as fold JW low, address close) come from 10 million random pairs, every one of them scored. Counting matters because a sample of 10 million pairs cannot see an agreement rarer than about one in a billion pairs, which an exact name or CIF ID becomes in a big file.
 
 **u is measured on every file we score.** Some fields have more distinct values in a bigger file: there are more addresses and more CIF IDs. Two random records then agree on them less often, so u is smaller. A u measured on train would under-credit those agreements on a bigger file, and over-credit them on a smaller one. Measuring u on the whole file being scored keeps each weight right at any size. The scores and the check on oversized key blocks ([chapter 3](03-far-too-many-pairs.md)) use the same u. It needs no labels, and costs about the same at any size: the fit, with this measurement inside it, takes 2.75 seconds at 13,019 records and 6.03 at a million ([`reports/benchmark.md`](../../reports/benchmark.md)).
 
@@ -109,23 +109,23 @@ The other levels (a close name, a nearby address) come from 10 million random pa
 1. **Guess the matches:** with the current m, u and λ, compute each pair's probability of being a match.
 2. **Update m:** recount each level, weighting every pair by that probability.
 
-It runs once on pairs that share a phone and once on pairs that share an address (`[fit] sessions`). Each run learns the m values of the *other* fields, and a level's m is the median of what the runs learn. A run fits λ and m on a fixed sample of 100,000 records, made of whole postal areas, so the cost doesn't grow with the file. That fit draws its own u sample of 1 million pairs, which feeds only EM; the scores use the u measured on the whole file.
+It runs once on pairs that share a phone and once on pairs that share an address (`[fit] em_sessions`). Each run learns the m values of the *other* fields, and a level's m is the median of what the runs learn. A run fits λ and m on a fixed sample of 100,000 records, made of whole postal areas, so the cost doesn't grow with the file. That fit draws its own u sample of 1 million pairs, which feeds only EM; the scores use the u measured on the whole file.
 
-**Does EM get it right?** Our synthetic data has labels, so we can check. Trained on the same records, EM and the labels learn close weights. This is the configuration as written, where "very close" starts at 0.92:
+**Does EM get it right?** Our synthetic data has labels, so we can check. Trained on the same records, EM and the labels learn close weights. This is the configuration as written, where "fold JW high" starts at 0.95:
 
 | Level | EM | From labels |
 |---|---|---|
 | name exact | +15.55 | +15.79 |
-| name very close | +11.50 | +11.48 |
+| name fold JW high | +11.50 | +11.48 |
 | same address | +13.35 | +13.65 |
 | phone exact | +11.30 | +11.64 |
-| CIF ID different | −0.02 | −0.03 |
-| company different | −2.71 | −1.51 |
-| name different | −2.67 | −4.39 |
+| cif else | −0.02 | −0.03 |
+| company else | −2.71 | −1.51 |
+| name else | −2.67 | −4.39 |
 
-The largest gap, about 1.7 bits, is a different name.
+The largest gap, about 1.7 bits, is the name's else level, a different name.
 
-**What can go wrong.** A level may never occur in the sample, if its threshold is too strict, or if a lower level can never be reached because the level above it always catches the pair first. Splink then quietly uses default values, which can create strong evidence out of nothing. We use cautious bounds instead. A level no random pair reaches gets u at its 95% upper bound, and a level never seen in training counts 0 bits. The company comparison has no "very close" level for that reason: no pair reaches it, in the sample or in EM, so it would add 0 bits for a second string comparison on every pair.
+**What can go wrong.** A level may never occur in the sample, if its threshold is too strict, or if a lower level can never be reached because the level above it always catches the pair first. Splink then quietly uses default values, which can create strong evidence out of nothing. We use cautious bounds instead. A level no random pair reaches gets u at its 95% upper bound, and a level never seen in training counts 0 bits. The company comparison has no "JW high" level for that reason: no pair reaches it, in the sample or in EM, so it would add 0 bits for a second string comparison on every pair.
 
 EM can go wrong the other way too. A level its learning pairs never reach gets an m of almost 0, and so a huge negative weight: a phone one digit off would count as near-proof of two different people, where a typo is the likelier story. So no level weighs less than its comparison's "else" level. And "one digit off" stands for a typo in a value that matches share; where matches never shared the exact value in training (an ID unique to each record), being one digit off just means neighbouring IDs, so it counts 0 bits.
 
@@ -147,24 +147,24 @@ Tested like any other change on cross-validated train, the adjustment loses 33 t
 
 ## Challenge: where to draw the line?
 
-A score is not yet a decision, and a run merges nothing by itself: people set a match run's threshold and decide its pairs. The method is designed, and measured, at **6 bits or more**, a probability of about 98.5% (`[lookup] likely_from`, where a lookup calls a candidate likely). On validation, with every rule pair and every pair at or above the threshold taken as a match, the threshold trades recall against false merges like this:
+A score is not yet a decision, and a run merges nothing by itself: people set a match run's threshold and decide its pairs. The method is designed, and measured, at **6 points or more**, a probability of about 98.5% (`[lookup] likely_from`, where a lookup calls a candidate likely). On validation, with every rule pair and every pair at or above the threshold taken as a match, the threshold trades recall against false merges like this:
 
-| Taken at or above | Pairs taken | False pairs among them | Recall after grouping |
+| Taken at or above | Pairs taken | False pairs among them | Recall after connected components |
 |---|---|---|---|
-| 0 bits | 1,561 | 8 | 59.7% |
-| 2 bits | 1,491 | 5 | 58.2% |
-| 4 bits | 1,259 | 0 | 51.8% |
-| **6 bits** | **1,208** | **0** | **49.9%** |
-| 8 bits | 1,166 | 0 | 48.6% |
-| 10 bits | 703 | 0 | 28.8% |
+| 0 points | 1,561 | 8 | 59.7% |
+| 2 points | 1,491 | 5 | 58.2% |
+| 4 points | 1,259 | 0 | 51.8% |
+| **6 points** | **1,208** | **0** | **49.9%** |
+| 8 points | 1,166 | 0 | 48.6% |
+| 10 points | 703 | 0 | 28.8% |
 
 *Pairs taken: the pairs the keys list, at or above the threshold, with a name compared (below). Each is scored with the model fitted on train, its u measured on val.*
 
-The 6 is not picked from this table, which would tune it on validation. It comes from the threshold rule applied to train at design time ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)): the lowest weight with no false pair in cross-validation, plus one safety step.
+The 6 is not picked from this table, which would tune it on validation. It comes from the threshold rule applied to train at design time ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)): the lowest threshold with no false pair in cross-validation, plus one safety step.
 
-**The safety step is the review floor.** The pairs between the lowest clean weight and the design threshold, from 4 to 6 bits, are never wrong on cross-validated train, but sit one step below it in case of noise. On val, the 4-bit row above takes 51 more pairs, none of them false, and lifts recall from 49.9% to 51.8%. A lookup shows entities from the review floor by default (`[lookup] at_least`); a match run starts wherever people set it, from 0 bits up (`[score] keep_from`: a run keeps no pair below it) ([decisions](../architecture.md#6--decisions)).
+**The safety step is the review floor.** The pairs between the lowest clean threshold and the design threshold, from 4 to 6 points, are never wrong on cross-validated train, but sit one step below it in case of noise. On val, the 4-point row above takes 51 more pairs, none of them false, and lifts recall from 49.9% to 51.8%. A lookup shows entities from the review floor by default (`[lookup] at_least`); a match run starts wherever people set it, from 0 points up (`[score] keep_from`: a run keeps no pair below it) ([decisions](../architecture.md#6--decisions)).
 
-**A name must be compared.** A household shares an address and a phone, and those two alone can reach 6 bits. So the method, as measured, takes a model pair only if a person name or a company name is filled on both sides. A match run's table marks those pairs (`named`), and people judge the others on their evidence, whatever their score.
+**A name must be compared.** A household shares an address and a phone, and those two alone can reach 6 points. So the method, as measured, takes a model pair only if a person name or a company name is filled on both sides. A match run's table marks those pairs (`named`), and people judge the others on their evidence, whatever their score.
 
 **The closest non-match**, one of the two pairs of different people with the highest score on val:
 
@@ -173,17 +173,17 @@ The 6 is not picked from this table, which would tune it on validation. It comes
 | C | ャマノベタカユキ | 北海道岩見沢市日の出台10-26-24 | 2604 | 8852433827058 |
 | D | イナモチタカユキ | 大阪府泉北郡忠岡町 | 2604 | 7587446239261 |
 
-Same phone digits (+11.14). The surnames differ, but the given names agree (タカユキ), worth +7.61. Different addresses (−0.58), and a different CIF ID (−0.03): **+3.64 bits**, below even the review floor. Our example pair's names counted as different, but it shared the address as well as the phone; that is what lifted it to 6.19.
+Same phone digits (+11.14). The surnames differ, but the given names agree (タカユキ), worth +7.61. Different addresses (−0.58), and a different CIF ID (−0.03): **+3.64 points**, below even the review floor. Our example pair's names counted as different, but it shared the address as well as the phone; that is what lifted it to 6.19.
 
-## Challenge: from pairs to groups
+## Challenge: from pairs to entities
 
-Matched pairs must become groups. If people say A–B and B–C match, then A, B and C are one entity.
+Matched pairs must become entities. If people say A–B and B–C match, then A, B and C are one entity.
 
-**Solution: connected components.** Records are points, matched pairs are lines, and every connected set of points is one entity. Each record starts alone, and only people's match decisions draw lines, the rules' pairs and this stage's alike.
+**Solution: connected components.** Records are dots, matched pairs are lines, and every connected set of dots is one entity. Each record starts alone, and only people's match decisions draw lines, the rules' pairs and this stage's alike.
 
-**Why, and the risk.** It is the natural reading of "same as", and it lets a record join a group that the rules already started. The risk is a **chain**: one false pair can join two whole groups. A strict threshold, and people deciding each pair, keep chains safe.
+**Why, and the risk.** It is the natural reading of "same as", and it lets a record join an entity that the rules already started. The risk is a **chain**: one false pair can join two whole entities. A strict threshold, and people deciding each pair, keep chains safe.
 
-A cautious alternative would refuse a merge when the two groups hold different given names, but a typo in a given name looks like a conflict, so it loses true pairs. A run groups by connected components only (`decide.sql`, with `entities_of`), and the benchmark groups the pairs it takes with the same function, so the choice is measured the way it runs.
+A cautious alternative would refuse a merge when the two entities hold different given names, but a typo in a given name looks like a conflict, so it loses true pairs. A run makes its entities by connected components only (`decide.sql`, with `entities_of`), and the benchmark makes entities of the pairs it takes with the same function, so the choice is measured the way it runs.
 
 ## On our data
 
@@ -195,15 +195,15 @@ A cautious alternative would refuse a merge when the two groups hold different g
 
 Pairs of two people of one household are counted apart, neither true nor false: 112 on train, 51 on val and 45 on test ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)).
 
-**In short:** weighing evidence lifts recall from about 10% to about 48%, with no false merge on any split. Most of the rest share too little to clear 6 bits ([data](../data.md#how-hard-it-is)).
+**In short:** weighing evidence lifts recall from about 10% to about 48%, with no false merge on any split. Most of the rest share too little to clear 6 points ([data](../data.md#how-hard-it-is)).
 
 ## In the code
 
-- `nayose/sql/functions.sql`, 2. The comparisons: `name_score` and `name_level`, `gamma_company`, `gamma_address`, `gamma_phone`, `gamma_cif`, `gamma_birth`, and `levels`, each level's label and kind
+- `nayose/sql/functions.sql`, 2. The comparisons: `name_score` and `name_level`, `gamma_company`, `gamma_address`, `gamma_phone`, `gamma_cif`, `gamma_birth`, and `levels`, each level's label and agreement
 - `nayose/sql/fit.sql`: 1. The sample; 2. λ (`fit_prior`, the near-certain rules' pairs); 3. EM's pairs (`em_patterns`, a session a key); 4. u (counted where it can be, the rest sampled, on the sample and on the file); 5. The model (`fit_model`: `model`, each level's m, u and bits; `fit`, λ and its bits at the file's size)
 - `nayose/em.py`: `fit` (the model from fit.sql's counts), `learn` (λ, u, then m), `session` (one EM session), `u_bound`, `sensible_m` (the two limits on m), `assemble` (u on the file)
-- `nayose/config.toml` `[fit]`: `prior_recall`, `sessions`, `fit_rows`, `fit_u_max_pairs`, `u_max_pairs`, `seed`; `[lookup]`: `at_least` (the review floor, 4 bits), `likely_from` (6 bits)
-- `nayose/sql/score.sql`: 3. The model's bits (`weights`: the prior's bits, rescaled for a lookup; `weight_of`; `bound_of`); 6. The scores (`scored`: each pair's levels, weight and probability, and `named`, the name check)
+- `nayose/config.toml` `[fit]`: `prior_recall`, `em_sessions`, `fit_records`, `fit_u_max_pairs`, `u_max_pairs`, `seed`; `[lookup]`: `at_least` (the review floor, 4 points), `likely_from` (6 points)
+- `nayose/sql/score.sql`: 3. The model's bits (`level_bits`: the prior's bits, rescaled for a lookup; `points_of`; `bound_of`); 6. The scores (`scored`: each pair's levels, points and probability, and `named`, the name check)
 - `nayose/sql/match.sql`: a match run's table for people, at the threshold they set (each comparison's level and bits, `named`, `household`)
 - `nayose/sql/decide.sql`, 3. The entities: connected components over the pairs people said match (`entities_of`, `nayose/entities.py`)
 

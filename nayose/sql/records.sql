@@ -213,7 +213,7 @@ FROM same;
 -- 5. A placeholder is a value held by so many records that it can't be one entity's, so it is no evidence. Every
 --    placeholder is read as missing.
 --    For person_name, company_name, address_code, address, phone and birth_date, a value is crowded if it reaches
---    the field's bar and at least @crowd customers hold it. The bar is @min_block records, or @spread times the
+--    the field's bar and at least @crowd customers hold it. The bar is @placeholder_min records, or @spread times the
 --    field's records per value if that is more. A crowded value is a placeholder if its own pairs outnumber the pairs
 --    that all the field's uncrowded values make together.
 --    A customer ID is a placeholder if it reaches its field's bar. Its customers and pairs aren't tested.
@@ -262,7 +262,7 @@ value_counts AS (  -- Each value's records (n) and customers are counted.
 -- Each field gets its bar (at_least), and the number of pairs that all its values make together (all_pairs). A value
 -- held by n records makes n(n-1)/2 pairs.
 field_bars AS (
-  SELECT field, GREATEST(@min_block, CAST(CEIL(@spread * SUM(n) / GREATEST(COUNT(*), 1)) AS INT64)) AS at_least,
+  SELECT field, GREATEST(@placeholder_min, CAST(CEIL(@spread * SUM(n) / GREATEST(COUNT(*), 1)) AS INT64)) AS at_least,
          SUM(pairs_of(n)) AS all_pairs
   FROM value_counts GROUP BY field
 ),

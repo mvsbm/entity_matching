@@ -270,21 +270,21 @@ def values_of(name: str, refit: bool = True, lookup: bool = False) -> dict:
                     flag_company=list(r["flag_company"]), name_line=float(r["name_line"]),
                     trust_flag=bool(r["trust_flag"]), shared_name_column=bool(r["shared_name_column"]),
                     ngram=int(r["ngram"]),
-                    intercept=float(np.load(NAME_MODEL)["intercept"]), min_block=int(r["min_block"]),
+                    intercept=float(np.load(NAME_MODEL)["intercept"]), placeholder_min=int(r["placeholder_min"]),
                     spread=int(r["spread"]), crowd=int(r["crowd"]), lookup=lookup)
     if name == "fit":
         f = c["fit"]
-        return dict(fit_rows=int(f["fit_rows"]), seed=str(f["seed"]), fit_u_max_pairs=float(f["fit_u_max_pairs"]),
+        return dict(fit_records=int(f["fit_records"]), seed=str(f["seed"]), fit_u_max_pairs=float(f["fit_u_max_pairs"]),
                     u_max_pairs=float(f["u_max_pairs"]), settings=json.dumps(f), refit=refit)
     if name == "score":
         s = c["score"]
-        return dict(keys=list(s["keys"]), rules=list(s["rules"]),
+        return dict(generators=list(s["generators"]), rules=list(s["rules"]),
                     keep_from=-math.inf if lookup else float(s["keep_from"]), search_floor=float(s["search_floor"]),
                     oversized=int(s["oversized"]), lookup=lookup, outside=0)
     if name == "report":
         floor, likely = float(c["lookup"]["at_least"]), float(c["lookup"]["likely_from"])
-        patterns = {**c["report"]["patterns"], "company_name": legal_pattern(c["records"])}
-        return dict(patterns=json.dumps(patterns, ensure_ascii=False),
+        looks = {**c["report"]["looks"], "company_name": legal_pattern(c["records"])}
+        return dict(looks=json.dumps(looks, ensure_ascii=False),
                     edges=sorted({-20.0, -10.0, 0.0, floor, likely, likely + 2, likely + 4, likely + 8, likely + 12}),
                     floor=floor, oversized=int(c["score"]["oversized"]),
                     sample_records=int(c["report"]["sample_records"]),
@@ -301,7 +301,7 @@ def fit(engine: Engine, model: str | None = None) -> None:
     """
     if model is not None:
         engine.run("CREATE OR REPLACE TABLE fit AS SELECT CAST(NULL AS FLOAT64) AS probability, "
-                   "CAST(NULL AS INT64) AS fit_rows, CAST(NULL AS INT64) AS records, "
+                   "CAST(NULL AS INT64) AS fit_records, CAST(NULL AS INT64) AS records, "
                    "CAST(NULL AS FLOAT64) AS prior_bits, "
                    "CAST(NULL AS STRING) AS notes, @fitted AS fitted",
                    {"fitted": model})
@@ -330,8 +330,8 @@ def lookup(engine: Engine, record: str | None = None, values: dict | None = None
     Give `record`, a stored record's ID, to look it up as if it were new (itself left out), or `values`, by the
     input's column names. The answer lists each entity at `at_least` points or more ([lookup] at_least, the review
     floor), or joined by a rule, with its best record, its points, each comparison's level, the rule that would join
-    it and the keys that listed it: at most `most` of them, else the closest record. It also gives the record as
-    compared, and each key looked up.
+    it and the generators whose keys listed it: at most `most` of them, else the closest record. It also gives the
+    record as compared, and what each generator looked up.
 
     A lookup writes nothing to the run, and reads only what it touches, in three steps: the record's own keys
     (asked_keys), the run's key index read by those keys (read_index), and the record scored against those records
@@ -365,8 +365,8 @@ def asked_keys(engine: Engine, record: str | None, values: dict | None, asked_id
     """Return the keys of the record asked about, made from it alone: its every_key and rule_keys rows (step 1)."""
     with engine.scratch():
         score_in_scratch(engine, record, values, [asked_id] if record is not None else [], until="made_keys")
-        return {"every_key": set(engine.rows("SELECT g, k FROM made_keys WHERE id = @id", {"id": asked_id})),
-                "rule_keys": set(engine.rows("SELECT i, k FROM made_rule_keys WHERE id = @id", {"id": asked_id}))}
+        return {"every_key": set(engine.rows("SELECT g, key FROM made_keys WHERE id = @id", {"id": asked_id})),
+                "rule_keys": set(engine.rows("SELECT i, key FROM made_rule_keys WHERE id = @id", {"id": asked_id}))}
 
 
 def read_index(engine: Engine, keys: dict[str, set], record: str | None, asked_id: str,
@@ -375,22 +375,22 @@ def read_index(engine: Engine, keys: dict[str, set], record: str | None, asked_i
 
     That is every record of each rule key and of each block, but of an oversized block (`oversized` records or more)
     only its first records by hash: the gate's sample (score.sql), and one more, so the record asked about may rank
-    anywhere. Returns the IDs, and each block's (g, k) with [its size, the IDs read].
+    anywhere. Returns the IDs, and each block's (g, key) with [its size, the IDs read].
     """
     ids = {asked_id} if record is not None else set()
     if keys["rule_keys"]:
-        rows = engine.rows("SELECT i, k, id FROM rule_keys WHERE k IN UNNEST(@ks)",
-                           {"ks": sorted({k for _, k in keys["rule_keys"]})})
-        ids |= {record_id for rule_rank, k, record_id in rows if (rule_rank, k) in keys["rule_keys"]}
+        rows = engine.rows("SELECT i, key, id FROM rule_keys WHERE key IN UNNEST(@keys)",
+                           {"keys": sorted({key for _, key in keys["rule_keys"]})})
+        ids |= {record_id for rule_rank, key, record_id in rows if (rule_rank, key) in keys["rule_keys"]}
     blocks = {}
     if keys["every_key"]:
-        rows = engine.rows("SELECT g, k, id, COUNT(*) OVER (PARTITION BY g, k) AS n FROM every_key "
-                           "WHERE k IN UNNEST(@ks) QUALIFY COUNT(*) OVER (PARTITION BY g, k) < @oversized "
-                           "OR ROW_NUMBER() OVER (PARTITION BY g, k ORDER BY er_hash(id)) <= @oversized + 1",
-                           {"ks": sorted({k for _, k in keys["every_key"]}), "oversized": oversized})
-        for g, k, record_id, n in rows:
-            if (g, k) in keys["every_key"]:
-                blocks.setdefault((g, k), [n, set()])[1].add(record_id)
+        rows = engine.rows("SELECT g, key, id, COUNT(*) OVER (PARTITION BY g, key) AS n FROM every_key "
+                           "WHERE key IN UNNEST(@keys) QUALIFY COUNT(*) OVER (PARTITION BY g, key) < @oversized "
+                           "OR ROW_NUMBER() OVER (PARTITION BY g, key ORDER BY er_hash(id)) <= @oversized + 1",
+                           {"keys": sorted({key for _, key in keys["every_key"]}), "oversized": oversized})
+        for g, key, record_id, n in rows:
+            if (g, key) in keys["every_key"]:
+                blocks.setdefault((g, key), [n, set()])[1].add(record_id)
     return ids | {record_id for _, read in blocks.values() for record_id in read}, blocks
 
 
@@ -398,30 +398,30 @@ def score_asked(engine: Engine, record: str | None, values: dict | None, asked_i
                 run_size: int, at_least: float) -> tuple:
     """Score the record against the records read, and return the record as compared and lookup.sql's tables (step 3).
 
-    A block read in part is scored at its whole size. An oversized block that the gate keeps makes every pair of it a
+    A block read in part is scored at its whole size. An oversized block that the gate joins makes every pair of it a
     candidate, so that block is then read whole, from the run's index, and the record scored again: each pass reads
-    more, and the loop ends once no block read in part is kept. The index is read outside the scratch, whose
+    more, and the loop ends once no block read in part is joined. The index is read outside the scratch, whose
     every_key is the lookup's own. Returns (the record as compared, candidates, entities, checked).
     """
     extra = 0 if record is not None else 1  # a typed record isn't in the index: its blocks hold one record more
     while True:
         with engine.scratch():
-            in_part = [(g, k, n + extra) for (g, k), (n, read) in blocks.items() if n > len(read)]
+            in_part = [(g, key, n + extra) for (g, key), (n, read) in blocks.items() if n > len(read)]
             temp = score_in_scratch(engine, record, values, sorted(ids), outside=run_size - len(ids), sized=in_part)
-            gate_kept = {(g, k) for g, k in engine.rows("SELECT g, value FROM gated WHERE decision = 'kept'")}
-            to_read = gate_kept & {(g, k) for g, k, _ in in_part}  # a block read in part that the gate kept
+            gate_joined = set(engine.rows("SELECT g, key FROM gated WHERE verdict = 'joined'"))
+            to_read = gate_joined & {(g, key) for g, key, _ in in_part}  # a block read in part that the gate joined
             if not to_read:
                 return lookup_tables(engine, temp, record, asked_id, at_least)
         read_whole(engine, to_read, blocks, ids)
 
 
 def read_whole(engine: Engine, to_read: set, blocks: dict, ids: set) -> None:
-    """Add every record of the blocks `to_read`, as (g, k), to `blocks` and `ids`, from the run's key index."""
-    index = engine.rows("SELECT g, k, id FROM every_key WHERE k IN UNNEST(@ks)",
-                        {"ks": sorted({k for _, k in to_read})})
-    for g, k, record_id in index:
-        if (g, k) in to_read:
-            blocks[g, k][1].add(record_id)
+    """Add every record of the blocks `to_read`, as (g, key), to `blocks` and `ids`, from the run's key index."""
+    index = engine.rows("SELECT g, key, id FROM every_key WHERE key IN UNNEST(@keys)",
+                        {"keys": sorted({key for _, key in to_read})})
+    for g, key, record_id in index:
+        if (g, key) in to_read:
+            blocks[g, key][1].add(record_id)
             ids.add(record_id)
 
 
@@ -447,7 +447,7 @@ def score_in_scratch(engine: Engine, record: str | None, values: dict | None, id
     The temporary tables hold the run as the lookup sees it (copy_for_lookup), with the record asked about as a batch
     of its own (add_asked_record). score.sql then runs on them, up to the table `until` makes. `outside` is how many
     of the run's records the temporary records table doesn't hold; `sized` gives each block it holds in part with its
-    whole size, as (g, k, n).
+    whole size, as (g, key, n).
     """
     temp = copy_for_lookup(engine, ids, sized)
     add_asked_record(engine, record, values, temp)
@@ -463,11 +463,11 @@ def copy_for_lookup(engine: Engine, ids: list, sized: list) -> set:
     copied whole. block_size holds `sized`. A statement reads a temporary table before the run's of the same name.
     """
     if sized:  # three arrays, as a parameter is an array of values on both engines
-        engine.run("CREATE OR REPLACE TEMP TABLE block_size AS SELECT g, @k[OFFSET(i)] AS k, @n[OFFSET(i)] AS n "
+        engine.run("CREATE OR REPLACE TEMP TABLE block_size AS SELECT g, @key[OFFSET(i)] AS key, @n[OFFSET(i)] AS n "
                    "FROM UNNEST(@g) AS g WITH OFFSET AS i",
-                   {"g": [g for g, _, _ in sized], "k": [k for _, k, _ in sized], "n": [n for _, _, n in sized]})
+                   {"g": [g for g, _, _ in sized], "key": [key for _, key, _ in sized], "n": [n for _, _, n in sized]})
     else:
-        engine.run("CREATE OR REPLACE TEMP TABLE block_size (g INT64, k STRING, n INT64)")
+        engine.run("CREATE OR REPLACE TEMP TABLE block_size (g INT64, key STRING, n INT64)")
     temp = {"block_size"}
     for table in ("records", "gold"):
         engine.run(f"CREATE TEMP TABLE {table} AS SELECT * FROM {table} WHERE id IN UNNEST(@ids)", {"ids": ids})
@@ -510,9 +510,9 @@ def lookup_answer(record: str | None, asked_record, candidates: pd.DataFrame, en
     closest = None if near is None else dict(record=near["id"], entity=near["entity"],
                                              points=round(float(near["points"]), 2), shown=shown_fields(near))
     return dict(record={"id": record, **{k: as_text(asked_record[k]) for k in asked_record.index}},
-                entities=answers[:most], found=len(answers), at_least=at_least, candidates=len(candidates),
+                entities=answers[:most], entities_total=len(answers), at_least=at_least, candidates=len(candidates),
                 likely=sum(e["likely"] for e in answers), closest=closest,
-                checked=[key_checked(x) for _, x in checked.iterrows()])
+                checked=[generator_checked(x) for _, x in checked.iterrows()])
 
 
 def as_text(v) -> str | None:
@@ -527,25 +527,26 @@ def shown_fields(x) -> dict:
 
 def entity_found(x) -> dict:
     """Return one entity of a lookup's answer, from its row of lookup.sql's entities."""
-    keys = sorted(x["sources"].split("+")) if as_text(x["sources"]) else []
+    generators = sorted(x["generators"].split("+")) if as_text(x["generators"]) else []
     return dict(entity=x["entity"], record=x["id"], points=round(float(x["points"]), 2), likely=bool(x["likely"]),
-                rule=as_text(x["rule"]), keys=keys, compared={k: x[f"level_{k}"] for k in COMPARISONS},
+                rule=as_text(x["rule"]), generators=generators, compared={k: x[f"level_{k}"] for k in COMPARISONS},
                 records=int(x["records"]), shown=shown_fields(x))
 
 
-def key_checked(x) -> dict:
-    """Return one key of a lookup's answer, from its row of lookup.sql's checked: what it found, and why not more."""
-    key = dict(key=x["key"], found=int(x["found"]))
+def generator_checked(x) -> dict:
+    """Return one generator (or rule) of a lookup's answer, from its row of lookup.sql's checked: the records its
+    keys found, and why not more."""
+    out = dict(generator=x["generator"], records=int(x["records"]))
     if x["lacks"]:
-        key["why"] = "the record has no value for it"
+        out["why"] = "the record has no value for it"
     if not pd.isna(x["untrusted"]):
-        key["why"] = f"its value is on {int(x['untrusted']):,} records: the rule doesn't trust it"
-    # a frame made from Arrow holds a list as an array, one made from rows as a list; a NULL (no big block) is neither
-    if isinstance(x["big"], (list, np.ndarray)) and len(x["big"]):
-        key["big"] = [dict(records=int(b["records"]), sampled=int(b["sampled"]),
-                           best=None if b["best"] is None else round(float(b["best"]), 2), decision=b["decision"])
-                      for b in x["big"]]
-    return key
+        out["why"] = f"its value is on {int(x['untrusted']):,} records: the rule doesn't trust it"
+    # a frame made from Arrow holds a list as an array, one made from rows as a list; NULL (no oversized block) neither
+    if isinstance(x["oversized"], (list, np.ndarray)) and len(x["oversized"]):
+        out["oversized"] = [dict(records=int(b["records"]), sampled=int(b["sampled"]),
+                                 best=None if b["best"] is None else round(float(b["best"]), 2), verdict=b["verdict"])
+                            for b in x["oversized"]]
+    return out
 
 
 # ---------- the jobs ----------
