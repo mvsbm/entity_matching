@@ -15,12 +15,12 @@ import sqlglot
 
 import nayose
 
-from nayose.engines import bigquery_literal, functions, procedures
+from nayose.engines import bigquery_literal, functions, in_dataset, procedures
 from test_sql import reserved
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 CODE = nayose.NOT_CODE  # comments and strings: what isn't code
-FILE_BUDGET = 79  # the most tracked files the repository holds: CONTRIBUTING.md, rule 10
+FILE_BUDGET = 80  # the most tracked files the repository holds: CONTRIBUTING.md, rule 10
 
 
 def test_the_repository_holds_no_more_files_than_its_budget():
@@ -58,13 +58,36 @@ def test_each_job_is_a_procedure_of_its_stages_with_every_value_it_reads_declare
     assert "`p.run`.fit_model(" in jobs["build"] and "`p.run`.entities_of(" in jobs["decide"] and "`p.run`.cl_jaro_winkler_cut(" in made["jaro_winkler_of"]
     levenshtein = [s for s in functions("p.run") if ".cl_levenshtein" in s]  # BigQuery's own EDIT_DISTANCE: no JavaScript
     assert len(levenshtein) == 2 and all("EDIT_DISTANCE(a, b" in s and "LANGUAGE js" not in s for s in levenshtein)
-    dropped = set(re.findall(r"DROP TABLE IF EXISTS (\w+)", jobs["build"]))  # a build starts without the tables it writes, but people's decisions
+    dropped = set(re.findall(r"DROP TABLE IF EXISTS `p\.run`\.(\w+)", jobs["build"]))  # a build starts without the tables it writes, but people's decisions
     assert {"records", "placeholders", "fit", "model", "scored", "gold", "set_aside"} <= dropped and "decisions" not in dropped
     views = re.findall(r"CREATE OR REPLACE VIEW [^;]*", jobs["build"])  # a view's tables named with their dataset: BigQuery reads no default there
-    assert len(views) == 1 and all(re.search(r"\bFROM p\.run\.\w+", v) and not re.search(r"\bFROM (?!p\.run\.)\w+\b", v) for v in views), views
+    assert len(views) == 1 and all(re.search(r"\bFROM `p\.run`\.\w+", v) and not re.search(r"\bFROM (?!`p\.run`\.)\w+\b", v) for v in views), views
     assert "DROP TABLE" not in jobs["update"] and "fit_model(" not in jobs["update"]  # an update scores with the build's model
-    unchanged = nayose.UNCHANGED.split("@fingerprint")[0]  # every job after a build refuses a run another method built
+    unchanged = in_dataset(nayose.UNCHANGED, "p.run").split("@fingerprint")[0]  # every job after a build refuses a run another method built
     assert unchanged not in jobs["build"] and all(unchanged in jobs[j] for j in ("update", "decide", "match"))
+    assert all(") OPTIONS (strict_mode = FALSE)\nBEGIN" in sql for sql in jobs.values())  # made before any table it reads
+    assert not [j for j, sql in jobs.items() if re.search(r"\bLIMIT (?!\d)", CODE.sub("", sql))]  # a number: no variable there
+    assert f"LIMIT {nayose.config()['fit']['fit_records']})" in jobs["build"]
+    for job in ("build", "update"):  # decide.sql's given: theirs empty, made first; the decide job's, the file loaded
+        assert jobs[job].index(nayose.NOTHING_GIVEN) < jobs[job].index("FROM given)") and "`p.run`.given" not in jobs[job]
+    assert nayose.NOTHING_GIVEN not in jobs["decide"] and "FROM `p.run`.given)" in jobs["decide"]
+
+
+def test_a_procedure_names_every_table_with_its_dataset_but_the_job_s_temporary_tables():  # BigQuery reads no default there
+    from nayose.engines import JOBS, job_statements
+    made = re.compile(r"\bCREATE (?:OR REPLACE )?TEMP TABLE (?:IF NOT EXISTS )?(\w+)")  # each form the SQL writes
+    for job, stages in JOBS.items():
+        body = job_statements(job, stages, "p.run", None)[0]
+        temp = {t for sql in body for t in made.findall(" ".join(CODE.sub(" ", sql).split()))}
+        assert "block_size" in temp or job not in ("build", "update"), job  # made by CREATE TEMP TABLE IF NOT EXISTS
+        for sql in body + [f"SELECT {guard}" for guard in re.findall(r"^IF ([\s\S]*?) THEN\n", "\n".join(body), re.M)]:
+            inner = re.fullmatch(r"IF [\s\S]*? THEN\n([\s\S]*);\nEND IF", sql)
+            tree = sqlglot.parse_one(inner[1] if inner else sql, read="bigquery")
+            ctes = {c.alias_or_name for c in tree.find_all(sqlglot.exp.CTE)}
+            bare = {t.name for t in tree.find_all(sqlglot.exp.Table) if not t.args.get("db")} - ctes - temp
+            assert not bare, f"{job}: {bare} named without the dataset in {sql[:80]}"
+            named = {t.name for t in tree.find_all(sqlglot.exp.Table) if t.args.get("db")}
+            assert not named & temp, f"{job}: temporary {named & temp} named with the dataset, which BigQuery refuses"
 
 
 def test_the_deploy_sends_the_functions_bodies_as_written():  # qualified names the calls of the SQL alone
@@ -72,11 +95,17 @@ def test_the_deploy_sends_the_functions_bodies_as_written():  # qualified names 
     assert [qualified(sql, "p.run") for sql in functions("p.run")] == functions("p.run")
 
 
+def test_a_when_condition_names_the_run_s_tables_with_the_dataset_as_its_statement_does():
+    from nayose.engines import in_procedure
+    sql = in_procedure("-- when: EXISTS (SELECT 1 FROM scored) AND EXISTS (SELECT 1 FROM t)\nSELECT 1", "p.run", {"t"})
+    assert sql.startswith("IF EXISTS (SELECT 1 FROM `p.run`.scored) AND EXISTS (SELECT 1 FROM t) THEN\n")
+
+
 def test_a_procedure_reads_each_value_as_its_variable_outside_strings_alone():  # as run_file reads them
     from nayose.engines import in_procedure
     sql = "-- when: @a  -- the run's @b\n/* the customer's @c */ SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, @x AS v FROM t"
-    assert in_procedure(sql, "p.run") == ("IF v_a THEN\n-- when: v_a  -- the run's v_b\n/* the customer's @c */ "
-                                          "SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, v_x AS v FROM t;\nEND IF")
+    assert in_procedure(sql, "p.run", set()) == ("IF v_a THEN\n-- when: v_a  -- the run's v_b\n/* the customer's @c */ "
+                                                 "SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, v_x AS v FROM `p.run`.t;\nEND IF")
 
 
 def test_report_txt_names_the_method_the_run_was_built_by_and_its_engine():  # on BigQuery, the deploy's mapping's
@@ -146,7 +175,7 @@ def test_a_job_loads_its_input_into_the_dataset_and_calls_its_procedure(monkeypa
     assert run.main(["p.run", "lookup", "x"], client=Recorded(), bigquery=MODULE) == 2  # not a job BigQuery runs
 
 
-PROCEDURE_FAILS = ("procedure", "interrupted", "interrupted as it ends", "changed")  # how a fake procedure call ends
+PROCEDURE_FAILS = ("procedure", "interrupted", "interrupted as it ends", "changed", "refused")  # how a fake procedure call ends
 
 
 class Tables(Recorded):  # a dataset's tables, each a version and a type, as BigQuery lists them: what a job's statements leave
@@ -199,6 +228,10 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                 if self.fails[:1] == ["changed"]:  # UNCHANGED: refused before the procedure writes anything
                     self.fails.pop(0)
                     raise RuntimeError(f"Query error: {nayose.CHANGED}; build the run again at [1:1]")
+                if self.fails[:1] == ["refused"]:  # as BigQuery says decide.sql's ERROR: the decisions given are wrong
+                    self.fails.pop(0)
+                    raise RuntimeError("400 GET https://x: Query error: given: a decision is match or no_match, not "
+                                       "maybe, match;; correct those rows, or leave them empty at [p.run.decide:76:1]\n\nJob ID: j")
                 for x, v in self.job.items():
                     if v is None:
                         self.tables.pop(x, None), self.kind.pop(x, None)
@@ -292,6 +325,10 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
     changed = Tables(before, made, fail=["changed"])  # another method built the run: the procedure refuses it
     code, said = ends(changed, ["p.run", "update", "gs://b/y.parquet"])
     assert code == 2 and nayose.CHANGED in said["error"] and said["fix"] == nayose.build_again("update") and changed.tables == before
+    refused = Tables(before, made, fail=["refused"])  # the file given is wrong: exit 2, what to fix, every table as it was
+    code, said = ends(refused, ["p.run", "decide", "gs://b/d.parquet"])
+    assert (code, said["error"], said["fix"]) == (2, "given: a decision is match or no_match, not maybe, match;",  # a ; given
+                                                  "correct those rows, or leave them empty") and refused.tables == before
 
     died = Tables(before, made)  # a job whose process died, its procedure run: the next job refuses; undo waits for it, then undoes
     assert run.begin(run.BigQuery("p.run", client=died, bigquery=MODULE), "p.run", "build")
@@ -337,3 +374,25 @@ def test_a_lookup_on_bigquery_writes_its_answer_to_looked_up_and_prints_none_of_
     client.tables["job_running"], client.kind["job_running"] = "mark", "BASE TABLE"
     assert run.main(["p.run", "lookup", "--record", "123"], client=client, bigquery=MODULE) == 75
     assert run.main(["p.run", "lookup", "name"], client=Tables({}), bigquery=MODULE) == 2
+
+
+def test_the_sandbox_check_sends_each_dml_statement_as_ddl_that_leaves_the_same_rows():
+    from nayose.engines import DuckDB
+    check = script("bigquery_check")
+    for sql in ("DELETE FROM t WHERE id IN (SELECT id FROM gone)",  # gone holds a NULL: NOT IN would keep nothing
+                "INSERT INTO t SELECT id + 10, v FROM t WHERE v IS NOT NULL  -- a comment closing the statement",
+                "INSERT INTO t (id, v) SELECT 99, 'z'",
+                "UPDATE t SET v = (SELECT MAX(v) FROM t) WHERE id = 2"):
+        left = []
+        for text in (sql, check.as_ddl(sql, set())):
+            engine = DuckDB()
+            engine.run("CREATE TABLE t AS SELECT * FROM (VALUES (1, 'a'), (2, NULL), (3, 'c')) AS x(id, v)")
+            engine.run("CREATE TABLE gone AS SELECT 1 AS id UNION ALL SELECT NULL")
+            engine.run(text)
+            left.append(engine.rows("SELECT * FROM t ORDER BY id"))
+        assert left[0] == left[1], sql
+    assert check.as_ddl("UPDATE t SET v = 1 WHERE id = 2", {"t"}, {"t": "id"}).startswith("CREATE OR REPLACE TEMP TABLE t AS")
+    assert check.as_ddl("DELETE FROM t WHERE id = 2", set(), {"t": "id"}).startswith("CREATE OR REPLACE TABLE t CLUSTER BY id AS")
+    for job in [s for s in procedures("p.run") if "CREATE OR REPLACE PROCEDURE" in s]:  # every job's, none left
+        sent = ";\n".join(check.as_ddl(x, set()) for x in nayose.statements(job + ";"))
+        assert not check.DML.search(re.sub(r"--[^\n]*", "", sent)), job[:60]

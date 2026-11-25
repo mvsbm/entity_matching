@@ -309,8 +309,11 @@ The cost is `O(G)` for its keys, plus `O(b + C·K·L²)`.
 
 ## 8 · Two engines
 
-**BigQuery** runs the SQL as written, in one session per job, so the temporary tables die with the job. The run's
-dataset is the session's default, so statements name tables alone. Calls to the deploy's functions are qualified with
+**BigQuery** runs the SQL as written, in one session per job, so the temporary tables die with the job. A statement
+Python sends (a lookup's, the report's) names tables alone: the run's dataset is the session's default. A procedure
+has no default dataset (BigQuery reads no `SET @@dataset_id` there), so the deploy names each of the run's tables in it
+with its dataset (`engines.in_dataset`), the job's temporary tables aside, and writes a `LIMIT`'s value as its
+number, as BigQuery takes no variable there. Calls to the deploy's functions are qualified with
 the dataset (`engines.CALLS`), and so are the method's own SQL functions, which the deploy made in the dataset
 (`engines.OWN`): a statement that would make one again, Python's (a lookup's, the report's), isn't sent.
 BigQuery reads a bare name as a `FROM` item before a column, so no column is read bare where an item of its name is
@@ -398,6 +401,9 @@ In prod, the run is the dataset `nayose` in each project, and nothing changes it
   clones (`undo` undoes one whose process died, once its procedure has ended in BigQuery).
 - **`deploy/smoke.py`** builds one generated file on BigQuery in staging and on DuckDB on the agent, and compares
   `scored` and `gold` row for row, and an edit distance on kanji.
+- **`deploy/bigquery_check.py PROJECT`** runs every job on a BigQuery sandbox (a project without billing) and holds
+  each table it keeps, each lookup's answer and each function to DuckDB's, with BigQuery's own measures of each
+  statement ([operations](operations.md#checking-on-a-bigquery-sandbox)).
 - **`deploy/Jenkinsfile`** runs the stages in order. Checks runs the lint and the tests. Staging deploys and runs the
   smoke test. Approve waits for a person in `APPROVERS`. Prod deploys the same commit with the secret
   `nayose-mapping`. A build with `JOB` set does only one thing: Run, one job in prod, archiving its `report.txt`. The
@@ -409,6 +415,7 @@ In prod, the run is the dataset `nayose` in each project, and nothing changes it
 A lookup has no procedure: `nayose.lookup` sends its statements, each step in a session of its own, writing only
 temporary tables ([7](#7--lookups)). `deploy/run.py`'s `lookup` writes the answer to the run's table `looked_up`.
 
-No job has run on BigQuery yet. The deploy's statements are checked offline: `tests/test_deploy.py` runs them
-against a client that records what it is sent. The results are proven on DuckDB: `tests/test_parity.py` holds every
-job's tables to their recorded digests.
+The results are proven on DuckDB: `tests/test_parity.py` holds every job's tables to their recorded digests. The
+deploy's statements are checked offline: `tests/test_deploy.py` runs them against a client that records what it is
+sent. On BigQuery itself, `deploy/bigquery_check.py` runs every job on a sandbox and finds each table the same as
+DuckDB's; DML as BigQuery runs it is left to staging's smoke test, as a sandbox refuses DML.

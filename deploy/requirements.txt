@@ -1,3 +1,4 @@
 # What deploy/ needs beyond requirements.txt, on the Jenkins agent: the BigQuery client, pip only (nayose.engines.BigQuery)
 google-cloud-bigquery==3.47.0  # queries, sessions, load jobs
 google-cloud-bigquery-storage==2.43.0  # its Storage Read API: a result read in Arrow batches
+db-dtypes==1.9.0  # a result read as a frame (engine.frame: report.txt, lookups): the client refuses without it

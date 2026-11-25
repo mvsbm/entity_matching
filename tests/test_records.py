@@ -100,7 +100,7 @@ def test_a_mapping_in_the_documented_form_is_accepted(tmp_path):
                      "/* the customer's ID, see #3 @x */ SELECT read_value(CONT_ID, TRUE, @nulls) AS id, 'a' AS w FROM input;\n", encoding="utf-8")
     assert len(nayose.mapping_statements(given)) == len(nayose.statements(text)) + 2
     build = next(s for s in procedures("p.run", given) if "PROCEDURE `p.run`.build(" in s)  # past the apostrophe, @nulls declared
-    assert "TRUE, v_nulls) AS id, 'a' AS w FROM input" in build and "@nulls" not in build
+    assert "TRUE, v_nulls) AS id, 'a' AS w FROM `p.run`.input" in build and "@nulls" not in build
 
 
 VALUES = ["ヤマダタロウ", "ヤマダ　タロウ", " サトウ", "サトウ ", "　", "  ", "NULL", " NULL ", "－", "譁ｰ縺励＞", "abc\x01", "タ​ナカ", "a\tb",

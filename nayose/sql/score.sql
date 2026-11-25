@@ -431,9 +431,11 @@ WITH listed_or_gated AS (
 ),
 pairs AS (SELECT l, r, BIT_OR(mask) AS mask FROM listed_or_gated GROUP BY l, r),
 generator_names AS (  -- each mask becomes the generators' names, in their order, joined by +
-  SELECT mask,
-         ARRAY_TO_STRING(ARRAY(SELECT name FROM generators WHERE (mask >> g) & 1 = 1 ORDER BY g), '+') AS generators
-  FROM (SELECT DISTINCT mask FROM pairs)
+  -- A join, not a subquery: BigQuery runs no subquery that reads a table by its outer row's mask (no equality).
+  SELECT m.mask, STRING_AGG(gen.name, '+' ORDER BY gen.g) AS generators
+  FROM (SELECT DISTINCT mask FROM pairs) AS m
+  JOIN generators AS gen ON (m.mask >> gen.g) & 1 = 1
+  GROUP BY m.mask
 )
 SELECT pairs.l, pairs.r, generator_names.generators FROM pairs JOIN generator_names USING (mask);
 

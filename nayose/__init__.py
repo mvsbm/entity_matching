@@ -50,6 +50,9 @@ ONE_BYTE = "".join(map(chr, range(1, 0x61)))  # one byte for each character of t
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a column name config.toml may give
 MAPPED = ("input_rows", "mapped")  # the tables a mapping makes, for records.sql
 METHOD = "CREATE OR REPLACE TABLE method AS SELECT @fingerprint AS fingerprint"  # a build's last statement
+# What decide.sql reads as given when nothing is given (a build's or an update's last step): no decisions, as a file
+# with none would be. The CLI's decide and the deploy's build and update procedures make it.
+NOTHING_GIVEN = "CREATE OR REPLACE TEMP TABLE given (id_l STRING, id_r STRING, decision STRING, why STRING)"
 CHANGED = ("the method, its values or the mapping changed since the run was built: "
            "this code would read its tables, and score its batches, otherwise")
 UNCHANGED = (f"SELECT IF((SELECT fingerprint FROM method) IS DISTINCT FROM @fingerprint, "  # a NULL one differs too
@@ -646,8 +649,8 @@ def decide(engine: Engine, files: list) -> None:
         if lack := sorted({"id_l", "id_r", "decision"} - {n.casefold() for n, _ in engine.columns("given")}):
             raise InputError(f"the decisions lack the columns {lack}", fix="give back a match table with decision "
                              "filled in, or a file with id_l, id_r and decision")
-    else:  # an empty table, as a file's would be
-        engine.run("CREATE OR REPLACE TEMP TABLE given (id_l STRING, id_r STRING, decision STRING, why STRING)")
+    else:
+        engine.run(NOTHING_GIVEN)
     stage(engine, "functions")
     stage(engine, "decide", **values_of("decide"))
 

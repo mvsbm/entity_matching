@@ -6,17 +6,14 @@ This page lists the plans, in order. The other docs describe the code as it is. 
 identical, so `tests/test_parity.py`'s digests stay unchanged. Each step also quotes BigQuery's cost before and after,
 in both bytes billed and work, from `scripts/estimate_cost.py`.
 
-## 1 · BigQuery parity on the sandbox
+## 1 · BigQuery at scale, in staging
 
-No job has run on BigQuery yet. Every result is proven on DuckDB. Once the DevOps team provides staging's sandbox
-dataset (`deploy/terraform/`, whose tables expire in a day), the tests' population runs through both engines, and
-every job's tables are compared by digest, as `tests/test_parity.py` compares them here. The same runs calibrate
-`scripts/estimate_cost.py` against BigQuery's own bytes billed and slot time. After that comes the scale rehearsal,
-1M → 10M → 100M generated records with time and bytes billed at each size, before the first real build. The same
-step proves the BigQuery `lookup` job equal to the lookups here, and measures how much of the key index a
-lookup's keys read. It also shows report.txt read from the job's temporary report_ tables after its procedure ends:
-BigQuery's docs give a procedure's temporary tables to its caller and keep a session's for the session, but no test
-here can show it.
+Every job has run on a BigQuery sandbox (`deploy/bigquery_check.py`, [operations](operations.md#checking-on-a-bigquery-sandbox)):
+each table it keeps, each lookup's answer and each function are the same as DuckDB's, and report.txt is read from
+the job's temporary report_ tables after its procedure. A sandbox refuses DML and stores 10 GiB in its life, so
+the rest waits for staging, where billing is on: DML as BigQuery runs it, and the scale rehearsal, 1M → 10M → 100M
+generated records with time and bytes billed at each size, before the first real build. The same runs measure how
+much of the key index a lookup's keys read.
 
 ## 2 · BigQuery's pricing and storage, measured
 

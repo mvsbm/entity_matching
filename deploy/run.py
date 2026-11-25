@@ -30,6 +30,7 @@ Each run ends with one JSON line on stderr. Its outcomes, their exit codes and t
     stopped while its query runs on in BigQuery (cause)      75    undo once it ends
     failed or interrupted, and undone (error)                1     run it again
     refused, as another method built the run (error)         2     build again, or run it with the build's code
+    refused, as what it was given is wrong (error, fix)      2     the fix it names (the SQL's own words)
     failed, and its undo failed too (error, undo_error)      1     undo, then run it again
     done, but ending it or report.txt failed (finished)      1     run nothing again; drop a mark left, never undo
     undo: done, or nothing marked                            0
@@ -42,6 +43,7 @@ A lookup (nayose.lookup) writes its answer, which holds records' values, to the 
 that it did, as Jenkins keeps what a job prints. It refuses while a job is marked, as that job's tables are half made.
 """
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -54,6 +56,10 @@ from nayose.engines import BigQuery, bigquery_literal  # noqa: E402
 JOBS = tuple(nayose.engines.JOBS)  # the jobs with a procedure: build, update, decide, match
 MARK, BEFORE = "job_running", "before__"  # the running job's table, and the prefix of its clones
 DEPLOYED = ("name_weights",)  # the deploy's tables, no job's: an undo never brings back one a deploy has since replaced
+# One of the SQL's own refusals (ERROR), as BigQuery says it: each names what it refuses first, given or config.toml,
+# then says what is wrong and, after the last "; ", what to do. What is wrong may quote people's values, a ; among
+# them; what to do holds none. A mistake in what the job was given: running it again won't do.
+REFUSED = re.compile(r"Query error: (?P<error>(?:given|config\.toml)\b.*?); (?P<fix>[^;]*?) at \[")
 SEVERITY = {0: "INFO", 75: "WARNING"}  # what an exit code says, as a log reads it: any other is an ERROR
 NO_TABLE = ""  # what the mark's tables hold for an empty dataset, never an empty array: an undo reads past it
 
@@ -217,6 +223,8 @@ def dispatch(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
     except (Exception, KeyboardInterrupt) as e:  # all_or_nothing undid the job, or never marked the dataset
         if nayose.CHANGED in str(e):  # the procedure's check of the method's fingerprint (nayose.UNCHANGED)
             return say(2, job=job, dataset=dataset, error=described(e), fix=nayose.build_again(job))
+        if refused := REFUSED.search(str(e)):
+            return say(2, job=job, dataset=dataset, error=refused["error"], fix=refused["fix"])
         return say(1, job=job, dataset=dataset, error=described(e), fix="run this job again")
 
 
