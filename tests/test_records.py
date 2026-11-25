@@ -126,3 +126,14 @@ def test_the_reader_names_each_column_its_own_and_refuses_text_that_isn_t_utf8(t
     pq.write_table(pa.table({"id": ["a"], "name": bad}), tmp_path / "x.parquet")
     with pytest.raises(Exception, match="(?i)utf-?8"):  # BigQuery's load refuses it too: what it said is gone either way
         engine.read_parquet("input", [tmp_path / "x.parquet"])
+
+
+def test_records_without_an_id_are_set_aside_and_the_rest_of_the_batch_kept(tmp_path):
+    rows = pd.DataFrame({c: [""] * 5 for c in COLUMNS})
+    rows[nayose.config()["input"]["id"]] = ["", "  ", "a1", "a2", "a3"]  # two without an ID: both read as missing
+    rows["FULL_NAME_KANA"] = ["ヤマダタロウ", "サトウハナコ", "スズキイチロウ", "タナカジロウ", "イトウサブロウ"]
+    rows.to_parquet(tmp_path / "in.parquet", index=False)
+    engine = DuckDB()
+    nayose.records(engine, [tmp_path / "in.parquet"])
+    assert sorted(engine.rows("SELECT id FROM records")) == [("a1",), ("a2",), ("a3",)]
+    assert engine.rows("SELECT reason, COUNT(*) FROM set_aside GROUP BY reason") == [("no ID", 2)]

@@ -31,7 +31,8 @@ CREATE OR REPLACE TABLE this_batch AS SELECT COALESCE(MAX(batch) + 1, 0) AS batc
 
 -- 1. Set aside what can't be resolved. Rows identical in every column are kept once (mapping.sql's input_rows). A
 --    record without an ID (blank: whitespace alone, as Python counts it), a record already in the run (a batch given
---    twice adds nothing twice), and every record of an ID holding different content, are set aside.
+--    twice adds nothing twice), and every record of an ID holding different content, are set aside. The IDs held twice
+--    leave out the missing one: a NULL in a NOT IN list makes the test fail for every record.
 
 CREATE OR REPLACE TABLE set_aside AS
 SELECT * EXCEPT (nayose_id),
@@ -42,7 +43,7 @@ FROM input_rows
 WHERE nayose_id IS NULL
    OR blank(nayose_id)
    OR nayose_id IN (SELECT id FROM records)
-   OR nayose_id IN (SELECT nayose_id FROM input_rows GROUP BY nayose_id HAVING COUNT(*) > 1);
+   OR nayose_id IN (SELECT nayose_id FROM input_rows WHERE nayose_id IS NOT NULL GROUP BY nayose_id HAVING COUNT(*) > 1);
 
 CREATE OR REPLACE TEMP TABLE kept AS
 SELECT DISTINCT m.*
@@ -50,7 +51,7 @@ FROM mapped AS m
 WHERE m.id IS NOT NULL
   AND NOT blank(m.id)
   AND m.id NOT IN (SELECT id FROM records)
-  AND m.id NOT IN (SELECT nayose_id FROM input_rows GROUP BY nayose_id HAVING COUNT(*) > 1);
+  AND m.id NOT IN (SELECT nayose_id FROM input_rows WHERE nayose_id IS NOT NULL GROUP BY nayose_id HAVING COUNT(*) > 1);
 
 
 -- 2. Each field standardized by its chain of steps, in order; a value the chain leaves empty is missing.
