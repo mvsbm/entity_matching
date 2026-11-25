@@ -11,13 +11,15 @@ say what it did. A build and an update print report.txt (nayose.report_text, fro
 It runs as nayose-runtime (deploy/Jenkinsfile's Run stage, from main).
 
 A job is all or nothing, though BigQuery takes no DDL in a transaction:
-- It first makes the table job_running, holding the job and the dataset's tables. A second job finds it and refuses
-  (exit 75).
+- It first makes the table job_running (the mark), holding the job and the dataset's tables. A second job finds it
+  and refuses (exit 75).
 - It then clones each table (before__<table>): a clone bills no bytes, and shares its storage until either changes.
 - A job that fails is undone: each table is made again from its clone, and each table it made is dropped. It exits 1.
 - A job whose process died is undone by `undo`, once no query of its session still runs: BigQuery carries on a
-  procedure its caller left. So is a job interrupted while its procedure runs (an interrupt, a client's timeout): it
-  exits 75 with what stopped it, and `undo` puts the tables back once the procedure ends.
+  query its caller left. So is a job interrupted while its clones are made or its procedure runs (an interrupt, a
+  client's timeout): it exits 75 with what stopped it, and `undo` puts the tables back once that query ends.
+- A job done renames its mark before__job_running, so that no job, undo or lookup finds it, then drops it and the
+  clones. The next job drops what is left of them.
 - The run's view (fit.sql's compared) isn't a table: a first build that fails leaves it; the next build makes it again.
 
 Each run ends with one JSON line on stderr. Its outcomes, their exit codes and their fixes:
@@ -25,12 +27,14 @@ Each run ends with one JSON line on stderr. Its outcomes, their exit codes and t
     outcome                                                  exit  fix
     the job done                                             0
     a job already marked (job_running)                       75    wait; if none runs, undo
-    stopped while its procedure runs on in BigQuery (cause)  75    undo once it ends
-    failed, and undone (error)                               1     run it again
+    stopped while its query runs on in BigQuery (cause)      75    undo once it ends
+    failed or interrupted, and undone (error)                1     run it again
+    refused, as another method built the run (error)         2     build again, or run it with the build's code
     failed, and its undo failed too (error, undo_error)      1     undo, then run it again
     done, but ending it or report.txt failed (finished)      1     run nothing again; drop a mark left, never undo
     undo: done, or nothing marked                            0
-    undo: the marked job's procedure still runs              75    undo once it ends
+    undo: the marked job's query still runs                  75    undo once it ends
+    undo: failed (error)                                     1     undo again
     a lookup: answered; a job marked; a mistake in it        0; 75; 2
     a mistake in the command (a threshold under keep_from)   2     the fix it names
 
@@ -55,13 +59,13 @@ NO_TABLE = ""  # what the mark's tables hold for an empty dataset, never an empt
 
 
 class Running(Exception):
-    """The marked job's procedure still runs in BigQuery: undoing it now would race it."""
+    """A query of the marked job's session still runs in BigQuery: undoing it now would race it."""
 
 
 class UndoFailed(Exception):
     """The job failed (`stopped`), and so did its undo (`failed`): the job stays marked."""
 
-    def __init__(self, stopped: BaseException, failed: Exception) -> None:
+    def __init__(self, stopped: BaseException, failed: BaseException) -> None:
         super().__init__(described(failed))
         self.stopped, self.failed = stopped, failed
 
@@ -94,7 +98,7 @@ def begin(engine: BigQuery, dataset: str, job: str) -> bool:
     now = tables(engine, dataset)
     if MARK in now:
         return False
-    # a finished job's clones, left behind: dropped before the mark, so no undo reads them
+    # a finished job's renamed mark and clones, left behind: dropped before the mark, so no undo reads them
     script(engine, [f"DROP TABLE `{dataset}`.{t}" for t in now if t.startswith(BEFORE)])
     held = [t for t in now if not t.startswith(BEFORE)]
     # fails where another job made the mark first, which is then never undone here
@@ -110,21 +114,26 @@ def begin(engine: BigQuery, dataset: str, job: str) -> bool:
 def undo_after(engine: BigQuery, dataset: str, stopped: BaseException) -> None:
     """Undo the marked job that `stopped` ended, then raise `stopped` again.
 
-    Raises Running, caused by `stopped`, while the job's procedure still runs, and UndoFailed where the undo fails.
+    Raises Running, caused by `stopped`, while a query of the job still runs, and UndoFailed where the undo fails.
     """
     try:
         undo(engine, dataset)
     except Running as e:
         raise e from stopped
-    except Exception as e:
+    except (Exception, KeyboardInterrupt) as e:
         raise UndoFailed(stopped, e) from e
     raise stopped
 
 
 def end(engine: BigQuery, dataset: str) -> None:
-    """Drop the mark, then the clones: clones left without a mark are dropped by the next job."""
+    """Rename the mark before__job_running, then drop it and the clones: the next job drops what is left of them.
+
+    Once renamed, the mark is no mark: no job, undo or lookup finds it. A mark left by a DROP that failed would make
+    an undo take back what the job did.
+    """
     clones = [f"DROP TABLE `{dataset}`.{t}" for t in tables(engine, dataset) if t.startswith(BEFORE)]
-    script(engine, [f"DROP TABLE `{dataset}`.{MARK}", *clones])
+    script(engine, [f"ALTER TABLE `{dataset}`.{MARK} RENAME TO {BEFORE}{MARK}",
+                    f"DROP TABLE `{dataset}`.{BEFORE}{MARK}", *clones])
 
 
 def undo(engine: BigQuery, dataset: str) -> bool:
@@ -132,8 +141,8 @@ def undo(engine: BigQuery, dataset: str) -> bool:
 
     Each table is made again from its clone, and each table the job made is dropped; then the mark, then the clones,
     so an undo stopped partway can run again. Raises Running while a query of the marked job's session still runs:
-    BigQuery carries on a procedure whose caller left, whether the caller's process died or only stopped waiting
-    (an interrupt, a client's timeout).
+    BigQuery carries on a query whose caller left, whether the caller's process died or only stopped waiting (an
+    interrupt, a client's timeout).
     """
     # A session of its own: the marked job's may still be busy, and a session runs one query at a time. The old
     # session is left to expire, not aborted: aborting it would stop a procedure that still runs in it.
@@ -200,18 +209,23 @@ def dispatch(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
     except UndoFailed as e:  # the job is still marked
         return say(1, job=job, dataset=dataset, error=described(e.stopped), undo_error=described(e.failed),
                    fix=f"undo it (python deploy/run.py {dataset} undo), then run this job again")
-    except Exception as e:  # all_or_nothing undid the job, or never marked the dataset
+    except (Exception, KeyboardInterrupt) as e:  # all_or_nothing undid the job, or never marked the dataset
+        if nayose.CHANGED in str(e):  # the procedure's check of the method's fingerprint (nayose.UNCHANGED)
+            return say(2, job=job, dataset=dataset, error=described(e), fix=nayose.build_again(job))
         return say(1, job=job, dataset=dataset, error=described(e), fix="run this job again")
 
 
 def undone(engine: BigQuery, dataset: str) -> int:
-    """Undo a job whose process died, once its procedure has ended; return the exit code."""
+    """Undo a job whose process died, once its query has ended; return the exit code."""
     try:
-        was_marked = undo(engine, dataset)
+        undid = undo(engine, dataset)
     except Running as e:
-        return say(75, error=f"the marked job's procedure still runs in BigQuery (session {e})",
+        return say(75, error=f"the marked job's query still runs in BigQuery (session {e})",
                    fix=f"undo once it ends: python deploy/run.py {dataset} undo")
-    return say(0, job="undo", dataset=dataset, undone=was_marked)
+    except Exception as e:  # an undo stopped partway can run again
+        return say(1, job="undo", dataset=dataset, error=described(e),
+                   fix=f"undo again: python deploy/run.py {dataset} undo")
+    return say(0, job="undo", dataset=dataset, undone=undid)
 
 
 def all_or_nothing(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
@@ -229,8 +243,8 @@ def all_or_nothing(engine: BigQuery, dataset: str, job: str, given: list[str]) -
             call_procedure(engine, dataset, job, given)
         except BaseException as stopped:
             undo_after(engine, dataset, stopped)
-    except Running as e:  # stopped waiting mid-call: the procedure carries on, so its undo waits for it
-        return say(75, error=f"the job's procedure still runs in BigQuery (session {e})", cause=described(e.__cause__),
+    except Running as e:  # stopped waiting mid-query (its clones, its procedure): it carries on, so its undo waits
+        return say(75, error=f"the job's query still runs in BigQuery (session {e})", cause=described(e.__cause__),
                    fix=f"undo once it ends: python deploy/run.py {dataset} undo")
     return finished(engine, dataset, job, round(time.perf_counter() - t, 1))
 
@@ -238,9 +252,10 @@ def all_or_nothing(engine: BigQuery, dataset: str, job: str, given: list[str]) -
 def finished(engine: BigQuery, dataset: str, job: str, seconds: float) -> int:
     """End a job whose procedure succeeded (end), print a build's or an update's report.txt, and return the exit code.
 
-    Where either step fails, the job is done all the same: it exits 1, saying so and never to run it again, which
-    would run it twice. The next job drops the clones left. A mark left would make the next job refuse and offer an
-    undo, which would take back what the job did, so the fix then is to drop the mark alone.
+    Where either step fails, or is interrupted, the job is done all the same: it exits 1, saying so and never to run
+    it again, which would run it twice. The next job drops the renamed mark and the clones left. A mark left, where
+    the renaming failed, would make the next job refuse and offer an undo, which would take back what the job did, so
+    the fix then is to drop the mark alone.
     """
     step = "ending it (the mark and the clones)"
     try:
@@ -248,7 +263,7 @@ def finished(engine: BigQuery, dataset: str, job: str, seconds: float) -> int:
         step = "report.txt"
         if job in ("build", "update"):
             print(nayose.report_text(engine, {job: seconds}, job))
-    except Exception as e:
+    except (Exception, KeyboardInterrupt) as e:
         try:
             marked = MARK in tables(engine, dataset)
         except Exception:  # unknown: said as if it stayed

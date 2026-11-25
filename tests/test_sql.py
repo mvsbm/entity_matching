@@ -55,7 +55,8 @@ def test_a_null_fingerprint_or_none_differs_from_the_method_s():  # NULL <> x is
 
 
 def test_a_stage_file_splits_into_its_statements_and_each_gets_the_values_it_names(tmp_path, monkeypatch):
-    text = "-- the first\nCREATE TABLE a AS\nSELECT @x AS x;\n\n-- the second; a comment's ; ends nothing\nSELECT @y + @x AS s\nFROM a;\n"
+    text = ("-- the first\nCREATE TABLE a AS\nSELECT @x AS x;\n\n-- the second; a comment's ; ends nothing\n"
+            "/* the customer's ID */ SELECT @y + @x AS s, 'a' AS w\nFROM a;\n")  # past its apostrophe, @y and @x read
     assert [s.splitlines()[-1] for s in nayose.statements(text)] == ["SELECT @x AS x", "FROM a"]
     with pytest.raises(ValueError, match="closing"):
         nayose.statements("SELECT 1")
@@ -284,7 +285,10 @@ def test_no_column_is_read_bare_where_a_from_item_of_its_name_is_in_scope():  # 
     for path in IN_ORDER:
         for sql in nayose.statements(path.read_text(encoding="utf-8")):
             tree = sqlglot.parse_one(sql, read="bigquery")
+            tree = tree.expressions[0] if isinstance(tree, exp.Block) else tree  # a comment after its ';'
             for scope in traverse_scope(tree):
+                unknown = {t.name for t in scope.sources.values() if isinstance(t, exp.Table)} - set(tables)
+                assert not unknown, f"{path.name} reads {unknown}, whose columns this test doesn't know: {sql[:80]}"
                 for col in scope.columns:
                     item = None if col.table else scope.sources.get(col.name)
                     if item is None or isinstance(item, Scope) and isinstance(item.expression, exp.Unnest):
@@ -309,13 +313,24 @@ ROLLUP ROWS SELECT SET SOME STRUCT TABLESAMPLE THEN TO TREAT TRUE UNBOUNDED UNIO
 WITHIN""".split())
 
 
-@pytest.mark.parametrize("path", IN_ORDER, ids=lambda p: p.name)
-def test_no_name_is_a_reserved_keyword_unless_backquoted(path):
-    """A column, an alias, a WITH's or a table's name, a function's parameter: each an identifier BigQuery refuses
-    where it is a reserved keyword. A named parameter (@name) may be one: "A named query parameter can start with an
-    identifier or a reserved keyword" (the same page), and a procedure declares it as v_name."""
+def reserved(sql: str) -> set[str]:
+    """Return the names in `sql` that BigQuery refuses: its reserved keywords, unless backquoted.
+
+    A column, an alias, a WITH's or a table's name, a function's parameter: each is an identifier. A named parameter
+    (@name) may be a reserved keyword: "A named query parameter can start with an identifier or a reserved keyword"
+    (the same page), and a procedure declares it as v_name."""
     import sqlglot
     from sqlglot import exp
-    named = {node.name for sql in nayose.statements(path.read_text(encoding="utf-8"))
-             for node in sqlglot.parse_one(sql, read="bigquery").find_all(exp.Identifier) if not node.quoted}
-    assert not {n for n in named if n.upper() in RESERVED}
+    return {node.name for tree in sqlglot.parse(sql, read="bigquery") if tree
+            for node in tree.find_all(exp.Identifier) if not node.quoted and node.name.upper() in RESERVED}
+
+
+@pytest.mark.parametrize("path", IN_ORDER, ids=lambda p: p.name)
+def test_no_name_is_a_reserved_keyword_unless_backquoted(path):
+    assert not {n for sql in nayose.statements(path.read_text(encoding="utf-8")) for n in reserved(sql)}
+
+
+def test_no_name_of_the_tables_python_makes_is_a_reserved_keyword():  # tests/test_deploy.py checks what its fake clients are sent
+    sent = []  # decide's statements, given (empty, as a build makes it) first
+    nayose.decide(SimpleNamespace(run=lambda sql, values=None: sent.append(sql), value=lambda sql, values=None: True), [])
+    assert sent[0].startswith("CREATE OR REPLACE TEMP TABLE given (") and not {n for s in sent for n in reserved(s)}

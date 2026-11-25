@@ -16,6 +16,7 @@ import sqlglot
 import nayose
 
 from nayose.engines import bigquery_literal, functions, procedures
+from test_sql import reserved
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 CODE = nayose.NOT_CODE  # comments and strings: what isn't code
@@ -73,8 +74,8 @@ def test_the_deploy_sends_the_functions_bodies_as_written():  # qualified names 
 
 def test_a_procedure_reads_each_value_as_its_variable_outside_strings_alone():  # as run_file reads them
     from nayose.engines import in_procedure
-    sql = "-- when: @a  -- the run's @b\nSELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, @x AS v FROM t"
-    assert in_procedure(sql, "p.run") == ("IF v_a THEN\n-- when: v_a  -- the run's v_b\n"
+    sql = "-- when: @a  -- the run's @b\n/* the customer's @c */ SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, @x AS v FROM t"
+    assert in_procedure(sql, "p.run") == ("IF v_a THEN\n-- when: v_a  -- the run's v_b\n/* the customer's @c */ "
                                           "SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, v_x AS v FROM t;\nEND IF")
 
 
@@ -91,9 +92,20 @@ def test_a_value_is_declared_as_bigquery_reads_it():
     assert bigquery_literal(True) == "TRUE" and bigquery_literal(64) == "64" and bigquery_literal(-math.inf) == "CAST('-inf' AS FLOAT64)"
 
 
+SENT = []  # what each fake client of a test was sent: no name in it may be one BigQuery refuses
+
+
+@pytest.fixture(autouse=True)
+def no_reserved_name_in_what_python_sends():  # the deploy's, the jobs', the lookup's: as test_sql holds the stage files
+    SENT.clear()
+    yield
+    assert not {n for sent in SENT for sql in sent for n in reserved(sql)}
+
+
 class Recorded:  # a BigQuery client that records what it is sent
     def __init__(self):
         self.sent, self.loaded = [], []
+        SENT.append(self.sent)
 
     def query(self, sql, job_config=None):
         self.sent.append(sql)
@@ -128,14 +140,20 @@ def test_a_job_loads_its_input_into_the_dataset_and_calls_its_procedure(monkeypa
     assert client.loaded == [("p.run.input", ["gs://b/in/records.parquet"])] and "CALL `p.run`.build()" in client.sent
     client = Recorded()
     assert run.main(["p.run", "match", "8"], client=client, bigquery=MODULE) == 0 and "CALL `p.run`.match(8.0)" in client.sent
+    client = Recorded()
+    assert run.main(["p.run", "decide", "gs://b/in/decided.parquet"], client=client, bigquery=MODULE) == 0
+    assert client.loaded == [("p.run.given", ["gs://b/in/decided.parquet"])] and "CALL `p.run`.decide()" in client.sent
     assert run.main(["p.run", "lookup", "x"], client=Recorded(), bigquery=MODULE) == 2  # not a job BigQuery runs
+
+
+PROCEDURE_FAILS = ("procedure", "interrupted", "interrupted as it ends", "changed")  # how a fake procedure call ends
 
 
 class Tables(Recorded):  # a dataset's tables, each a version and a type, as BigQuery lists them: what a job's statements leave
     def __init__(self, tables: dict, job: dict | None = None, fail: tuple = ()):
         super().__init__()
         self.tables, self.job = dict(tables), job or {}  # job: the procedure's tables (None: dropped)
-        self.fails = list(fail)  # each in turn: a statement holding it fails, or the procedure ("procedure", "interrupted")
+        self.fails = list(fail)  # each in turn: a statement holding it fails, or the procedure (one of PROCEDURE_FAILS)
         self.kind = dict.fromkeys(tables, "BASE TABLE")
         self.mark, self.sessions, self.running, self.checked_in = {}, 0, set(), []
 
@@ -152,7 +170,7 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
             name = [x.split(".")[-1] for x in re.findall(r"`p\.run`\.(\w+)", s)]
             if not name and "INFORMATION_SCHEMA" not in s:  # on the default dataset alone (a lookup's looked_up): recorded, no more
                 continue
-            if self.fails and self.fails[0] not in ("procedure", "interrupted") and self.fails[0] in s:
+            if self.fails and self.fails[0] not in PROCEDURE_FAILS and self.fails[0] in s:
                 self.fails.pop(0)
                 raise RuntimeError(f"failed: {s[:60]}")
             if "INFORMATION_SCHEMA.TABLES" in s:
@@ -163,6 +181,9 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                 self.checked_in.append(getattr(job_config, "connection_properties", None))  # the session it ran in
             elif s.startswith("SELECT session, tables FROM"):
                 rows = [self.mark]
+            elif " RENAME TO " in s:
+                new = s.rsplit(" ", 1)[1]
+                self.tables[new], self.kind[new] = self.tables.pop(name[0]), self.kind.pop(name[0])
             elif s.startswith("CREATE TABLE") and name[0] in self.tables:
                 raise RuntimeError(f"Already Exists: {name[0]}")
             elif " CLONE " in s:
@@ -174,6 +195,9 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
             elif s.startswith("DROP TABLE"):
                 del self.tables[name[0]], self.kind[name[0]]
             elif s.startswith("CALL `p.run`."):
+                if self.fails[:1] == ["changed"]:  # UNCHANGED: refused before the procedure writes anything
+                    self.fails.pop(0)
+                    raise RuntimeError(f"Query error: {nayose.CHANGED}; build the run again at [1:1]")
                 for x, v in self.job.items():
                     if v is None:
                         self.tables.pop(x, None), self.kind.pop(x, None)
@@ -186,6 +210,9 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                     self.fails.pop(0)
                     self.running.add(session)
                     raise KeyboardInterrupt
+                if self.fails[:1] == ["interrupted as it ends"]:  # the procedure done, its client stopped waiting then
+                    self.fails.pop(0)
+                    raise KeyboardInterrupt
         return SimpleNamespace(result=lambda rows=rows: rows, session_info=SimpleNamespace(session_id=session))
 
     def load_table_from_uri(self, uris, table, job_config=None):
@@ -194,6 +221,10 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
 
     def get_dataset(self, dataset):
         return SimpleNamespace(location="asia-northeast1")
+
+
+def interrupt(*args, **kwargs):  # Ctrl-C
+    raise KeyboardInterrupt
 
 
 def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monkeypatch, capsys):
@@ -229,7 +260,15 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
     code, said = ends(left)
     assert code == 1 and said["error"].startswith("failed: CREATE TABLE") and said["fix"] == "run this job again"
     assert left.tables == after  # the left clone was dropped first, so nothing older came back
-    marked = Tables(before, made, fail=["DROP TABLE `p.run`.job_running"])  # a job done, its mark left: an undo would take it back
+    renamed = Tables(before, made, fail=["DROP TABLE `p.run`.before__job_running"])  # a job done, its mark renamed, left
+    code, said = ends(renamed)
+    assert code == 1 and said["finished"] and said["fix"] == "run nothing again: the next job drops the clones left"
+    assert "job_running" not in renamed.tables and "before__job_running" in renamed.tables
+    assert ends(renamed, ["p.run", "undo"])[1]["undone"] is False  # no mark: every table as the job made it
+    assert {t: v for t, v in renamed.tables.items() if not t.startswith("before__")} == after
+    renamed.job = {"records": 3}
+    assert ends(renamed)[0] == 0 and renamed.tables == {**after, "records": 3}  # the next job drops what was left, and runs
+    marked = Tables(before, made, fail=["ALTER TABLE `p.run`.job_running RENAME"])  # a job done, its mark left: an undo would take it back
     code, said = ends(marked)
     assert code == 1 and said["finished"] and "drop the mark alone" in said["fix"] and "never undo" in said["fix"]
     monkeypatch.setattr(run.nayose, "report_text", lambda engine, steps, job: 1 / 0)
@@ -244,6 +283,14 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
     cut.running = set()  # it ended: the undo it was told to run puts every table back
     assert ends(cut, ["p.run", "undo"]) == (0, {"severity": "INFO", "job": "undo", "dataset": "p.run", "undone": True}) and cut.tables == before
     assert cut.checked_in and not any(cut.checked_in)  # each check outside every session, so it never counts itself
+    loading = Tables(before, made)  # Ctrl-C while the input loads, or as the procedure ends: undone, and said so
+    loading.load_table_from_uri = interrupt
+    for stopped in (loading, Tables(before, made, fail=["interrupted as it ends"])):
+        code, said = ends(stopped)
+        assert code == 1 and said["error"] == "KeyboardInterrupt" and said["fix"] == "run this job again" and stopped.tables == before
+    changed = Tables(before, made, fail=["changed"])  # another method built the run: the procedure refuses it
+    code, said = ends(changed, ["p.run", "update", "gs://b/y.parquet"])
+    assert code == 2 and nayose.CHANGED in said["error"] and said["fix"] == nayose.build_again("update") and changed.tables == before
 
     died = Tables(before, made)  # a job whose process died, its procedure run: the next job refuses; undo waits for it, then undoes
     assert run.begin(run.BigQuery("p.run", client=died, bigquery=MODULE), "p.run", "build")
@@ -252,8 +299,8 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
     assert ends(died, ["p.run", "match", "8"])[0] == 75 and not [s for s in died.sent if s.startswith("CALL `p.run`.match")]
     assert ends(died, ["p.run", "undo"])[0] == 75 and died.tables["records"] == 2
     died.running, died.fails = set(), ["DROP TABLE `p.run`.report_steps"]  # it ended; an undo stopped partway runs again
-    with pytest.raises(RuntimeError, match="failed"):
-        run.main(["p.run", "undo"], client=died, bigquery=MODULE)
+    code, said = ends(died, ["p.run", "undo"])
+    assert code == 1 and said["error"].startswith("failed: DROP TABLE") and said["fix"] == "undo again: python deploy/run.py p.run undo"
     assert ends(died, ["p.run", "undo"])[0] == 0 and died.tables == {**before, "name_weights": 2}
     assert ends(died, ["p.run", "undo"])[1]["undone"] is False and died.tables == {**before, "name_weights": 2}  # nothing marked
 
@@ -284,6 +331,8 @@ def test_a_lookup_on_bigquery_writes_its_answer_to_looked_up_and_prints_none_of_
     assert "ヤマダ" not in said.out + said.err and '"entities": 1' in said.err
     insert = next(s for s in client.sent if s.startswith("INSERT INTO looked_up"))
     assert "@answer" in insert and "ヤマダ" not in insert  # the answer goes as a parameter, into the run's table
+    client.tables["before__job_running"], client.kind["before__job_running"] = "mark", "BASE TABLE"  # a job done's, left
+    assert run.main(["p.run", "lookup", "--record", "123"], client=client, bigquery=MODULE) == 0
     client.tables["job_running"], client.kind["job_running"] = "mark", "BASE TABLE"
     assert run.main(["p.run", "lookup", "--record", "123"], client=client, bigquery=MODULE) == 75
     assert run.main(["p.run", "lookup", "name"], client=Tables({}), bigquery=MODULE) == 2
