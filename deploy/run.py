@@ -82,19 +82,19 @@ def undo(engine: BigQuery, dataset: str) -> bool:
     """Put the dataset's tables back as the marked job found them, and return False where no job is marked.
 
     Each table is made again from its clone, and each table the job made is dropped; then the mark, then the clones,
-    so an undo stopped partway can run again. Raises Running while a query of the marked job's session, another
-    process's, still runs.
+    so an undo stopped partway can run again. Raises Running while a query of the marked job's session still runs:
+    BigQuery carries on a procedure whose caller left, whether the caller's process died or only stopped waiting
+    (an interrupt, a client's timeout).
     """
     now = tables(engine, dataset)
     if MARK not in now:
         return False
     session, held = engine.rows(f"SELECT session, tables FROM `{dataset}`.{MARK}")[0]
     held = [t for t in held if t]
-    if session != engine.session:  # another process's job: its procedure may outlive it (bigquery.jobs.list, iam.tf)
-        region = engine.client.get_dataset(dataset).location.lower()
-        if engine.value(f"SELECT COUNT(*) FROM `region-{region}`.INFORMATION_SCHEMA.JOBS_BY_USER "
-                        "WHERE session_info.session_id = @session AND state <> 'DONE'", {"session": session}):
-            raise Running(session)
+    region = engine.client.get_dataset(dataset).location.lower()  # its jobs are listed there (bigquery.jobs.list)
+    if engine.value(f"SELECT COUNT(*) FROM `region-{region}`.INFORMATION_SCHEMA.JOBS_BY_USER "
+                    "WHERE session_info.session_id = @session AND state <> 'DONE'", {"session": session}):
+        raise Running(session)
     back = [t for t in held if BEFORE + t in now]  # a table without its clone was never touched: the job stopped first
     made = [t for t in now if t not in held and t != MARK and not t.startswith(BEFORE)]
     script(engine, [*(f"CREATE OR REPLACE TABLE `{dataset}`.{t} CLONE `{dataset}`.{BEFORE}{t}" for t in back),
@@ -155,7 +155,12 @@ def marked(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
     try:
         run(engine, dataset, job, given)
     except BaseException:
-        undo(engine, dataset)
+        try:
+            undo(engine, dataset)
+        except Running as e:  # stopped waiting mid-call: the procedure carries on, so its undo waits for it
+            print(json.dumps(dict(severity="WARNING", error=f"the job's procedure still runs in BigQuery (session {e})",
+                                  fix=f"undo once it ends: python deploy/run.py {dataset} undo")), file=sys.stderr)
+            return 75
         raise
     end(engine, dataset)
     seconds = round(time.perf_counter() - t, 1)
