@@ -37,8 +37,8 @@ SELECT
   (SELECT COUNT(DISTINCT entity) FROM gold WHERE entity_kind = 1) AS person_entities,
   (SELECT COUNT(DISTINCT entity) FROM gold WHERE entity_kind = 0) AS unsure_entities,
   (SELECT COUNT(*) FROM gold WHERE kind_flagged) AS flagged,
-  (SELECT COUNT(*) FROM gated WHERE verdict = 'joined') AS oversized_joined,
-  (SELECT COUNT(*) FROM gated WHERE verdict <> 'joined') AS oversized_skipped,
+  (SELECT COUNT(*) FROM gated WHERE verdict = 'listed') AS oversized_listed,
+  (SELECT COUNT(*) FROM gated WHERE verdict <> 'listed') AS oversized_skipped,
   COUNT(full_name) AS full_name, COUNT(person_name) AS person_name, COUNT(given_name) AS given_name,
   COUNT(company_name) AS company_name, COUNT(any_name) AS any_name, COUNT(address) AS address,
   COUNT(address_code) AS address_code, COUNT(postal_code) AS postal_code, COUNT(prefecture) AS prefecture,
@@ -47,7 +47,7 @@ SELECT
 FROM records;
 
 -- report_fields describes each field on a sample of @sample_records records, chosen by hash so that the sample is the
--- same whatever the rows' order. It gives the share of a field's filled values that look like its pattern
+-- same whatever the rows' order. It gives the share of a field's filled values that match its look, a regex
 -- (looks_right), the share that its most common value holds (top_value), the share with no letter or digit
 -- (no_letters), and the values' mean and longest length.
 CREATE OR REPLACE TEMP TABLE report_fields AS

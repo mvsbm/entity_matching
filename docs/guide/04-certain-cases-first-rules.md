@@ -64,7 +64,7 @@ The close-enough tests are chosen by the decision rule ([chapter 1](01-entity-re
 
 **How a rule runs.** Each rule is a plain SQL join on its exact fields: `score.sql` writes each record's key for every rule into one table, and joins it once. Its fuzzy conditions are then checked only on the pairs that join, and two equal values pass without calling the string function at all. Rule F2 (name and address close, same phone) also joins on the first three characters of the normalized address, where the city starts, so it does not pair everyone who shares four phone digits. A pair found by several rules belongs to the first in order. A rule also leaves out any key value held by 64 records or more (`[score] oversized`): one customer ID on thousands of records is not one entity's.
 
-The exact rules X1 to X5 come first in that order, the fuzzy rules next and X6 last, and the first rule to find a pair names it, so a pair keeps the name of the strictest rule that finds it. No rule pair merges by itself: each is kept in the run's `scored` table with its rule, whatever its score, for a match run to offer people, so none hides another pair. The probabilistic stage scores every pair the keys list, the rules' too.
+The exact rules X1 to X5 come first in that order, the fuzzy rules F1 to F6 next and X6 last, and a pair keeps the name of the first rule in that order that finds it. No rule pair merges by itself: each is kept in the run's `scored` table with its rule, whatever its score, for a match run to offer people, so none hides another pair. The probabilistic stage scores every pair the keys list, the rules' too.
 
 ### Why this solution
 

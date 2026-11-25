@@ -110,22 +110,22 @@ def test_each_generator_s_candidates_and_matches_are_counted_and_the_generators_
     import duckdb
     import nayose
     from nayose.engines import DuckDB
-    spec = importlib.util.spec_from_file_location("key_quality", Path(__file__).resolve().parents[1] / "scripts" / "key_quality.py")
-    kq = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(kq)
+    spec = importlib.util.spec_from_file_location("generator_quality", Path(__file__).resolve().parents[1] / "scripts" / "generator_quality.py")
+    quality = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(quality)
     population.df.to_parquet(tmp_path / "in.parquet", index=False)
     population.truth.to_parquet(tmp_path / "truth.parquet", index=False)
     engine = DuckDB(tmp_path / "run.duckdb")
     nayose.build(engine, [tmp_path / "in.parquet"])
     engine.close()
-    got = kq.measure(tmp_path, tmp_path / "truth.parquet", 6.0)
+    got = quality.measure(tmp_path, tmp_path / "truth.parquet", 6.0)
     used = set(nayose.config()["score"]["generators"])
     assert {r["generator"] for r in got["generators"]} == used and got["matches"] >= got["true"] > 0
     assert all(r["only"] == 0 for r in got["generators"] if r["generator"] in got["drop"])
     con = duckdb.connect(str(tmp_path / "run.duckdb"), read_only=True)
     lost = con.execute("SELECT COUNT(*) FROM scored WHERE rule IS NULL AND points >= 6 AND named AND generators IS NOT NULL "
                        "AND list_has_all(?, string_split(generators, '+'))", [got["drop"]]).fetchone()[0]
-    text = kq.report(got, truth=True)
+    text = quality.report(got, truth=True)
     values = {str(v) for v in population.df.stack().unique() if len(str(v)) > 3}
     assert got["drop"] and lost == 0 and not [v for v in values if v in text]  # some go, none lost; no record's value shown
     listed = con.execute("SELECT COUNT(*) FROM (SELECT unnest(string_split(generators, '+')) FROM cands)").fetchone()[0]

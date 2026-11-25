@@ -14,7 +14,7 @@ The jobs:
 The stages the jobs run:
     records(engine, files)          stage 1: read the input files, map them (mapping.sql), make records (records.sql)
     fit(engine)                     stage 2: learn the model on a sample, then u on the file (fit.sql, nayose/em.py)
-    score(engine)                   stage 3: the rules' pairs, the keys' candidates and their scores (score.sql)
+    score(engine)                   stage 3: the rules' pairs, the generators' candidates and their scores (score.sql)
     report(engine, steps, job)      after a build or an update: report.sql, then report.txt (nayose/reporting.py)
 
 Running SQL:
@@ -132,13 +132,17 @@ ADDED = (("report", "sample_records"), ("report", "patterns_shown"))  # what an 
 def config() -> dict:
     """Return config.toml, or the file NAYOSE_CONFIG names (a variant, at design time).
 
-    Raises InputError for a key an older config.toml names otherwise (RENAMED), or one it lacks (ADDED).
+    Raises InputError for a key an older config.toml names otherwise (RENAMED, and an EM session's key, now its field),
+    or one it lacks (ADDED).
     """
     path = Path(os.environ.get("NAYOSE_CONFIG") or HERE / "config.toml")
     c = tomllib.loads(path.read_text(encoding="utf-8"))
     for (section, key), (was, now) in RENAMED.items():
         if key in c.get(section, {}):
             raise InputError(f"{path.name}: {was} is named {now} now", fix=f"rename {was} {now}")
+    if any("key" in session for session in c.get("fit", {}).get("em_sessions", [])):
+        raise InputError(f"{path.name}: [fit] em_sessions' key is named field now",
+                         fix="rename each session's key field")
     for section, key in ADDED:
         if key not in c.get(section, {}):
             raise InputError(f"{path.name}: [{section}] lacks {key}",
@@ -230,15 +234,15 @@ def temp_table_name(tree: exp.Expression | None) -> str | None:
     return made.name
 
 
-def legal_pattern(section: dict) -> str:
-    """Return the pattern of a legal form, from config.toml's [records] `section`, matched on NFKC text.
+def legal_regex(section: dict) -> str:
+    """Return the regex of a legal form, from config.toml's [records] `section`, matched on NFKC text.
 
     It matches a legal form anywhere, also with its small kana written large, or a bank's abbreviation where one
     may stand: first, as in カ)〇〇, or last, as in 〇〇(カ. Longer forms come first, so 医療法人社団 isn't
     cut to 医療法人.
     """
     spellings = {f for x in section["legal_forms"] for f in (x, x.translate(SMALL_KANA))}
-    forms = sorted(spellings, key=lambda f: (-len(f), f))  # one order, so every run builds the same pattern
+    forms = sorted(spellings, key=lambda f: (-len(f), f))  # one order, so every run builds the same regex
     parts = [re.escape(f) for f in forms]
     if section["legal_front"]:
         parts.append(f"^(?:{'|'.join(map(re.escape, sorted(section['legal_front'], key=len, reverse=True)))})\\)")
@@ -247,8 +251,8 @@ def legal_pattern(section: dict) -> str:
     return "|".join(parts)
 
 
-def nulls_pattern(nulls: list[str]) -> str:
-    """Return the RE2 pattern of a value read_value reads as missing.
+def null_regex(nulls: list[str]) -> str:
+    """Return the RE2 regex of a value read_value reads as missing.
 
     That is one of `nulls`, with spaces or U+3000 around it or not, or a value of spaces alone (Python's whitespace,
     as str.strip removes it).
@@ -298,12 +302,12 @@ def values_of(name: str, refit: bool = True, lookup: bool = False) -> dict:
     """
     c = config()
     if name == "mapping":
-        return dict(nulls=nulls_pattern(c["input"]["nulls"]))
+        return dict(nulls=null_regex(c["input"]["nulls"]))
     if name == "records":
         r = c["records"]
         return dict(hiragana=HIRAGANA, katakana=KATAKANA, katakana_block=KATAKANA_BLOCK, one_byte=ONE_BYTE,
-                    kana_fold_from=r["kana_fold_from"], kana_fold_to=r["kana_fold_to"], legal_pattern=legal_pattern(r),
-                    prefecture_pattern=f"^(?:{'|'.join(map(re.escape, r['prefectures']))})",
+                    kana_fold_from=r["kana_fold_from"], kana_fold_to=r["kana_fold_to"], legal_regex=legal_regex(r),
+                    prefecture_regex=f"^(?:{'|'.join(map(re.escape, r['prefectures']))})",
                     flag_company=list(r["flag_company"]), name_line=float(r["name_line"]),
                     trust_flag=bool(r["trust_flag"]), shared_name_column=bool(r["shared_name_column"]),
                     ngram=int(r["ngram"]),
@@ -320,7 +324,7 @@ def values_of(name: str, refit: bool = True, lookup: bool = False) -> dict:
                     oversized=int(s["oversized"]), lookup=lookup, outside=0)
     if name == "report":
         floor, likely = float(c["lookup"]["at_least"]), float(c["lookup"]["likely_from"])
-        looks = {**c["report"]["looks"], "company_name": legal_pattern(c["records"])}
+        looks = {**c["report"]["looks"], "company_name": legal_regex(c["records"])}
         return dict(looks=json.dumps(looks, ensure_ascii=False),
                     edges=sorted({-20.0, -10.0, 0.0, floor, likely, likely + 2, likely + 4, likely + 8, likely + 12}),
                     floor=floor, oversized=int(c["score"]["oversized"]),
@@ -435,9 +439,9 @@ def score_asked(engine: Engine, record: str | None, values: dict | None, asked_i
                 run_size: int, at_least: float) -> tuple:
     """Score the record against the records read, and return the record as compared and lookup.sql's tables (step 3).
 
-    A block read in part is scored at its whole size. An oversized block that the gate joins makes every pair of it a
+    A block read in part is scored at its whole size. An oversized block that the gate lists makes every pair of it a
     candidate, so that block is then read whole, from the run's index, and the record scored again: each pass reads
-    more, and the loop ends once no block read in part is joined. The index is read outside the scratch, whose
+    more, and the loop ends once no block read in part is listed. The index is read outside the scratch, whose
     every_key is the lookup's own. Returns (the record as compared, candidates, entities, checked).
     """
     extra = 0 if record is not None else 1  # a typed record isn't in the index: its blocks hold one record more
@@ -445,8 +449,8 @@ def score_asked(engine: Engine, record: str | None, values: dict | None, asked_i
         with engine.scratch():
             in_part = [(g, key, n + extra) for (g, key), (n, read) in blocks.items() if n > len(read)]
             temp = score_in_scratch(engine, record, values, sorted(ids), outside=run_size - len(ids), sized=in_part)
-            gate_joined = set(engine.rows("SELECT g, key FROM gated WHERE verdict = 'joined'"))
-            to_read = gate_joined & {(g, key) for g, key, _ in in_part}  # a block read in part that the gate joined
+            gate_listed = set(engine.rows("SELECT g, key FROM gated WHERE verdict = 'listed'"))
+            to_read = gate_listed & {(g, key) for g, key, _ in in_part}  # a block read in part that the gate listed
             if not to_read:
                 return lookup_tables(engine, temp, record, asked_id, at_least)
         read_whole(engine, to_read, blocks, ids)
@@ -572,8 +576,8 @@ def entity_found(x) -> dict:
 
 def generator_checked(x) -> dict:
     """Return one generator (or rule) of a lookup's answer, from its row of lookup.sql's checked: the records its
-    keys found, and why not more."""
-    out = dict(generator=x["generator"], records=int(x["records"]))
+    keys found in its blocks of normal size (in_blocks), and why not more."""
+    out = dict(generator=x["generator"], in_blocks=int(x["in_blocks"]))
     if x["lacks"]:
         out["why"] = "the record has no value for it"
     if not pd.isna(x["untrusted"]):
@@ -799,7 +803,7 @@ def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
     It covers every stage file, the values (config.toml), the input's mapping and the name model, each by name and
     content, every function the deploy makes outside the SQL files (engines.functions: the comparisons, the hash,
     nfkc and the Python UDFs, em.py's and entities.py's whole source), and every value the stages read as the Python
-    makes it from config.toml (values_of: the patterns, the kana maps, the name model's terms). Any byte counts, a
+    makes it from config.toml (values_of: the regexes, the kana maps, the name model's terms). Any byte counts, a
     comment's too: a run built before an edit is built again. DuckDB's twins of the comparisons are held to them by
     tests/test_functions.py. A build stores the hash in the table method; every other job (update, decide, match,
     lookup) refuses a run whose hash differs. `root` is the nayose folder to hash; `mapping_file` is the deployment's

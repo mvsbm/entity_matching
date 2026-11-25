@@ -33,7 +33,7 @@ import numpy as np
 import pandas as pd
 
 import nayose
-from design.evaluate import cluster_metrics, false_pairs, labelled, pair_metrics
+from design.evaluate import entity_metrics, false_pairs, labelled, pair_metrics
 from design.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec, split_by_entity
 from nayose import entities
 from nayose.engines import DuckDB
@@ -78,7 +78,7 @@ def variant(**changed):  # config.toml with these values changed (records' trust
 def accepted(engine: DuckDB) -> tuple[pd.Series, pd.Series, pd.DataFrame]:
     """The method at its design threshold, as a match run there would offer it and people take it whole: every rule
     pair, and the model's pairs there or above with a name compared (named), from the run's scored; the records'
-    entities by transitive closure (nayose.entities). Each record's entity, the rules' alone, and the model's pairs taken."""
+    entities by transitive closure (nayose.entities). Each record's engine entity, the rules' alone, and the model's pairs taken."""
     scored = engine.frame("SELECT * FROM scored")
     model = scored[scored["generators"].notna() & scored["named"] & (scored["points"] >= LINE)]
     rules = scored.loc[scored["rule"].notna(), ["id_l", "id_r"]]
@@ -98,14 +98,14 @@ def links(model: pd.DataFrame) -> dict:
 def quality(engine: DuckDB, truth: pd.DataFrame) -> dict:
     """A run's entities at the design threshold (accepted) against the truth: after the rules, and at the end; and its
     model links that are false. Pairs of two people of one household are counted apart (household_merges)."""
-    gold, rules, model = accepted(engine)
-    entity, household = labelled(truth.reset_index(), DATA)
-    e, h = entity.reindex(gold.index), household.reindex(gold.index) if household is not None else None
-    m = cluster_metrics(gold, e, h)
+    engine_entity, rules, model = accepted(engine)
+    true_entity, household = labelled(truth.reset_index(), DATA)
+    e, h = true_entity.reindex(engine_entity.index), household.reindex(engine_entity.index) if household is not None else None
+    m = entity_metrics(engine_entity, e, h)
     return dict(rules_recall=round(pair_metrics(rules, e, h)["recall"], 4), recall=round(m["recall"], 4),
                 interval=f"{m['recall_lo']:.3f}–{m['recall_hi']:.3f}", false_merges=int(m["FP"]), fp_rate_at_most=f"{m['fp_rate_hi']:.2%}",
                 household_merges=int(m["household"]), **links(model),
-                false_links=int(false_pairs(model["id_l"], model["id_r"], entity, household).sum()))
+                false_links=int(false_pairs(model["id_l"], model["id_r"], true_entity, household).sum()))
 
 
 def scenarios() -> pd.DataFrame:
@@ -147,7 +147,7 @@ def kinds(entities: int) -> pd.DataFrame:
     """Person or company, end to end: populations with one name column for every kind, representative-named companies,
     sole traders, company dates and a flag good, medium or poor, each resolved three ways. The truth routes each name
     (the flag replaced by the truth, taken as it is: the bound); the flag alone (taken as it is); the kind step
-    (records.sql: a written legal form, or a name the model is sure of; else the flag). A person–company cluster holds
+    (records.sql: a written legal form, or a name the model is sure of; else the flag). A person–company entity holds
     a true person and a true company."""
     r, reg = nayose.config()["records"], load_registry(REFERENCE)
     columns = [*nayose.config()["input"]["columns"], "NAME_KANA"]
@@ -169,14 +169,14 @@ def kinds(entities: int) -> pd.DataFrame:
                     engine, t = DuckDB(), time.perf_counter()
                     nayose.build(engine, [d / records])
                     seconds = round(time.perf_counter() - t, 1)
-                    gold = engine.frame("SELECT id, kind FROM gold").set_index("id").assign(cluster_id=accepted(engine)[0]).join(
-                        truth[["ENTITY_ID", "KIND", "HOUSEHOLD_ID"]])
+                    gold = engine.frame("SELECT id, kind FROM gold").set_index("id").assign(engine_entity=accepted(engine)[0]).join(
+                        truth[["ENTITY_ID", "KIND", "HOUSEHOLD_ID"]].rename(columns={"ENTITY_ID": "true_entity"}))
                     engine.close()
-                m = cluster_metrics(gold["cluster_id"], gold["ENTITY_ID"], gold["HOUSEHOLD_ID"])
-                mixed = gold.assign(c=gold["KIND"].eq("company")).groupby("cluster_id")["c"].agg(["any", "all"])
+                m = entity_metrics(gold["engine_entity"], gold["true_entity"], gold["HOUSEHOLD_ID"])
+                mixed = gold.assign(c=gold["KIND"].eq("company")).groupby("engine_entity")["c"].agg(["any", "all"])
                 company, person = gold["KIND"].eq("company"), gold["KIND"].eq("person")
                 rows.append(dict(flag=name, routed_by=how, recall=round(m["recall"], 4), false_merges=int(m["FP"]),
-                                 person_company_clusters=int((mixed["any"] & ~mixed["all"]).sum()),
+                                 person_company_entities=int((mixed["any"] & ~mixed["all"]).sum()),
                                  sure_companies=f"{(gold['kind'].eq(2) & company).sum() / company.sum():.1%}", wrong_companies=int((gold["kind"].eq(2) & person).sum()),
                                  sure_persons=f"{(gold['kind'].eq(1) & person).sum() / person.sum():.1%}", wrong_persons=int((gold["kind"].eq(1) & company).sum()),
                                  seconds=seconds))
@@ -241,7 +241,7 @@ def main() -> None:
               "whole: every rule pair, and the model's pairs at it or above with a name compared, joined by transitive closure.", "",
               "## Quality: scenarios", "",
               "Each population's test split, with λ and m fitted on its train split without labels and u measured on the test split, as a run does. `false_merges` are pairs of "
-              "records in one cluster that are two entities; `false_links` are the model's links between two entities, and "
+              "records in one of the run's entities that are two true entities; `false_links` are the model's links between two true entities, and "
               "`expected_false` the false links the model expects among its own (the sum of 1 − match probability), known "
               "without labels.", "", markdown(robust), "",
               "## Person or company: end to end", "",
@@ -250,7 +250,7 @@ def main() -> None:
               "the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, "
               "medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the "
               "flag alone; by the kind step (a written legal form, or a name the model is sure of, never a person's against a company flag; else "
-              "the flag). `person_company_clusters` hold "
+              "the flag). `person_company_entities` hold "
               "a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; "
               "`wrong_*` the records called 2 that are persons and called 1 that are companies.", "", markdown(kind), "",
               f"## Cost: files of growing size (time grows like N^{curve.attrs['alpha']})", "",

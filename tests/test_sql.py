@@ -36,12 +36,12 @@ def test_what_is_written_instead_translates_and_answers_as_bigquery_would():
     assert duck.value("SELECT ARRAY_TO_STRING(ARRAY(SELECT CAST(i AS STRING) || x FROM UNNEST(['a', 'b']) AS x WITH OFFSET AS i ORDER BY i), ',')") == "0a,1b"  # from 0
     assert duck.rows("SELECT [10, 20, 30][OFFSET(i)], [10, 20, 30][OFFSET(1)] FROM UNNEST([0, 2]) AS i ORDER BY i") == [(10, 20), (30, 20)]  # OFFSET: from 0
     assert duck.rows("SELECT i FROM (SELECT i, x FROM UNNEST(['a', 'b']) AS x WITH OFFSET AS i) ORDER BY i") == [(0,), (1,)]  # selected, by its name
-    # REGEXP_EXTRACT: the group's match, also where the pattern holds RE2's own escapes; NULL where nothing matches
+    # REGEXP_EXTRACT: the group's match, also where the regex holds RE2's own escapes; NULL where nothing matches
     assert duck.rows(r"SELECT REGEXP_EXTRACT('\u3000a12', r'^[\x{3000}]a(\p{Nd}+)$'), REGEXP_EXTRACT('x', r'^(\d+)$'), REGEXP_EXTRACT('a', r'a(b*)')") == [("12", None, "")]
     # a rewritten form's arguments are translated too: transform goes into no node it replaced
     assert duck.value("SELECT DIV(DIV(7 - 1, 2), 2)") == 1  # untranslated within: 3
     assert duck.rows("SELECT DIV([10, 20, 30][OFFSET(i)], 2) FROM UNNEST([0, 2]) AS i ORDER BY i") == [(5,), (15,)]
-    assert duck.value("SELECT REGEXP_EXTRACT('a1', REGEXP_EXTRACT('zz', r'^q'))") is None  # the pattern is NULL: no ''
+    assert duck.value("SELECT REGEXP_EXTRACT('a1', REGEXP_EXTRACT('zz', r'^q'))") is None  # the regex is NULL: no ''
 
 
 def test_a_null_fingerprint_or_none_differs_from_the_method_s():  # NULL <> x is NULL, which IF reads as false
@@ -83,12 +83,13 @@ def test_the_fingerprint_follows_every_stage_file_and_the_values(tmp_path):
     ("\nplaceholder_min = ", "\nmin_block = ", r"\[records\] min_block is named \[records\] placeholder_min"),
     ("\nfit_records = ", "\nfit_rows = ", r"\[fit\] fit_rows is named \[fit\] fit_records"),
     ("\nem_sessions = ", "\nsessions = ", r"\[fit\] sessions is named \[fit\] em_sessions"),
+    ("{ field = ", "{ key = ", r"\[fit\] em_sessions' key is named field"),
     ("[report.looks]", "[report.patterns]", r"\[report.patterns\] is named \[report.looks\]"),
     ("\nsample_records = ", "\n# sample_records = ", r"\[report\] lacks sample_records"),
     ("\npatterns_shown = ", "\n# patterns_shown = ", r"\[report\] lacks patterns_shown")])
 def test_a_config_written_with_an_older_key_is_refused_with_its_name_now(tmp_path, monkeypatch, now, was, said):
     text = (nayose.HERE / "config.toml").read_text(encoding="utf-8")
-    assert text.count(now) == 1
+    assert now in text
     (tmp_path / "config.toml").write_text(text.replace(now, was), encoding="utf-8")
     monkeypatch.setenv("NAYOSE_CONFIG", str(tmp_path / "config.toml"))
     with pytest.raises(nayose.InputError, match=f"^config.toml: {said}"):

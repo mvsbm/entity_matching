@@ -63,7 +63,7 @@ SQL locally.*
 
 Design time never runs in prod: `scripts/generate.py` (synthetic records with known answers),
 `scripts/benchmark.py` (quality and cost on them), `scripts/train_name_model.py` (`config/kind_names.npz`) and
-`design/`. A run only loads the name model. `scripts/key_quality.py` reads a run, a real one too: each generator's
+`design/`. A run only loads the name model. `scripts/generator_quality.py` reads a run, a real one too: each generator's
 candidates and matches, as counts alone.
 
 ## 2 · Components
@@ -72,7 +72,7 @@ candidates and matches, as counts alone.
 flowchart TB
   cli["The jobs, here: nayose/__main__.py<br/>python -m nayose build, update, match, decide, lookup:<br/>a run's folder, its lock, the JSON printed, the exit code"]
   deploy["The deploy: deploy/<br/>deploy.py: functions and procedures · run.py: a job called<br/>smoke.py: BigQuery against DuckDB · Jenkinsfile · terraform/"]
-  tools["Design time: scripts/, design/<br/>synthetic data, the benchmark, the cost estimate,<br/>key quality, the name model's training"]
+  tools["Design time: scripts/, design/<br/>synthetic data, the benchmark, the cost estimate,<br/>generator quality, the name model's training"]
   stages["Stages and jobs: nayose/__init__.py<br/>records, fit, score, decide, match, lookup, build, update:<br/>each stage file run with its values"]
   reporting["report.txt: nayose/reporting.py<br/>report.sql run, then its tables on a page:<br/>no record's value in it"]
   engines["Engines: nayose/engines.py<br/>DuckDB: the SQL translated, the function twins<br/>BigQuery: the SQL as written, a session a job<br/>functions(), procedures(): the deploy's statements"]
@@ -170,7 +170,8 @@ comparisons (`gamma_*`, and the name's `name_score` then `name_level`; one level
 (`near_*`). A stage passes its tables to the
 next by name, and each file's header lists them. The costs below use these symbols: N records in the run, Δ in the
 batch, L a value's length, n the fit's sample, K the comparisons (6), b the pairs a record's keys list, C the
-candidates scored, P the pairs kept, F the fields, D the decisions and G the keys a record has.
+candidates scored, P the pairs kept, F the fields, D the decisions and G the keys a record has (one a
+generator, and L + 1 a deletion generator).
 
 **records.sql · `O(Δ·L) + O(N)`.** The batch's rows go through `mapping.sql` and come out as fields. A row is set
 aside (`set_aside`, with the reason) when it has no ID, is already in the run, or shares its ID with different content.
@@ -197,9 +198,9 @@ because in a bigger file a field agrees by chance less often. The `model` table 
    one character deleted, and some a name's reading.
 3. The model's bits (`level_bits`), and an exact upper bound on each pair's points from its equalities and lengths
    alone (`bound_of`). The costly fuzzy comparisons run only on the pairs that could reach `keep_from`.
-4. The gate handles blocks of `oversized` records or more. Such a block is joined only if a sample of its pairs holds
+4. The gate handles blocks of `oversized` records or more. Such a block is listed only if a sample of its pairs holds
    one at `search_floor` points or more (`gated`), because a placeholder's block holds no true match.
-5. The candidates: the pairs the keys list, and every pair of a joined block that touches the batch (`cands`).
+5. The candidates: the pairs the keys list, and every pair of a listed oversized block that touches the batch (`cands`).
 6. The scores: each kept pair gets its level of each comparison and its points (`points_of`). `scored` keeps every
    pair from `keep_from` points up, and every rule pair.
 
@@ -217,7 +218,7 @@ job loads:
 |---|---|
 | records | `records` (a record a row: its fields, kind, copies and `batch`), `set_aside`, `placeholders`, `name_weights` |
 | fit | `compared` (a view: the columns the fit and the scores read of a record), `model`, `fit` (λ, sizes, notes, and `fitted`: the model whole, which an update scores with) |
-| score | `rule_keys` and `every_key` (each record's keys: the index lookups read), `cands` (the last batch's candidates, each with its `generators`, which `scripts/key_quality.py` reads), `scored` (each pair once: `id_l`, `id_r`, its levels, `points`, `match_probability`, `rule`, `generators`) |
+| score | `rule_keys` and `every_key` (each record's keys: the index lookups read), `cands` (the last batch's candidates, each with its `generators`, which `scripts/generator_quality.py` reads), `scored` (each pair once: `id_l`, `id_r`, its levels, `points`, `match_probability`, `rule`, `generators`) |
 | decide | `decisions` (every decision that changed its pair, with its `round`, the latest flagged), `gold` (each record's `entity`, its kind and its entity's: `entity_kind`) |
 | match | `matched` (on BigQuery; here the job writes it to a file) |
 
@@ -228,7 +229,7 @@ The SQL text never changes between runs. What changes is given to it:
 - **`nayose/config.toml`** holds the values, one section per stage file: thresholds, seeds, lists (legal forms,
   prefectures, kana folding) and sizes. `[score]` names the generators and rules that a run uses (`generators`,
   `rules`). Each one is written once in `score.sql`, and leaving one out of the list runs without it. `nayose.values_of`
-  turns a section into the `@name` parameters a stage reads, together with the patterns built from the lists.
+  turns a section into the `@name` parameters a stage reads, together with the regexes built from the lists.
   `run_file` gives each statement only the values it names, because BigQuery refuses a parameter that a statement
   does not read.
 - **`nayose/mapping.sql`** maps the input's columns to the fields that `records.sql` reads. Each column is read
@@ -288,7 +289,7 @@ alone would score it. It reads what it touches, in three steps:
    and `rule_keys`, clustered by key on BigQuery. Every record of its rule keys comes back, and of its blocks, but of
    an oversized block (`oversized` records or more) only the first 65 by hash: the gate's sample and one more, so the
    record asked about may rank anywhere. Such a block's whole size goes in `block_size`, which `key_blocks` takes
-   for its count, so sizes and the gate's report stay exact. If the gate joins such a block, every pair of it is a
+   for its count, so sizes and the gate's report stay exact. If the gate lists such a block, every pair of it is a
    candidate: the lookup reads the rest of it from the run's index and scores again.
 3. **The record scored against those records alone,** read by ID, with their entities (`records` and `gold` are
    clustered by ID). `score.sql` scores every candidate, whatever its points, with the run's model as it stands. Its

@@ -1,8 +1,8 @@
 -- Stage 3, score. This stage finds the pairs worth scoring and scores them. It pairs the records of the run's latest
 -- batch with all the run's records. In a build, every record is the batch's.
 -- The pairs come from the rules and from the keys. Every pair that a key lists is a candidate. If a key's block holds
--- @oversized records or more, the stage first scores a sample of the block's pairs, and joins the block only if the
--- sample holds a pair at @search_floor points or more. Each pair gets its level of each comparison (functions.sql)
+-- @oversized records or more, the stage first scores a sample of the block's pairs, and lists the block's pairs only if
+-- the sample holds a pair at @search_floor points or more. Each pair gets its level of each comparison (functions.sql)
 -- and its points from the model. The points are the prior plus each level's bits, added in the model's order, so
 -- that the sum is Splink's to the last bit. The stage keeps every pair with @keep_from points or more, and every
 -- rule pair. These are the pairs a match run can offer people. Nothing merges here.
@@ -336,7 +336,7 @@ CREATE OR REPLACE TEMP FUNCTION could_reach(bound ANY TYPE, floor ANY TYPE) AS (
 );
 
 
--- 4. The gate. A block of @oversized records or more is joined only if a sample of its pairs holds a pair with
+-- 4. The gate. A block of @oversized records or more is listed only if a sample of its pairs holds a pair with
 --    @search_floor points or more. The sample pairs the block's first @oversized batch records, by hash, with its
 --    first @oversized records. It leaves out the pairs another block already listed, and it is scored as the run
 --    scores. A big block holds few true matches, and a placeholder's block (a dummy phone, say) holds none.
@@ -373,14 +373,14 @@ stats AS (
 )
 SELECT z.g, z.key, z.n AS records, pairs_of(z.n) AS pairs,
        COALESCE(s.sampled, 0) AS sampled, s.best, COALESCE(s.hits, 0) AS hits,
-       CASE WHEN COALESCE(s.hits, 0) > 0 THEN 'joined' WHEN COALESCE(s.sampled, 0) = 0 THEN 'skipped: other keys list its sampled pairs'
+       CASE WHEN COALESCE(s.hits, 0) > 0 THEN 'listed' WHEN COALESCE(s.sampled, 0) = 0 THEN 'skipped: other keys list its sampled pairs'
             ELSE 'skipped: no sampled pair reaches the floor' END AS verdict
 FROM (SELECT DISTINCT g, key, n FROM key_blocks WHERE n >= @oversized) AS z
 LEFT JOIN stats AS s ON s.g = z.g AND s.key = z.key;
 
 
--- 5. The candidates. They are the pairs in listed, and every pair of a joined block that touches the batch. Each
---    comes with the generators whose keys listed it.
+-- 5. The candidates. They are the pairs in listed, and every pair of a listed oversized block that touches the batch.
+--    Each comes with the generators whose keys listed it.
 CREATE OR REPLACE TABLE cands AS
 WITH listed_or_gated AS (
   SELECT l, r, mask FROM listed
@@ -389,7 +389,7 @@ WITH listed_or_gated AS (
   FROM key_blocks AS a
   JOIN key_blocks AS b ON a.g = b.g AND a.key = b.key AND a.id <> b.id AND (NOT b.in_batch OR a.id < b.id)
   JOIN gated AS z ON z.g = a.g AND z.key = a.key
-  WHERE a.in_batch AND z.verdict = 'joined'
+  WHERE a.in_batch AND z.verdict = 'listed'
 ),
 pairs AS (SELECT l, r, BIT_OR(mask) AS mask FROM listed_or_gated GROUP BY l, r),
 generator_names AS (  -- each mask becomes the generators' names, in their order, joined by +

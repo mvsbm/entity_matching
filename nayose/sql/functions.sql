@@ -13,7 +13,7 @@
 --    - Numbers. These fixes apply only in a column of numbers (numeric is TRUE; the mapping says which). A whole
 --      number that a spreadsheet wrote as a float (12345.0) becomes its digits. A number cut short in E notation
 --      (1.23E+11) is missing, because its digits are gone.
---    In the comments below, SP stands for Python's whitespace (the characters str.strip removes). The patterns spell
+--    In the comments below, SP stands for Python's whitespace (the characters str.strip removes). The regexes spell
 --    it as [\t-\r\x{1c}-\x{1f}\x{85}\p{Z}], \p{Z} being Unicode's space, line and paragraph separators.
 --
 -- 2. The model's comparisons, which the fit (stage 2) and the scores call. Each compares two records on its fields,
@@ -60,7 +60,7 @@ CREATE OR REPLACE TEMP FUNCTION without_controls(v ANY TYPE) AS (
                  r'[\t\r\n]+', ' ')
 );
 
--- null_token_marked writes CHR(1) for a null token. null_regex is the pattern that nayose.nulls_pattern makes of
+-- null_token_marked writes CHR(1) for a null token. null_regex is the regex that nayose.null_regex makes of
 -- [input] nulls, and it also matches a value of spaces alone. The parameter isn't named nulls, a word BigQuery
 -- reserves.
 CREATE OR REPLACE TEMP FUNCTION null_token_marked(v ANY TYPE, null_regex ANY TYPE) AS (
@@ -69,7 +69,7 @@ CREATE OR REPLACE TEMP FUNCTION null_token_marked(v ANY TYPE, null_regex ANY TYP
 
 -- The two number steps change a value only if numeric is TRUE. cut_short_marked writes CHR(1) for a number cut short
 -- in E notation (1.23E+11), whose digits are gone, and whole_number writes a whole number written as a float
--- (12345.0) as its digits. If numeric is FALSE, a step's pattern is $^, which matches no value it is given (an empty
+-- (12345.0) as its digits. If numeric is FALSE, a step's regex is $^, which matches no value it is given (an empty
 -- value is CHR(1) by then). whole_number's is ($^), which holds the group that its replacement \1 reads.
 CREATE OR REPLACE TEMP FUNCTION cut_short_marked(v ANY TYPE, numeric ANY TYPE) AS (
   REGEXP_REPLACE(v, IF(numeric, r'^[ \x{3000}]*-?\p{Nd}(\.\p{Nd}+)?[eE]\+\p{Nd}+[ \x{3000}]*$', r'$^'), CHR(1))
@@ -86,9 +86,9 @@ CREATE OR REPLACE TEMP FUNCTION whole_number(v ANY TYPE, numeric ANY TYPE) AS (
 --   filled.
 --   shortcut: a list that JSON can't read is left as written if a string in it holds a backslash, although Python
 --   would decode the escapes. Decode them if a records file ever holds such a list.
---   The patterns are made of these pieces. A JSON string is "(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*". A JSON
+--   The regexes are made of these pieces. A JSON string is "(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*". A JSON
 --   number is -?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?. A Python string is '…' or "…" without a
---   backslash or a line break, and the patterns write ' as \x{27}. A blank item is "SP*", 'SP*' or null. ws is the
+--   backslash or a line break, and the regexes write ' as \x{27}. A blank item is "SP*", 'SP*' or null. ws is the
 --   space, a tab or a line break, and in a Python list also a form feed. The three plain lists read:
 --     code list     SP* [ SP* digits SP* ] SP*
 --     JSON list     SP* [ ws (item (ws , ws item)*)? ws ] SP*, each item a JSON string, a JSON number or null
@@ -182,12 +182,12 @@ CREATE OR REPLACE TEMP FUNCTION jaro_winkler_most(a STRING, b STRING) AS (
   winkler((2 + LEAST(LENGTH(a), LENGTH(b)) / GREATEST(LENGTH(a), LENGTH(b), 1)) / 3, common_start(a, b))
 );
 
--- letter_count returns how many distinct katakana a name holds, the bits set in its letters columns (records.sql).
+-- letter_count returns how many distinct katakana a name holds: the 1s in its letters columns' masks (records.sql).
 CREATE OR REPLACE TEMP FUNCTION letter_count(x ANY TYPE) AS (
   BIT_COUNT(x.person_name__kana_fold_letters_lo) + BIT_COUNT(x.person_name__kana_fold_letters_hi)
 );
 
--- letters_shared returns how many distinct katakana both names hold, the bits set in both names' letters columns.
+-- letters_shared returns how many distinct katakana both names hold: the 1s both names' letters masks share.
 CREATE OR REPLACE TEMP FUNCTION letters_shared(x ANY TYPE, y ANY TYPE) AS (
   BIT_COUNT(x.person_name__kana_fold_letters_lo & y.person_name__kana_fold_letters_lo)
   + BIT_COUNT(x.person_name__kana_fold_letters_hi & y.person_name__kana_fold_letters_hi)

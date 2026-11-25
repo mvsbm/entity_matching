@@ -77,10 +77,10 @@ SELECT
      GROUP BY full_name, address_code, phone)) AS name_code_phone;
 
 
--- 3. EM learns in sessions, one for each key. The phone session's pairs are the sample's pairs that share a phone,
---    and the address session's share an address. Each pattern of levels is stored once, with its count of pairs. A
---    session can't learn the comparison its key chose the pairs by, as every pair agrees on it, so that comparison
---    is NULL in its session.
+-- 3. EM learns in sessions, one for each field it pairs records by ([fit] em_sessions). The phone session's pairs are
+--    the sample's pairs that share a phone, and the address session's share an address. Each pattern of levels is
+--    stored once, with its count of pairs. A session can't learn the comparison its field chose the pairs by, as
+--    every pair agrees on it, so that comparison is NULL in its session.
 CREATE OR REPLACE TEMP TABLE em_patterns AS
 WITH paired AS (  -- a pair keeps its two records whole, and name_score runs once a pair for name_level
   SELECT 'phone' AS session, x, y, name_score(x, y) AS s_name

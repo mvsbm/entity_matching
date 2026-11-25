@@ -2,5 +2,5 @@
 through a pull request; never run by a production job.
 
 generate     synthetic records from real names, companies and addresses, with the truth (scripts/generate.py)
-evaluate     pair and cluster metrics, and the bounds the benchmark reports (scripts/benchmark.py)
+evaluate     pair and entity metrics, and the bounds the benchmark reports (scripts/benchmark.py)
 """

@@ -17,7 +17,7 @@ What a run costs, and how each figure is measured. BigQuery bills in one of two 
 | L | the characters in a name or an address |
 | K | the comparisons in the model (6) |
 | b | the records in one key block |
-| G | the generators a run uses (`[score] generators`, 22) |
+| G | the keys a record has (one a generator, and L + 1 a deletion generator: 22 generators, 4 of them deletion ones) |
 | ΣP | the pairs inside every generator's blocks, before they are deduplicated |
 | C, C_Δ | the candidate pairs; those touching the batch |
 | P_em | the pairs in EM's blocks (equal phone, equal address) within the sample |
@@ -94,7 +94,7 @@ The run's tables are DuckDB's. Past `memory_limit` (`--compute memory_limit=8GB`
 
 ## Each generator's worth
 
-`python scripts/key_quality.py RUN [--truth TRUTH.parquet] [--points 6]` counts, for each generator of a build's run,
+`python scripts/generator_quality.py RUN [--truth TRUTH.parquet] [--points 6]` counts, for each generator of a build's run,
 the pairs its keys list (candidates), the matches among them (6 points or more with a name compared, or a rule's), and
 the matches it alone finds, which no other generator or rule does. It then names the generators that can go together
 losing no match, and what they cost: their index rows and the candidates only they list. Counts alone, so a run on real
@@ -108,7 +108,7 @@ Every speed-up keeps every table the same: `tests/test_parity.py` holds each job
 - **A fitting sample of fixed size:** whole postal areas by hash, so households stay together, and the fit's cost doesn't grow with the file.
 - **u counted, not sampled, where it can be:** equality and one edit come from how many records hold each value, never from listing pairs, and a sample would miss an agreement rarer than one pair in a billion.
 - **Only the columns compared are read:** fit and score read records through `fit.sql`'s view `compared`, so only those columns are billed.
-- **Oversized blocks checked first:** a block of `oversized` (64) records or more is joined only if a sample of its pairs holds one at `search_floor` or more. A rule leaves out a value held that often.
+- **Oversized blocks checked first:** a block of `oversized` (64) records or more is listed only if a sample of its pairs holds one at `search_floor` or more. A rule leaves out a value held that often.
 - **Placeholders read as missing,** so a dummy phone's block never forms.
 - **A bound before the comparisons:** a pair is compared in full only if the most points its equalities allow reach `keep_from`; every rule pair is compared whatever its bound.
 - **Cheap tests before a comparison call:** an edit distance is never less than the two lengths' difference, nor less than the distance between the values' `one_byte_hash` copies. A Jaro–Winkler is never more than the lengths and the common start allow (`jaro_winkler_most`), nor, for two katakana names, more than the letters both hold allow (`name_jw_most`, from each record's letter bits). Those are tested first, so many pairs never reach the JavaScript (or, on DuckDB, rapidfuzz).

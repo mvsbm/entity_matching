@@ -14,8 +14,8 @@
 --   input_rows and mapped, the batch as mapping.sql maps it;
 --   name_weights, the name model (config/kind_names.npz);
 --   the run's records and placeholders, which are empty before the run's first batch.
--- Values: config.toml's [records], and the patterns that nayose builds from its lists (legal_pattern,
---   prefecture_pattern). With @lookup, the batch holds the records asked about (nayose.lookup). They are prepared
+-- Values: config.toml's [records], and the regexes that nayose builds from its lists (legal_regex,
+--   prefecture_regex). With @lookup, the batch holds the records asked about (nayose.lookup). They are prepared
 --   as the run's own records are, but none of their values becomes a placeholder, and every table is written as a
 --   temporary table.
 -- Writes:
@@ -70,7 +70,7 @@ WHERE nayose_id IS NULL
 --    strip_spaces removes every space, of any width.
 --    strip_separators removes what people write between digits, as in 03-1234-5678 or (03) 1234-5678. These are
 --    spaces, hyphens, dashes, minus signs, the long-vowel mark ー, slashes, dots, parentheses and 〒.
---    strip_legal_form removes a legal form (@legal_pattern).
+--    strip_legal_form removes a legal form (@legal_regex).
 --    kana_fold writes voiced kana as unvoiced, small kana as large, and ー as ウ (@kana_fold_from to @kana_fold_to).
 
 CREATE OR REPLACE TEMP TABLE standardized AS
@@ -90,7 +90,7 @@ SELECT
   NULLIF(REGEXP_REPLACE(TRANSLATE(nfkc(given_name), @hiragana, @katakana), r'[\s\x{3000}]+', ''), '') AS given_name,
   NULLIF(REGEXP_REPLACE(TRANSLATE(nfkc(company_name), @hiragana, @katakana), r'[\s\x{3000}]+', ''), '') AS company_name,
   NULLIF(TRANSLATE(REGEXP_REPLACE(TRANSLATE(REGEXP_REPLACE(nfkc(any_name), r'[\s\x{3000}]+', ''), @hiragana, @katakana),
-                                  @legal_pattern, ''), @kana_fold_from, @kana_fold_to), '') AS any_name,
+                                  @legal_regex, ''), @kana_fold_from, @kana_fold_to), '') AS any_name,
   NULLIF(address, '') AS address,
   NULLIF(address_code, '') AS address_code,
   NULLIF(REGEXP_REPLACE(nfkc(postal_code), r'[\s\x{3000}\-\x{2010}-\x{2015}\x{2212}\x{30fc}/.()〒]', ''), '') AS postal_code,
@@ -136,7 +136,7 @@ judged AS (
   SELECT
     s.*,
     COALESCE(REGEXP_CONTAINS(NULLIF(TRANSLATE(REGEXP_REPLACE(nfkc(kind_name), r'[\s\x{3000}]+', ''), @hiragana, @katakana), ''),
-                             @legal_pattern), FALSE) AS written,
+                             @legal_regex), FALSE) AS written,
     IF(s.any_name IS NULL, NULL, @intercept + COALESCE(sums.s, CAST(0 AS FLOAT64))) AS logit,
     CASE WHEN s.kind_flag IS NULL THEN NULL
          WHEN trimmed(nfkc(s.kind_flag))
@@ -362,10 +362,10 @@ copies AS (
   SELECT
     *,
     NULLIF(TRANSLATE(person_name, @kana_fold_from, @kana_fold_to), '') AS person_name__kana_fold,
-    NULLIF(TRANSLATE(REGEXP_REPLACE(nfkc(company_name), @legal_pattern, ''), @kana_fold_from, @kana_fold_to), '')
+    NULLIF(TRANSLATE(REGEXP_REPLACE(nfkc(company_name), @legal_regex, ''), @kana_fold_from, @kana_fold_to), '')
       AS company_name__nfkc_strip_legal_form_kana_fold,
     NULLIF(REGEXP_REPLACE(REPLACE(up_to_street_number(trimmed(numbers_dashed(nfkc(address)))), ' ', ''),
-                          @prefecture_pattern, ''), '') AS address__address,
+                          @prefecture_regex, ''), '') AS address__address,
     NULLIF(SUBSTR(postal_code, 1, 3), '') AS postal_code__first3,
     NULLIF(SUBSTR(any_name, 1, 1), '') AS any_name__initial,
     NULLIF(TRANSLATE(given_name, @kana_fold_from, @kana_fold_to), '') AS given_name__kana_fold

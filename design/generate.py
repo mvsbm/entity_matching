@@ -1,6 +1,6 @@
 """The synthetic generator: entities from real reference names, companies and towns, each appearing under one or more
 records, with realistic typos, notations, moves, new phones and correlated missing values, then split by entity. Its
-spec is config/generator.toml. profile() says how hard the result is: what a customer's records still share.
+spec is config/generator.toml. profile() says how hard the result is: what an entity's records still share.
 """
 import json
 import tomllib
@@ -584,8 +584,8 @@ def train_name_model(reference: Path, generator: Path) -> dict:
     nayose.stage(engine, "functions")
     v = nayose.values_of("records")
     texts = engine.frame(r"""SELECT NULLIF(TRANSLATE(REGEXP_REPLACE(TRANSLATE(REGEXP_REPLACE(nfkc(name), r'[\s\x{3000}]+', ''), @hiragana, @katakana),
-                                     @legal_pattern, ''), @kana_fold_from, @kana_fold_to), '') AS t FROM names ORDER BY i""",
-                         {k: v[k] for k in ("hiragana", "katakana", "legal_pattern", "kana_fold_from", "kana_fold_to")})["t"]
+                                     @legal_regex, ''), @kana_fold_from, @kana_fold_to), '') AS t FROM names ORDER BY i""",
+                         {k: v[k] for k in ("hiragana", "katakana", "legal_regex", "kana_fold_from", "kana_fold_to")})["t"]
     vec = CountVectorizer(analyzer="char", ngram_range=(1, int(r["ngram"])), binary=True, min_df=2)
     m = LogisticRegression(C=1.0, max_iter=3000).fit(vec.fit_transform(texts.fillna("")), names["y"].to_numpy())
     return dict(terms=vec.get_feature_names_out().tolist(), coef=m.coef_[0], intercept=float(m.intercept_[0]), ngram=int(r["ngram"]))
