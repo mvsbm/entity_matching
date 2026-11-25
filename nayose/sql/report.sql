@@ -90,7 +90,7 @@ WITH p AS (
   SELECT match_weight >= @floor AS up, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth,
          COUNT(*) AS n, AVG(match_weight) AS w
   FROM batch_scored WHERE match_weight >= 0
-  GROUP BY 1, 2, 3, 4, 5, 6, 7
+  GROUP BY up, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth
 )
 SELECT * FROM (
   SELECT *, SUM(n) OVER (PARTITION BY up) AS total, COUNT(*) OVER (PARTITION BY up) AS kinds,

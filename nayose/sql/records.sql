@@ -4,6 +4,8 @@
 -- a run's first batch.
 -- It costs O(Δ·L) for a batch of Δ records whose values are L characters long, plus O(N) to count placeholders over
 -- all N of the run's records.
+-- Sections 3 and 4 are one statement, sided: section 3's CTEs decide each record's kind, and section 4's then keep
+-- each name in the fields of the record's side.
 --
 -- A statement that follows a `-- when: <condition>` line runs only if the condition holds: run_file checks it locally,
 -- and the deployed procedure wraps the statement in IF … END IF.
@@ -62,7 +64,6 @@ WHERE nayose_id IS NULL
                     GROUP BY nayose_id HAVING COUNT(*) > 1);
 
 
-
 -- 2. Each field is standardized by its chain of steps, in order. A value that its chain leaves empty is missing.
 --    nfkc applies Unicode NFKC normalization.
 --    katakana writes hiragana as katakana (@hiragana to @katakana).
@@ -104,6 +105,8 @@ SELECT
 FROM kept;
 
 
+-- sided holds each record once, with its kind (section 3) and its names in the fields of its side (section 4).
+CREATE OR REPLACE TEMP TABLE sided AS
 -- 3. Each record's kind is 2 for a company, 1 for a person, or 0 if neither the engine nor the file's flag decides.
 --    A legal form written in the name makes the record a company.
 --    Otherwise the name model decides if it is at least name_line sure either way. The model is a logistic regression
@@ -111,20 +114,10 @@ FROM kept;
 --    overrides a flag that says company.
 --    Otherwise the file's flag (kind_flag) decides. A flag in flag_company says company, and any other says person.
 --    With trust_flag, the flag decides every record.
---    A record's side is its kind, or, if its kind is 0, the kind it leans to.
-
-
-
-
--- 4. A name counts once, even if it is in two fields. If a person field and the company field hold the same name
---    once kana_fold is applied, as they do when one column is mapped to both, the name is one piece of evidence. It is
---    kept only in the field on the record's side.
---    With shared_name_column, one column holds every name, a person's or a company's. Then a person field keeps its
---    name only if the record's side is person, and the company field only if the side is company.
-
-CREATE OR REPLACE TEMP TABLE sided AS
--- name_sums scores each distinct name once, since many records share a name. As in the model's training, each
--- n-gram counts once however often the name holds it, and an n-gram the model doesn't know adds nothing.
+--    A record's side is its kind, or, if its kind is 0, the kind it leans to (kind_p).
+-- name_sums scores each distinct name once, since many records share a name: one row per distinct name. As in the
+-- model's training, each n-gram counts once however often the name holds it, and an n-gram the model doesn't know
+-- adds nothing.
 WITH name_sums AS (
   SELECT g.t, SUM(w.w) AS s
   FROM (
@@ -136,8 +129,9 @@ WITH name_sums AS (
   JOIN name_weights AS w ON w.term = g.term
   GROUP BY g.t
 ),
--- written is TRUE if the name as written holds a legal form. logit is the name model's log-odds that the name is a
--- company's. flag is the file's flag as a kind: 2 company, 1 person, or NULL if the file gives none.
+-- judged and each CTE after it hold one row per record. written is TRUE if the name as written holds a legal form.
+-- logit is the name model's log-odds that the name is a company's. flag is the file's flag as a kind: 2 company,
+-- 1 person, or NULL if the file gives none.
 judged AS (
   SELECT
     s.*,
@@ -151,7 +145,7 @@ judged AS (
   FROM standardized AS s
   LEFT JOIN name_sums AS n ON n.t = LOWER(s.any_name)
 ),
-scored AS (  -- name_p is the chance that the name is a company's, or NULL if the model can read no name.
+name_chance AS (  -- name_p is the chance that the name is a company's, or NULL if the model can read no name.
   -- The logistic takes two forms so that EXP never gets a large argument, which BigQuery refuses as an overflow.
   SELECT *, IF(written, CAST(1 AS FLOAT64),
                IF(logit >= 0, 1 / (1 + EXP(-logit)), EXP(logit) / (1 + EXP(logit)))) AS name_p
@@ -165,30 +159,33 @@ sure AS (  -- sure_kind is the engine's kind if the engine is sure (2 company, 1
          WHEN name_p <= 1 - @name_line AND flag = 2 THEN 0  -- A person's name never overrides a company flag.
          WHEN name_p <= 1 - @name_line THEN 1
          ELSE 0 END AS sure_kind
-  FROM scored
+  FROM name_chance
 ),
--- The kind is the engine's if the engine is sure, and the file's flag if it isn't. leaning is how far the record
--- leans to company, from 0 to 1.
+-- The kind is the engine's if the engine is sure, and the file's flag if it isn't. kind_p is how far the record
+-- leans to company, from 0 to 1, or NULL if the record has no name to judge.
 decided AS (
   SELECT *,
     CAST(IF(sure_kind <> 0, sure_kind, COALESCE(flag, 0)) AS INT64) AS kind,
-    IF(@trust_flag, CAST(flag - 1 AS FLOAT64), name_p) AS leaning
+    IF(kind_name IS NULL, NULL, IF(@trust_flag, CAST(flag - 1 AS FLOAT64), name_p)) AS kind_p
   FROM sure
 ),
 told AS (  -- each record with its kind, kind_p, kind_by and kind_flagged, and its side
   SELECT
-    * EXCEPT (kind_flag, kind_name, written, logit, flag, name_p, sure_kind, kind, leaning),
-    kind,
-    IF(kind_name IS NULL, NULL, leaning) AS kind_p,  -- NULL if the record has no name to judge.
+    * EXCEPT (kind_flag, kind_name, written, logit, flag, name_p, sure_kind),
     IF(sure_kind = 0 AND flag IS NOT NULL, 'flag', 'engine') AS kind_by,
     (sure_kind <> 0 AND flag IS NOT NULL AND sure_kind <> flag) AS kind_flagged,
     -- The side tells section 4 which fields keep a name.
     CASE WHEN kind = 2 THEN 'company'
          WHEN kind = 1 THEN 'person'
-         WHEN leaning >= CAST(0.5 AS FLOAT64) THEN 'company'
+         WHEN kind_p >= CAST(0.5 AS FLOAT64) THEN 'company'
          ELSE 'person' END AS side
   FROM decided
 ),
+-- 4. A name counts once, even if it is in two fields. If a person field and the company field hold the same name
+--    once kana_fold is applied, as they do when one column is mapped to both, the name is one piece of evidence. It is
+--    kept only in the field on the record's side.
+--    With shared_name_column, one column holds every name, a person's or a company's. Then a person field keeps its
+--    name only if the record's side is person, and the company field only if the side is company.
 routed AS (
   SELECT
     * EXCEPT (full_name, person_name, company_name),
@@ -266,17 +263,17 @@ value_counts AS (  -- Each value's records (n) and customers are counted.
 -- held by n records makes n(n-1)/2 pairs.
 field_bars AS (
   SELECT field, GREATEST(@min_block, CAST(CEIL(@spread * SUM(n) / GREATEST(COUNT(*), 1)) AS INT64)) AS at_least,
-         SUM(DIV(n * (n - 1), 2)) AS all_pairs
+         SUM(pairs_of(n)) AS all_pairs
   FROM value_counts GROUP BY field
 ),
 crowded AS (  -- A customer ID needs only the bar, as its customers aren't counted.
   SELECT v.field, v.value, v.n FROM value_counts AS v JOIN field_bars AS b USING (field)
   WHERE v.n >= b.at_least AND (v.field = 'customer_id' OR v.customers >= @crowd)
 ),
-crowded_pairs AS (SELECT field, SUM(DIV(n * (n - 1), 2)) AS pairs FROM crowded GROUP BY field)
+crowded_pairs AS (SELECT field, SUM(pairs_of(n)) AS pairs FROM crowded GROUP BY field)
 -- A crowded value is a placeholder if its own pairs outnumber those of all the field's values that aren't crowded.
 SELECT c.field, c.value, c.n FROM crowded AS c JOIN field_bars AS b USING (field) JOIN crowded_pairs AS p USING (field)
-WHERE NOT @lookup AND (c.field = 'customer_id' OR DIV(c.n * (c.n - 1), 2) > b.all_pairs - p.pairs);
+WHERE NOT @lookup AND (c.field = 'customer_id' OR pairs_of(c.n) > b.all_pairs - p.pairs);
 
 CREATE OR REPLACE TABLE placeholders AS
 SELECT * FROM known UNION ALL SELECT * FROM found;
@@ -286,9 +283,10 @@ SELECT * FROM known UNION ALL SELECT * FROM found;
 --    written, and so is every run's record that holds a placeholder this batch found. That record is made again with
 --    the placeholder read as missing, and so are its copies.
 --    These are the steps section 2 doesn't list:
---    address applies NFKC, writes 丁目, 番 or 番地 after a number as a dash, and drops 号 after a number. It then
---    keeps the address up to the first space after the street number, which drops the building and room. Last, it
---    removes every space and cuts the address's own prefecture off its start. So 東京都千代田区丸の内1丁目2番3号
+--    address applies NFKC, writes 丁目, 番 or 番地 after a number as a dash, and drops 号 after a number
+--    (numbers_dashed, functions.sql). It then keeps the address up to the first space after the street number
+--    (up_to_street_number), which drops the building and room. Last, it removes every space and cuts the address's
+--    own prefecture off its start. So 東京都千代田区丸の内1丁目2番3号
 --    ABCビル5F becomes 千代田区丸の内1-2-3.
 --    first3 and last3 keep a value's first or last three characters, and initial keeps its first character.
 --    long_vowel writes a long vowel one way, so サトウ, サトオ and サトー read alike (kana_fold has made ー into ウ).
@@ -334,22 +332,29 @@ WITH made AS (
          company_name, batch
   FROM redone
 ),
+-- marked holds the records of made, person_placeholder TRUE if a record's person_name is a placeholder and
+-- company_placeholder TRUE if its company_name is.
+marked AS (
+  SELECT *,
+    person_name IN (SELECT value FROM placeholders WHERE field = 'person_name') AS person_placeholder,
+    company_name IN (SELECT value FROM placeholders WHERE field = 'company_name') AS company_placeholder
+  FROM made
+),
 -- Every placeholder is read as missing. A person_name placeholder also blanks full_name, given_name and any_name,
 -- and a company_name placeholder also blanks any_name, since those fields come from the same columns.
 blanked AS (
-  SELECT * REPLACE (
-    IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, full_name) AS full_name,
-    IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, given_name) AS given_name,
-    IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name')
-       OR company_name IN (SELECT value FROM placeholders WHERE field = 'company_name'), NULL, any_name) AS any_name,
-    IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, person_name) AS person_name,
-    IF(company_name IN (SELECT value FROM placeholders WHERE field = 'company_name'), NULL, company_name) AS company_name,
+  SELECT * EXCEPT (person_placeholder, company_placeholder) REPLACE (
+    IF(person_placeholder, NULL, full_name) AS full_name,
+    IF(person_placeholder, NULL, given_name) AS given_name,
+    IF(person_placeholder OR company_placeholder, NULL, any_name) AS any_name,
+    IF(person_placeholder, NULL, person_name) AS person_name,
+    IF(company_placeholder, NULL, company_name) AS company_name,
     IF(address_code IN (SELECT value FROM placeholders WHERE field = 'address_code'), NULL, address_code) AS address_code,
     IF(address IN (SELECT value FROM placeholders WHERE field = 'address'), NULL, address) AS address,
     IF(phone IN (SELECT value FROM placeholders WHERE field = 'phone'), NULL, phone) AS phone,
     IF(birth_date IN (SELECT value FROM placeholders WHERE field = 'birth_date'), NULL, birth_date) AS birth_date,
     IF(customer_id IN (SELECT value FROM placeholders WHERE field = 'customer_id'), NULL, customer_id) AS customer_id)
-  FROM made
+  FROM marked
 ),
 copies AS (
   SELECT
@@ -357,13 +362,8 @@ copies AS (
     NULLIF(TRANSLATE(person_name, @kana_fold_from, @kana_fold_to), '') AS person_name__kana_fold,
     NULLIF(TRANSLATE(REGEXP_REPLACE(nfkc(company_name), @legal_pattern, ''), @kana_fold_from, @kana_fold_to), '')
       AS company_name__nfkc_strip_legal_form_kana_fold,
-    NULLIF(REGEXP_REPLACE(
-      REPLACE(
-        REGEXP_REPLACE(
-          trimmed(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(nfkc(address), r'(\d+)丁目', r'\1-'), r'(\d+)番地?', r'\1-'), r'(\d+)号', r'\1')),
-          r'^(.*?[0-9][^ ]*) .*$', r'\1'),
-        ' ', ''),
-      @prefecture_pattern, ''), '') AS address__address,
+    NULLIF(REGEXP_REPLACE(REPLACE(up_to_street_number(trimmed(numbers_dashed(nfkc(address)))), ' ', ''),
+                          @prefecture_pattern, ''), '') AS address__address,
     NULLIF(SUBSTR(postal_code, 1, 3), '') AS postal_code__first3,
     NULLIF(SUBSTR(any_name, 1, 1), '') AS any_name__initial,
     NULLIF(TRANSLATE(given_name, @kana_fold_from, @kana_fold_to), '') AS given_name__kana_fold

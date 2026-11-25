@@ -1,5 +1,5 @@
 -- The functions that nayose's SQL calls, each written once, and the comparisons' levels. Every job runs this file
--- first. It has four sections.
+-- first. It has five sections.
 --
 -- 1. The intake. mapping.sql reads every input column through read_value(value, numeric, @nulls), which fixes what
 --    can be fixed without losing anything. O(bytes). It applies these fixes in order:
@@ -14,7 +14,7 @@
 --      number that a spreadsheet wrote as a float (12345.0) becomes its digits. A number cut short in E notation
 --      (1.23E+11) is missing, because its digits are gone.
 --    In the comments below, SP stands for Python's whitespace (the characters str.strip removes). The patterns spell
---    it as [\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}].
+--    it as [\t-\r\x{1c}-\x{1f}\x{85}\p{Z}], \p{Z} being Unicode's space, line and paragraph separators.
 --
 -- 2. The model's comparisons, which the fit (stage 2) and the scores call. Each compares two records on its fields,
 --    and takes both records whole, as rows (l and r). Each returns a gamma, the level the pair lands in. The level is
@@ -34,18 +34,49 @@
 -- 4. The table levels. It lists each comparison's levels as section 2 numbers them, with their labels and kinds.
 --    fit.sql reads it.
 --
+-- 5. The steps that the stages share: pairs_of, which counts the pairs a block's records make, and the steps of the
+--    address copy (records.sql).
+--
 -- Writes: levels (a temporary table).
 
 
 -- ---------- 1. The intake ----------
 
 -- blank(v) is TRUE if v is empty or holds only spaces (SP, of any width).
-CREATE OR REPLACE TEMP FUNCTION blank(v STRING) AS (REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$'));
+CREATE OR REPLACE TEMP FUNCTION blank(v STRING) AS (REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*$'));
 
 -- trimmed(v) returns v without its leading and trailing spaces (SP), as Python's str.strip removes them.
-CREATE OR REPLACE TEMP FUNCTION trimmed(v STRING) AS (REGEXP_REPLACE(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]+|[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]+$', ''));
+CREATE OR REPLACE TEMP FUNCTION trimmed(v STRING) AS (REGEXP_REPLACE(v, r'^[\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]+|[\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]+$', ''));
 
--- The next three functions read a value written as a list. unlisted, which read_value calls, returns a plain list's
+-- The next four functions are read_value's steps after unlisted, in the order it applies them. Each reads its
+-- argument once, because a function's argument is copied into every place its body reads it. Their parameters are
+-- ANY TYPE because DuckDB binds a typed parameter's argument twice, so each step nested in the next would double the
+-- time read_value takes to plan. A step that finds a value missing writes CHR(1) in its place, and read_value makes
+-- CHR(1) missing at the end. No other value holds CHR(1) by then, because without_controls removes it.
+-- without_controls removes control characters, zero-width characters and BOMs, and makes each run of tabs and line
+-- breaks one space.
+CREATE OR REPLACE TEMP FUNCTION without_controls(v ANY TYPE) AS (
+  REGEXP_REPLACE(REGEXP_REPLACE(v, r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\x{200b}-\x{200d}\x{2060}\x{feff}]', ''),
+                 r'[\t\r\n]+', ' ')
+);
+
+-- null_token_marked writes CHR(1) for a null token. nulls is the pattern that nayose.nulls_pattern makes of [input]
+-- nulls, and it also matches a value of spaces alone.
+CREATE OR REPLACE TEMP FUNCTION null_token_marked(v ANY TYPE, nulls ANY TYPE) AS (REGEXP_REPLACE(v, nulls, CHR(1)));
+
+-- The two number steps change a value only if numeric is TRUE. cut_short_marked writes CHR(1) for a number cut short
+-- in E notation (1.23E+11), whose digits are gone, and whole_number writes a whole number written as a float
+-- (12345.0) as its digits. If numeric is FALSE, a step's pattern is $^, which matches no value it is given (an empty
+-- value is CHR(1) by then). whole_number's is ($^), which holds the group that its replacement \1 reads.
+CREATE OR REPLACE TEMP FUNCTION cut_short_marked(v ANY TYPE, numeric ANY TYPE) AS (
+  REGEXP_REPLACE(v, IF(numeric, r'^[ \x{3000}]*-?\p{Nd}(\.\p{Nd}+)?[eE]\+\p{Nd}+[ \x{3000}]*$', r'$^'), CHR(1))
+);
+
+CREATE OR REPLACE TEMP FUNCTION whole_number(v ANY TYPE, numeric ANY TYPE) AS (
+  REGEXP_REPLACE(v, IF(numeric, r'^[ \x{3000}]*(-?\p{Nd}+)\.0+[ \x{3000}]*$', r'($^)'), r'\1')
+);
+
+-- The next six functions read a value written as a list. unlisted, which read_value calls, returns a plain list's
 -- first filled item. It returns any other value as it is, except that an empty or damaged value is missing.
 --   A list is plain if JSON reads it as a list of strings, numbers and nulls (["a", 1, null]), or if Python reads it
 --   as a list of strings (['a', "b",]). An item is filled if it holds more than spaces, and an escape counts as
@@ -54,64 +85,62 @@ CREATE OR REPLACE TEMP FUNCTION trimmed(v STRING) AS (REGEXP_REPLACE(v, r'^[\t-\
 --   would decode the escapes. Decode them if a records file ever holds such a list.
 --   The patterns are made of these pieces. A JSON string is "(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*". A JSON
 --   number is -?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?. A Python string is '…' or "…" without a
---   backslash or a line break, and the patterns write ' as \x{27}. A blank item is "SP*", 'SP*' or null.
+--   backslash or a line break, and the patterns write ' as \x{27}. A blank item is "SP*", 'SP*' or null. ws is the
+--   space, a tab or a line break, and in a Python list also a form feed. The three plain lists read:
+--     code list     SP* [ SP* digits SP* ] SP*
+--     JSON list     SP* [ ws (item (ws , ws item)*)? ws ] SP*, each item a JSON string, a JSON number or null
+--     Python list   SP* [ ws (string (ws , ws string)* (ws ,)?)? ws ] SP*, each string a Python string
 CREATE OR REPLACE TEMP FUNCTION listed_item(v STRING) RETURNS STRING AS (
   -- It returns the first filled item as written, quotes and all, or NULL if no item is filled.
-  REGEXP_EXTRACT(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\[[ \t\n\r\x{0c}]*(?:(?:"[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*"|\x{27}[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\x{27}|null)[ \t\n\r\x{0c}]*,[ \t\n\r\x{0c}]*)*("(?:[^"\\]|\\.)*(?:[^"\\\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]|\\.)(?:[^"\\]|\\.)*"|\x{27}[^\x{27}\\\r\n]*[^\x{27}\\\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}][^\x{27}\\\r\n]*\x{27}|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)')
+  REGEXP_EXTRACT(v, r'^[\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*\[[ \t\n\r\x{0c}]*(?:(?:"[\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*"|\x{27}[\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*\x{27}|null)[ \t\n\r\x{0c}]*,[ \t\n\r\x{0c}]*)*("(?:[^"\\]|\\.)*(?:[^"\\\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]|\\.)(?:[^"\\]|\\.)*"|\x{27}[^\x{27}\\\r\n]*[^\x{27}\\\t-\r\x{1c}-\x{1f}\x{85}\p{Z}][^\x{27}\\\r\n]*\x{27}|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)')
 );
 
 -- item_read returns the value of an item that listed_item found. A string loses its quotes, and if it holds a
--- backslash, JSON_VALUE decodes its escapes (\u5927 becomes 大). A number is read as read_value reads one in a column of
--- numbers. So 12345.0 becomes 12345, a number cut short like 1.23E+11 is missing, and any other stays as written.
+-- backslash, JSON_VALUE decodes its escapes (\u5927 becomes 大). A number goes through read_value's two number steps,
+-- as in a column of numbers. So 12345.0 becomes 12345, a number cut short like 1.23E+11 is missing, and any other
+-- stays as written.
 CREATE OR REPLACE TEMP FUNCTION item_read(item STRING) RETURNS STRING AS (
   CASE
     WHEN item IS NULL THEN NULL
     WHEN NOT (STARTS_WITH(item, '"') OR STARTS_WITH(item, "'")) THEN  -- the item is a number
-      CASE WHEN REGEXP_CONTAINS(item, r'^-?\p{Nd}(\.\p{Nd}+)?[eE]\+\p{Nd}+$') THEN NULL
-           WHEN REGEXP_CONTAINS(item, r'^-?\p{Nd}+\.0+$') THEN REGEXP_EXTRACT(item, r'^(-?\p{Nd}+)\.0+$')
-           ELSE item END
+      NULLIF(whole_number(cut_short_marked(item, TRUE), TRUE), CHR(1))
     WHEN STRPOS(item, '\\') > 0 THEN JSON_VALUE(item)  -- JSON_VALUE decodes the escapes
     ELSE SUBSTR(item, 2, LENGTH(item) - 2)
   END
 );
 
--- unlisted returns v, or its first filled item if v is a plain list. The comment above listed_item says more.
+-- is_code_list, is_json_list and is_python_list are TRUE if v is written as a code list, a JSON list or a Python
+-- list, as the comment above listed_item spells them. A code with leading zeros, such as [0708612], isn't JSON.
+CREATE OR REPLACE TEMP FUNCTION is_code_list(v STRING) AS (REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*\[[\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*\p{Nd}+[\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*\][\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*$'));
+
+CREATE OR REPLACE TEMP FUNCTION is_json_list(v STRING) AS (REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*\[[ \t\n\r]*(?:(?:"(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|null)(?:[ \t\n\r]*,[ \t\n\r]*(?:"(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|null))*)?[ \t\n\r]*\][\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*$'));
+
+CREATE OR REPLACE TEMP FUNCTION is_python_list(v STRING) AS (REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*\[[ \t\n\r\x{0c}]*(?:(?:\x{27}[^\x{27}\\\r\n]*\x{27}|"[^"\\\r\n]*")(?:[ \t\n\r\x{0c}]*,[ \t\n\r\x{0c}]*(?:\x{27}[^\x{27}\\\r\n]*\x{27}|"[^"\\\r\n]*"))*(?:[ \t\n\r\x{0c}]*,)?)?[ \t\n\r\x{0c}]*\][\t-\r\x{1c}-\x{1f}\x{85}\p{Z}]*$'));
+
+-- unlisted returns v, or its first filled item if v is a plain list. A code list keeps its digits as written.
 CREATE OR REPLACE TEMP FUNCTION unlisted(v STRING) RETURNS STRING AS (
   CASE
     WHEN v IS NULL OR v = '' OR REGEXP_CONTAINS(v, r'\x{fffd}') THEN NULL  -- an empty or damaged value is missing
     WHEN NOT REGEXP_CONTAINS(v, r'\[') THEN v                              -- most values hold no list
-    -- An unquoted code with leading zeros, such as [0708612], isn't JSON. Its digits are kept as written.
-    WHEN REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\[[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\p{Nd}+[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\][\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
-      THEN REGEXP_EXTRACT(v, r'(\p{Nd}+)')
-    -- The value is a plain list that JSON reads, or that Python reads as a list of strings.
-    WHEN REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\[[ \t\n\r]*(?:(?:"(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|null)(?:[ \t\n\r]*,[ \t\n\r]*(?:"(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|null))*)?[ \t\n\r]*\][\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
-      OR REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\[[ \t\n\r\x{0c}]*(?:(?:\x{27}[^\x{27}\\\r\n]*\x{27}|"[^"\\\r\n]*")(?:[ \t\n\r\x{0c}]*,[ \t\n\r\x{0c}]*(?:\x{27}[^\x{27}\\\r\n]*\x{27}|"[^"\\\r\n]*"))*(?:[ \t\n\r\x{0c}]*,)?)?[ \t\n\r\x{0c}]*\][\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
-      THEN item_read(listed_item(v))
+    WHEN is_code_list(v) THEN REGEXP_EXTRACT(v, r'(\p{Nd}+)')
+    WHEN is_json_list(v) OR is_python_list(v) THEN item_read(listed_item(v))
     ELSE v
   END
 );
 
--- read_value returns a value as read, with section 1's fixes in order. First, unlisted reads a list. Next, control
--- characters are removed, and each run of tabs and line breaks becomes one space. Then a null token becomes CHR(1), and
--- so does a number cut short if numeric is TRUE. If numeric is TRUE, a whole number written 12345.0 then becomes its
--- digits. Last, NULLIF makes CHR(1) missing. No other value holds CHR(1) by then, because it is a control character.
--- nulls is the pattern that nayose.nulls_pattern makes of [input] nulls, and it also matches a value of spaces alone.
--- If numeric is FALSE, the number steps use the pattern $^ and change nothing. Each step reads the step before it only
--- once, because a function's argument is copied into every place its body reads it.
+-- read_value returns a value as read, with section 1's fixes in order: unlisted, then the four steps above. Last,
+-- NULLIF makes CHR(1) missing.
 CREATE OR REPLACE TEMP FUNCTION read_value(v STRING, numeric BOOL, nulls STRING) RETURNS STRING AS (
-  NULLIF(
-    REGEXP_REPLACE(
-      REGEXP_REPLACE(
-        REGEXP_REPLACE(
-          REGEXP_REPLACE(REGEXP_REPLACE(unlisted(v), r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\x{200b}-\x{200d}\x{2060}\x{feff}]', ''), r'[\t\r\n]+', ' '),
-          nulls, CHR(1)),
-        IF(numeric, r'^[ \x{3000}]*-?\p{Nd}(\.\p{Nd}+)?[eE]\+\p{Nd}+[ \x{3000}]*$', r'$^'), CHR(1)),
-      IF(numeric, r'^[ \x{3000}]*(-?\p{Nd}+)\.0+[ \x{3000}]*$', r'($^)'), r'\1'),
-    CHR(1))
+  NULLIF(whole_number(cut_short_marked(null_token_marked(without_controls(unlisted(v)), nulls), numeric), numeric),
+         CHR(1))
 );
 
 
 -- ---------- 2. The comparisons ----------
+
+-- cut_from(t) is a hair under a similarity's threshold t, where a cl_*_cut keeps a score (engines.py's cut twin): a
+-- bound tested against it keeps every score that passes t, as rapidfuzz's scores are float32.
+CREATE OR REPLACE TEMP FUNCTION cut_from(t FLOAT64) AS (t - CAST(0.000001 AS FLOAT64));
 
 -- jaro_winkler_of returns the Jaro–Winkler score of a and b, exact at the threshold or above: below it, the score may
 -- be returned as 0 instead. It scores their one-byte copies (records.sql) if both have
@@ -123,59 +152,76 @@ CREATE OR REPLACE TEMP FUNCTION jaro_winkler_of(a STRING, b STRING, one_byte_a S
      cl_jaro_winkler_cut(a, b, threshold))
 );
 
--- common_start returns the number of leading characters that two strings share, up to 4. Winkler raises a Jaro score by
--- this common start.
+-- The next eight functions bound a Jaro–Winkler score from above: if a bound is below a threshold, so is the score.
+-- winkler's and jaro_most's parameters are ANY TYPE, as read_value's steps' are, because their arguments nest.
+-- common_start returns the number of leading characters that two strings share, up to 4.
 CREATE OR REPLACE TEMP FUNCTION common_start(a STRING, b STRING) AS (
   IF(LEFT(a, 1) = LEFT(b, 1),
      IF(LEFT(a, 2) = LEFT(b, 2), IF(LEFT(a, 3) = LEFT(b, 3), IF(LEFT(a, 4) = LEFT(b, 4), 4, 3), 2), 1),
      0)
 );
 
+-- winkler raises a Jaro score by a common start of up to 4 characters, as 1 - (1 - jaro)(1 - 0.1 · start).
+CREATE OR REPLACE TEMP FUNCTION winkler(jaro ANY TYPE, start ANY TYPE) AS (
+  1 - (1 - jaro) * (1 - CAST(0.1 AS FLOAT64) * start)
+);
+
+-- jaro_most returns the Jaro score of two strings of lengths a and b if `matches` of their characters match and none
+-- is transposed: (matches/a + matches/b + 1)/3.
+CREATE OR REPLACE TEMP FUNCTION jaro_most(matches ANY TYPE, a ANY TYPE, b ANY TYPE) AS (
+  (matches * (1 / a + 1 / b) + 1) / 3
+);
+
 -- jaro_winkler_most returns an upper bound of two strings' Jaro–Winkler score, from their lengths and common start
 -- alone. Jaro is at most (2 + r)/3, with r the shorter length divided by the longer. Jaro reaches that bound if every
--- character of the shorter string matches, in order. Winkler then raises the bound by the common start (up to 4
--- characters). If this bound is below a threshold, so is the score.
+-- character of the shorter string matches, in order.
 CREATE OR REPLACE TEMP FUNCTION jaro_winkler_most(a STRING, b STRING) AS (
-  (2 + LEAST(LENGTH(a), LENGTH(b)) / GREATEST(LENGTH(a), LENGTH(b), 1)) / 3
-    * (1 - CAST(0.1 AS FLOAT64) * common_start(a, b))
-    + CAST(0.1 AS FLOAT64) * common_start(a, b)
+  winkler((2 + LEAST(LENGTH(a), LENGTH(b)) / GREATEST(LENGTH(a), LENGTH(b), 1)) / 3, common_start(a, b))
+);
+
+-- letter_count returns how many distinct katakana a name holds, the bits set in its letters columns (records.sql).
+CREATE OR REPLACE TEMP FUNCTION letter_count(x ANY TYPE) AS (
+  BIT_COUNT(x.person_name__kana_fold_letters_lo) + BIT_COUNT(x.person_name__kana_fold_letters_hi)
+);
+
+-- letters_shared returns how many distinct katakana both names hold, the bits set in both names' letters columns.
+CREATE OR REPLACE TEMP FUNCTION letters_shared(l ANY TYPE, r ANY TYPE) AS (
+  BIT_COUNT(l.person_name__kana_fold_letters_lo & r.person_name__kana_fold_letters_lo)
+  + BIT_COUNT(l.person_name__kana_fold_letters_hi & r.person_name__kana_fold_letters_hi)
+);
+
+-- matches_most returns the most matches Jaro can find between two katakana names. Jaro's matches pair equal letters,
+-- so a pair has no more matches than the letters both names hold, each counted as often as the name that holds it
+-- fewer times. So the bound is the distinct letters both names hold, plus the smaller of the two names' repeats, and
+-- no more than the shorter name's length. A name's repeats are its length less its distinct letters.
+CREATE OR REPLACE TEMP FUNCTION matches_most(l ANY TYPE, r ANY TYPE) AS (
+  LEAST(letters_shared(l, r) + LEAST(LENGTH(l.person_name__kana_fold_one_byte) - letter_count(l),
+                                     LENGTH(r.person_name__kana_fold_one_byte) - letter_count(r)),
+        LENGTH(l.person_name__kana_fold_one_byte), LENGTH(r.person_name__kana_fold_one_byte))
 );
 
 -- name_jw_most returns an upper bound of two names' Jaro–Winkler score. If both names are katakana (both have one-byte
--- copies), the bound comes from the letters they share, and is tighter than jaro_winkler_most's. Jaro's matches pair
--- equal letters, so a pair has no more matches than the letters both names hold, each counted as often as the name that
--- holds it fewer times. The bound counts the distinct letters both names hold (the bits set in both names' letters
--- columns). It adds the smaller of the two names' repeats. A name's repeats are its length less its distinct letters.
--- The bound counts no transpositions. Winkler then raises the bound by the common start, as
--- 1 - (1 - jaro)(1 - 0.1 · start). If either name isn't katakana, the bound is jaro_winkler_most's, from the lengths
--- alone. If the bound is below a threshold, so is the score.
+-- copies), the bound is the Jaro of matches_most's matches, which is tighter than jaro_winkler_most's, raised by the
+-- common start. If either name isn't katakana, the bound is jaro_winkler_most's, from the lengths alone.
 CREATE OR REPLACE TEMP FUNCTION name_jw_most(l ANY TYPE, r ANY TYPE) AS (
   IF(l.person_name__kana_fold_one_byte IS NULL OR r.person_name__kana_fold_one_byte IS NULL,
      jaro_winkler_most(l.person_name__kana_fold, r.person_name__kana_fold),
-     1 - (1 - (LEAST(BIT_COUNT(l.person_name__kana_fold_letters_lo & r.person_name__kana_fold_letters_lo)
-                     + BIT_COUNT(l.person_name__kana_fold_letters_hi & r.person_name__kana_fold_letters_hi)
-                     + LEAST(LENGTH(l.person_name__kana_fold_one_byte) - BIT_COUNT(l.person_name__kana_fold_letters_lo)
-                               - BIT_COUNT(l.person_name__kana_fold_letters_hi),
-                             LENGTH(r.person_name__kana_fold_one_byte) - BIT_COUNT(r.person_name__kana_fold_letters_lo)
-                               - BIT_COUNT(r.person_name__kana_fold_letters_hi)),
-                     LENGTH(l.person_name__kana_fold_one_byte), LENGTH(r.person_name__kana_fold_one_byte))
-               * (1 / LENGTH(l.person_name__kana_fold_one_byte) + 1 / LENGTH(r.person_name__kana_fold_one_byte))
-               + 1) / 3)
-         * (1 - CAST(0.1 AS FLOAT64) * common_start(l.person_name__kana_fold, r.person_name__kana_fold)))
+     winkler(jaro_most(matches_most(l, r), LENGTH(l.person_name__kana_fold_one_byte),
+                       LENGTH(r.person_name__kana_fold_one_byte)),
+             common_start(l.person_name__kana_fold, r.person_name__kana_fold)))
 );
 
 -- The comparison name tests the person's names as written, then folded (kana_fold), then as read (long_vowel), and last
 -- by the folded names' Jaro–Winkler score. It takes two functions, so that Jaro–Winkler is called once a pair.
 -- name_score returns the folded names' score, exact from 0.75 up. Below 0.75 it may return 0 instead. It returns NULL
 -- if an equality settles the level. The caller computes it once, as the column s_name, and name_level then reads the
--- level from it. name_jw_most's bound is tested against 0.749999, a hair under 0.75, as the cl_* cut tests a score
--- against its threshold, because rapidfuzz's scores are float32.
+-- level from it. name_jw_most's bound is tested against cut_from(0.75), as the cl_* cut tests a score.
 CREATE OR REPLACE TEMP FUNCTION name_score(l ANY TYPE, r ANY TYPE) AS (
   CASE
     WHEN l.person_name IS NULL OR r.person_name IS NULL OR l.person_name = r.person_name
       OR l.person_name__kana_fold = r.person_name__kana_fold
       OR l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel THEN NULL
-    WHEN name_jw_most(l, r) < CAST(0.749999 AS FLOAT64) THEN CAST(0 AS FLOAT64)  -- the bound rules out 0.75
+    WHEN name_jw_most(l, r) < cut_from(CAST(0.75 AS FLOAT64)) THEN CAST(0 AS FLOAT64)  -- the bound rules out 0.75
     ELSE jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold, l.person_name__kana_fold_one_byte,
                          r.person_name__kana_fold_one_byte, CAST(0.75 AS FLOAT64))
   END
@@ -190,25 +236,6 @@ CREATE OR REPLACE TEMP FUNCTION name_level(l ANY TYPE, r ANY TYPE, s FLOAT64) AS
     WHEN s >= CAST(0.95 AS FLOAT64) THEN 3                                                   -- fold JW high
     WHEN l.given_name__kana_fold = r.given_name__kana_fold THEN 2                            -- given name
     WHEN s >= CAST(0.75 AS FLOAT64) THEN 1                                                   -- fold JW low
-    ELSE 0
-  END
-);
-
--- gamma_name gives the same levels as name_level from the pair alone, with each Jaro–Winkler call in its own CASE
--- branch. The gate (score.sql) calls it on the pairs it samples.
-CREATE OR REPLACE TEMP FUNCTION gamma_name(l ANY TYPE, r ANY TYPE) AS (
-  CASE
-    WHEN l.person_name IS NULL OR r.person_name IS NULL THEN -1
-    WHEN l.person_name = r.person_name THEN 6
-    WHEN l.person_name__kana_fold = r.person_name__kana_fold THEN 5
-    WHEN l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel THEN 4
-    WHEN jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold,
-                         l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte,
-                         CAST(0.95 AS FLOAT64)) >= CAST(0.95 AS FLOAT64) THEN 3
-    WHEN l.given_name__kana_fold = r.given_name__kana_fold THEN 2
-    WHEN jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold,
-                         l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte,
-                         CAST(0.75 AS FLOAT64)) >= CAST(0.75 AS FLOAT64) THEN 1
     ELSE 0
   END
 );
@@ -229,6 +256,18 @@ CREATE OR REPLACE TEMP FUNCTION gamma_company(l ANY TYPE, r ANY TYPE) AS (
   END
 );
 
+-- address_close is TRUE if two addresses are two edits apart at most (Levenshtein). The costliest test runs last.
+CREATE OR REPLACE TEMP FUNCTION address_close(l ANY TYPE, r ANY TYPE) AS (
+  CASE
+    WHEN l.address__address IS NULL OR r.address__address IS NULL
+      OR ABS(LENGTH(l.address__address) - LENGTH(r.address__address)) > 2 THEN FALSE
+    WHEN l.address__address_one_byte_hash IS NULL OR r.address__address_one_byte_hash IS NULL
+      THEN cl_levenshtein_cut(l.address__address, r.address__address, 2) <= 2
+    WHEN cl_levenshtein_cut(l.address__address_one_byte_hash, r.address__address_one_byte_hash, 2) > 2 THEN FALSE
+    ELSE cl_levenshtein_cut(l.address__address, r.address__address, 2) <= 2
+  END
+);
+
 -- The comparison address is missing only if the address code, the address and the postal code are each missing on
 -- one side or both.
 CREATE OR REPLACE TEMP FUNCTION gamma_address(l ANY TYPE, r ANY TYPE) AS (
@@ -236,25 +275,21 @@ CREATE OR REPLACE TEMP FUNCTION gamma_address(l ANY TYPE, r ANY TYPE) AS (
     WHEN (l.address_code IS NULL OR r.address_code IS NULL) AND (l.address IS NULL OR r.address IS NULL)
       AND (l.postal_code IS NULL OR r.postal_code IS NULL) THEN -1
     WHEN l.address_code = r.address_code OR l.address__address = r.address__address THEN 3          -- same address
-    WHEN CASE  -- address close (two edits at most). The costliest test runs last.
-           WHEN l.address__address IS NULL OR r.address__address IS NULL
-             OR ABS(LENGTH(l.address__address) - LENGTH(r.address__address)) > 2 THEN FALSE
-           WHEN l.address__address_one_byte_hash IS NULL OR r.address__address_one_byte_hash IS NULL
-             THEN cl_levenshtein_cut(l.address__address, r.address__address, 2) <= 2
-           WHEN cl_levenshtein_cut(l.address__address_one_byte_hash, r.address__address_one_byte_hash, 2) > 2 THEN FALSE
-           ELSE cl_levenshtein_cut(l.address__address, r.address__address, 2) <= 2 END THEN 2
+    WHEN address_close(l, r) THEN 2                                                                  -- address close
     WHEN l.postal_code = r.postal_code THEN 1                                                        -- same postal
     ELSE 0
   END
 );
 
--- one_edit_may is TRUE if a and b may be one edit apart. One edit (a character changed, added or dropped, or two
--- neighbours swapped) leaves whole either the first h characters or the last h, with h = ⌊(the shorter length − 1)/2⌋.
--- So two values one edit apart share their first h characters or their last h. The test uses string equalities alone,
--- so an edit distance is computed only for a pair that passes it. Two random 13-digit IDs rarely pass.
-CREATE OR REPLACE TEMP FUNCTION one_edit_may(a STRING, b STRING) AS (
-  LEFT(a, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2)) = LEFT(b, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2))
-  OR RIGHT(a, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2)) = RIGHT(b, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2))
+-- may_be_one_edit is TRUE if a and b may be one edit apart. One edit (a character changed, added or dropped, or two
+-- neighbours swapped) changes the length by one at most, and leaves whole either the first h characters or the last h,
+-- with h = ⌊(the shorter length − 1)/2⌋. So two values one edit apart differ in length by one at most, and share
+-- their first h characters or their last h. The test uses lengths and string equalities alone, so an edit distance
+-- is computed only for a pair that passes it. Two random 13-digit IDs rarely pass.
+CREATE OR REPLACE TEMP FUNCTION may_be_one_edit(a STRING, b STRING) AS (
+  ABS(LENGTH(a) - LENGTH(b)) <= 1
+  AND (LEFT(a, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2)) = LEFT(b, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2))
+       OR RIGHT(a, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2)) = RIGHT(b, DIV(LEAST(LENGTH(a), LENGTH(b)) - 1, 2)))
 );
 
 -- The comparisons phone, cif and birth are exact, or one digit off. phone measures that by Hamming distance, which
@@ -265,7 +300,7 @@ CREATE OR REPLACE TEMP FUNCTION gamma_phone(l ANY TYPE, r ANY TYPE) AS (
   CASE
     WHEN l.phone IS NULL OR r.phone IS NULL THEN -1
     WHEN l.phone = r.phone THEN 2                                                                      -- exact
-    WHEN ABS(LENGTH(l.phone) - LENGTH(r.phone)) > 1 OR NOT one_edit_may(l.phone, r.phone) THEN 0
+    WHEN NOT may_be_one_edit(l.phone, r.phone) THEN 0
     WHEN cl_hamming_cut(l.phone, r.phone, 1) <= 1 THEN 1                                               -- one digit off
     ELSE 0
   END
@@ -275,7 +310,7 @@ CREATE OR REPLACE TEMP FUNCTION gamma_cif(l ANY TYPE, r ANY TYPE) AS (
   CASE
     WHEN l.customer_id IS NULL OR r.customer_id IS NULL THEN -1
     WHEN l.customer_id = r.customer_id THEN 2                                                          -- exact
-    WHEN ABS(LENGTH(l.customer_id) - LENGTH(r.customer_id)) > 1 OR NOT one_edit_may(l.customer_id, r.customer_id) THEN 0
+    WHEN NOT may_be_one_edit(l.customer_id, r.customer_id) THEN 0
     WHEN cl_damerau_levenshtein_cut(l.customer_id, r.customer_id, 1) <= 1 THEN 1                      -- one digit off
     ELSE 0
   END
@@ -285,7 +320,7 @@ CREATE OR REPLACE TEMP FUNCTION gamma_birth(l ANY TYPE, r ANY TYPE) AS (
   CASE
     WHEN l.birth_date IS NULL OR r.birth_date IS NULL THEN -1
     WHEN l.birth_date = r.birth_date THEN 2                                                            -- exact
-    WHEN ABS(LENGTH(l.birth_date) - LENGTH(r.birth_date)) > 1 OR NOT one_edit_may(l.birth_date, r.birth_date) THEN 0
+    WHEN NOT may_be_one_edit(l.birth_date, r.birth_date) THEN 0
     WHEN cl_damerau_levenshtein_cut(l.birth_date, r.birth_date, 1) <= 1 THEN 1                        -- one digit off
     ELSE 0
   END
@@ -339,7 +374,7 @@ CREATE OR REPLACE TEMP FUNCTION near_phone(l ANY TYPE, r ANY TYPE) AS (
   CASE
     WHEN l.phone IS NULL OR r.phone IS NULL THEN FALSE
     WHEN l.phone = r.phone THEN TRUE
-    WHEN ABS(LENGTH(l.phone) - LENGTH(r.phone)) > 1 OR NOT one_edit_may(l.phone, r.phone) THEN FALSE
+    WHEN NOT may_be_one_edit(l.phone, r.phone) THEN FALSE
     ELSE cl_hamming_cut(l.phone, r.phone, 1) <= 1
   END
 );
@@ -376,3 +411,18 @@ SELECT * FROM UNNEST([
   STRUCT(6, 'birth', 1, 'one digit off', 'near'),
   STRUCT(6, 'birth', 0, 'else', 'else')
 ]);
+
+
+-- ---------- 5. The steps that the stages share ----------
+
+-- pairs_of(n) returns the number of pairs that n records make, n(n − 1)/2.
+CREATE OR REPLACE TEMP FUNCTION pairs_of(n INT64) AS (DIV(n * (n - 1), 2));
+
+-- The address copy's steps (records.sql), on an address in NFKC form. numbers_dashed writes 丁目, 番 or 番地 after a
+-- number as a dash, and drops 号 after a number. up_to_street_number keeps the address up to the first space after
+-- the street number, which drops the building and room.
+CREATE OR REPLACE TEMP FUNCTION numbers_dashed(a STRING) AS (
+  REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(a, r'(\d+)丁目', r'\1-'), r'(\d+)番地?', r'\1-'), r'(\d+)号', r'\1')
+);
+
+CREATE OR REPLACE TEMP FUNCTION up_to_street_number(a STRING) AS (REGEXP_REPLACE(a, r'^(.*?[0-9][^ ]*) .*$', r'\1'));

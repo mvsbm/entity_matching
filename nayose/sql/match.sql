@@ -22,12 +22,12 @@
 CREATE OR REPLACE TEMP FUNCTION household(l ANY TYPE, r ANY TYPE) AS (
   (l.address_code = r.address_code OR l.address__address = r.address__address OR l.phone = r.phone)
   AND ((l.given_name__kana_fold IS NOT NULL AND r.given_name__kana_fold IS NOT NULL
-        AND NOT cl_damerau_levenshtein_cut(l.given_name__kana_fold, r.given_name__kana_fold, 1) <= 1)
+        AND cl_damerau_levenshtein_cut(l.given_name__kana_fold, r.given_name__kana_fold, 1) > 1)
     OR (l.person_name__kana_fold_long_vowel_last3 IS NOT NULL AND r.person_name__kana_fold_long_vowel_last3 IS NOT NULL
-        AND NOT cl_damerau_levenshtein_cut(l.person_name__kana_fold_long_vowel_last3,
-                                           r.person_name__kana_fold_long_vowel_last3, 2) <= 2)
+        AND cl_damerau_levenshtein_cut(l.person_name__kana_fold_long_vowel_last3,
+                                       r.person_name__kana_fold_long_vowel_last3, 2) > 2)
     OR (l.birth_date IS NOT NULL AND r.birth_date IS NOT NULL
-        AND NOT cl_damerau_levenshtein_cut(l.birth_date, r.birth_date, 1) <= 1))
+        AND cl_damerau_levenshtein_cut(l.birth_date, r.birth_date, 1) > 1))
 );
 
 -- shown gives each comparison's levels as people read them, each with its label and its bits rounded to two places.

@@ -163,6 +163,18 @@ def test_a_row_a_function_reads_is_of_a_narrow_table():  # BigQuery may bill a r
             assert not wide & passed, (f.name, s.strip()[:80], wide & passed)
 
 
+def test_score_sql_names_only_the_rules_and_generators_it_lists():  # a misspelt name would make no key, or skip a rule's test
+    import sqlglot
+    from sqlglot import exp
+    from nayose import SQL, WRITE, statements
+    made = {m["table"]: sqlglot.parse_one(s, read="bigquery")
+            for s in statements((SQL / "score.sql").read_text(encoding="utf-8")) if (m := WRITE.match(s))}
+    names = lambda table: {x.this for x in made[table].find_all(exp.Literal) if x.is_string}  # noqa: E731
+    rules, generators = names("rules"), names("generators")
+    assert names("made_rule_keys") == rules and names("made_keys") == generators  # each listed one makes its keys
+    assert names("batch_pairs") and names("batch_pairs") <= rules  # the fuzzy rules' tests
+
+
 STRING = re.compile(r"r?'(?:[^'\\]|\\.)*'")  # a string literal: a regex in one can't be split
 
 

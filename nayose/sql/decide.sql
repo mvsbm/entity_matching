@@ -7,8 +7,7 @@
 --
 -- Reads: given, the job's table of id_l, id_r, decision and why (empty for a build), records, and decisions if the
 -- run has any.
--- Values: @blank holds the characters that a blank value is made of. They are Python's whitespace, the full-width
--- space among them.
+-- Values: none. A blank value is one that blank() finds (functions.sql): spaces alone, of any width.
 -- Writes: decisions (each decision that changed its pair's standing, with its batch, and each pair's latest flagged)
 -- and gold (each record's entity, what joined it, its kind and its customer's kind).
 
@@ -21,8 +20,8 @@ CREATE TABLE IF NOT EXISTS decisions (id_l STRING, id_r STRING, decision STRING,
 --    decided row without both IDs, a table with rows but no decision, a decision other than match or no_match, a pair
 --    decided both ways, and an ID that names no record of the run.
 CREATE OR REPLACE TEMP TABLE given_text AS
-SELECT IF(TRIM(l, @blank) = '', NULL, l) AS id_l, IF(TRIM(r, @blank) = '', NULL, r) AS id_r,
-       NULLIF(LOWER(TRIM(d, @blank)), '') AS decision, NULLIF(TRIM(w, @blank), '') AS why
+SELECT IF(blank(l), NULL, l) AS id_l, IF(blank(r), NULL, r) AS id_r,
+       NULLIF(LOWER(trimmed(d)), '') AS decision, NULLIF(trimmed(w), '') AS why
 FROM (SELECT CAST(id_l AS STRING) AS l, CAST(id_r AS STRING) AS r, CAST(decision AS STRING) AS d,
              CAST(why AS STRING) AS w
       FROM given);
@@ -34,9 +33,10 @@ SELECT IF(COUNT(*) > 0 AND COUNT(decision) = 0, ERROR('given: no row has a decis
 FROM given_text;
 
 CREATE OR REPLACE TEMP TABLE said AS
-SELECT LEAST(id_l, id_r) AS id_l, GREATEST(id_l, id_r) AS id_r, decision, MIN(why) AS why
-FROM given_text WHERE decision IS NOT NULL
-GROUP BY 1, 2, 3;
+SELECT id_l, id_r, decision, MIN(why) AS why
+FROM (SELECT LEAST(id_l, id_r) AS id_l, GREATEST(id_l, id_r) AS id_r, decision, why
+      FROM given_text WHERE decision IS NOT NULL)
+GROUP BY id_l, id_r, decision;
 
 SELECT IF(COUNT(*) > 0, ERROR(CONCAT('given: a decision is match or no_match, not ', STRING_AGG(DISTINCT decision, ', '),
                                      '; correct those rows, or leave them empty')), 0)
@@ -76,11 +76,14 @@ SELECT *, ROW_NUMBER() OVER (PARTITION BY id_l, id_r ORDER BY batch DESC) = 1 AS
 
 -- joined is a table, not a WITH in gold: gold reads placed twice, and BigQuery runs a WITH once each time it is read.
 CREATE OR REPLACE TEMP TABLE joined AS  -- each record that a match decision joins, with its entity
-SELECT JSON_VALUE(e, '$.id') AS id, JSON_VALUE(e, '$.entity') AS entity
-FROM UNNEST(JSON_QUERY_ARRAY(entities_of((
-  SELECT TO_JSON_STRING(STRUCT(ARRAY_AGG(STRUCT(d.id_l AS l, d.id_r AS r)) AS pairs)) FROM decisions AS d
+-- asked holds what entities_of is asked, as one JSON text: the pairs whose latest decision is match, both of whose
+-- records the run holds.
+WITH asked AS (
+  SELECT TO_JSON_STRING(STRUCT(ARRAY_AGG(STRUCT(d.id_l AS l, d.id_r AS r)) AS pairs)) AS pairs FROM decisions AS d
   WHERE d.latest AND d.decision = 'match' AND d.id_l IN (SELECT id FROM records) AND d.id_r IN (SELECT id FROM records)
-)))) AS e;
+)
+SELECT JSON_VALUE(e, '$.id') AS id, JSON_VALUE(e, '$.entity') AS entity
+FROM asked, UNNEST(JSON_QUERY_ARRAY(entities_of(asked.pairs))) AS e;
 
 CREATE OR REPLACE TABLE gold CLUSTER BY id AS  -- a lookup reads gold by its records' IDs
 WITH placed AS (
