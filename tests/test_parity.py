@@ -83,6 +83,9 @@ def got(tmp_path_factory, population) -> dict:
     for i in range(2):
         nayose.update(engine, [tmp / f"tiny{i}.parquet"])
     taken(engine, "update2", out)
+    given = DuckDB()  # a build given a model fitted on another file, as scripts/benchmark.py builds its test split
+    nayose.build(given, [tmp / "batch.parquet"], model=engine.value("SELECT fitted FROM fit"))
+    taken(given, "given_model", out)
     if os.environ.get("NAYOSE_PARITY_WRITE"):
         GOLDEN.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     return out

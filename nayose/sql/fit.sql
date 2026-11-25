@@ -19,8 +19,6 @@
 -- @refit is false for a build given a model, which learns none.
 -- Writes:
 --   compared     a view of the columns that the fit and the scores read of a record
---   fit_sample   the sample, empty for a build given a model
---   u_records    a view of each scope's records
 --   model        each level's m and u as fitted on the sample, its file_m and file_u on the file, and its bits,
 --                log2(file_m / file_u), which a score adds
 --   fit          λ (probability), the sample's size, the file's size, prior_bits (the prior in bits at the file's
@@ -43,14 +41,11 @@ SELECT
   address__address_one_byte_hash, postal_code, phone, customer_id, birth_date
 FROM records;
 
--- when: @refit
-CREATE OR REPLACE TABLE fit_sample AS
+-- A build given a model (@refit false) learns none, so its sample is empty.
+CREATE OR REPLACE TEMP TABLE fit_sample AS
 SELECT compared.* FROM compared
-JOIN (SELECT id FROM records ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_rows) USING (id);
-
--- when: NOT @refit
--- A build given a model learns none, so its sample is empty.
-CREATE OR REPLACE TABLE fit_sample AS SELECT * FROM compared WHERE FALSE;
+JOIN (SELECT id FROM records WHERE @refit ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_rows)
+  USING (id);
 
 
 -- 2. λ is how likely two random records are one customer. fit_model estimates it from found, the pairs that any of
@@ -107,16 +102,15 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7;
 --    level are counted exactly, from how many records hold each value, never pair by pair. So is the one-edit level
 --    that follows equality for phone, cif and birth. A sample of pairs would miss an agreement rarer than one pair
 --    in a billion. The other levels' u comes from a random sample of about max_pairs pairs, drawn as Splink draws it.
-CREATE OR REPLACE VIEW u_records AS
-SELECT 'sample' AS scope, * FROM fit_sample
-UNION ALL
-SELECT 'file', * FROM compared;
+--    Each count reads u_records, the two scopes' records, as a WITH of its own: it costs what a view would, and a
+--    view can't read the temporary fit_sample.
 
 -- 4a. u_outside counts each comparison's pairs outside its missing level, and each u is a share of these pairs. A
 --     pair is missing if each of the comparison's columns is empty on at least one side. A record's mask has a bit
 --     for each of the comparison's columns it fills, so two records make a missing pair if their masks share no bit.
 --     u_outside is every pair less the missing ones.
 CREATE OR REPLACE TEMP TABLE u_masks AS
+WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared)
 SELECT scope, 'name' AS comparison, IF(person_name IS NOT NULL, 1, 0) AS mask, COUNT(*) AS n
 FROM u_records GROUP BY 1, 2, 3
 UNION ALL SELECT scope, 'company', IF(company_name IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3
@@ -129,7 +123,8 @@ UNION ALL SELECT scope, 'cif', IF(customer_id IS NOT NULL, 1, 0), COUNT(*) FROM 
 UNION ALL SELECT scope, 'birth', IF(birth_date IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3;
 
 CREATE OR REPLACE TEMP TABLE u_outside AS
-WITH every AS (SELECT scope, DIV(COUNT(*) * (COUNT(*) - 1), 2) AS pairs FROM u_records GROUP BY scope),
+WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared),
+every AS (SELECT scope, DIV(COUNT(*) * (COUNT(*) - 1), 2) AS pairs FROM u_records GROUP BY scope),
 missing AS (
   SELECT a.scope, a.comparison, SUM(IF(a.mask = b.mask, DIV(a.n * (a.n - 1), 2), a.n * b.n)) AS pairs
   FROM u_masks AS a JOIN u_masks AS b
@@ -146,6 +141,7 @@ JOIN every USING (scope) LEFT JOIN missing USING (scope, comparison);
 --     level counts the pairs equal on the address code or on the address. Both come by inclusion–exclusion, and sign
 --     adds or takes away each term.
 CREATE OR REPLACE TEMP TABLE u_counted AS
+WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared)
 SELECT scope, comparison, label, SUM(sign * DIV(n * (n - 1), 2)) AS pairs
 FROM (
   SELECT scope, 'name' AS comparison, 'exact' AS label, 1 AS sign, COUNT(*) AS n
@@ -193,6 +189,7 @@ GROUP BY scope, comparison, label;
 --     makes ((Σn)² − Σn²) / 2 pairs of records whose values differ. A value one character longer than another is
 --     one deletion away from it, so each longer value's deletions are joined to the shorter values.
 CREATE OR REPLACE TEMP TABLE u_values AS
+WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared)
 SELECT scope, 'phone' AS comparison, phone AS x, COUNT(*) AS n, LENGTH(phone) AS len
 FROM u_records WHERE phone IS NOT NULL GROUP BY scope, phone
 UNION ALL SELECT scope, 'cif', customer_id, COUNT(*), LENGTH(customer_id)
@@ -244,6 +241,7 @@ LEFT JOIN longer AS l USING (scope, comparison);
 --     takes the most filled of its three columns. From these, fit_model estimates how many sampled pairs fill each
 --     comparison, and that number bounds the u of a level that no sampled pair reached.
 CREATE OR REPLACE TEMP TABLE u_filled AS
+WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared)
 SELECT
   scope, COUNT(*) AS records, COUNT(person_name) AS name, COUNT(company_name) AS company,
   GREATEST(COUNT(address_code), COUNT(address), COUNT(postal_code)) AS address,
@@ -276,7 +274,8 @@ GROUP BY o.scope;
 -- k records make k(k−1)/2 pairs, so about max_pairs pairs take k = (√(8·max_pairs + 1) + 1) / 2 of a scope's n
 -- records. Each scope draws the share k / n, as Splink does, and all its records if the share is 1 or more.
 CREATE OR REPLACE TEMP TABLE u_drawn AS
-WITH share AS (
+WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared),
+share AS (
   SELECT 'sample' AS scope,
          CAST(0.5 AS FLOAT64) * (SQRT(8 * @fit_u_max_pairs + 1) + 1) / GREATEST((SELECT COUNT(*) FROM fit_sample), 1)
            AS share

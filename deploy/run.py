@@ -18,7 +18,7 @@ A job is all or nothing, though BigQuery takes no DDL in a transaction:
 - A job whose process died is undone by `undo`, once no query of its session still runs: BigQuery carries on a
   procedure its caller left. So is a job interrupted while its procedure runs (an interrupt, a client's timeout): it
   exits 75 with what stopped it, and `undo` puts the tables back once the procedure ends.
-- The run's views (fit.sql's) aren't tables, so a first build that fails leaves them; the next build makes them again.
+- The run's view (fit.sql's compared) isn't a table: a first build that fails leaves it; the next build makes it again.
 
 A lookup (nayose.lookup) writes its answer, which holds records' values, to the run's table looked_up, and prints only
 that it did, as Jenkins keeps what a job prints. It refuses while a job is marked, as that job's tables are half made.
