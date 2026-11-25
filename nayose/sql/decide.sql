@@ -73,7 +73,9 @@ SELECT *, ROW_NUMBER() OVER (PARTITION BY id_l, id_r ORDER BY batch DESC) = 1 AS
 --    (kind_p under 0.5) and one is a person, and 0 (not sure) otherwise.
 -- shortcut: entities_of takes every match decision in one call, a few MB for each 100,000 decisions. Past millions of
 -- decisions, compute the components by label propagation in SQL.
-CREATE OR REPLACE TEMP TABLE joined AS
+
+-- joined is a table, not a WITH in gold: gold reads placed twice, and BigQuery runs a WITH once each time it is read.
+CREATE OR REPLACE TEMP TABLE joined AS  -- each record that a match decision joins, with its entity
 SELECT JSON_VALUE(e, '$.id') AS id, JSON_VALUE(e, '$.entity') AS entity
 FROM UNNEST(JSON_QUERY_ARRAY(entities_of((
   SELECT TO_JSON_STRING(STRUCT(ARRAY_AGG(STRUCT(d.id_l AS l, d.id_r AS r)) AS pairs)) FROM decisions AS d

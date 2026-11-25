@@ -57,7 +57,7 @@ def test_each_job_is_a_procedure_of_its_stages_with_every_value_it_reads_declare
     levenshtein = [s for s in functions("p.run") if ".cl_levenshtein" in s]  # BigQuery's own EDIT_DISTANCE: no JavaScript
     assert len(levenshtein) == 2 and all("EDIT_DISTANCE(a, b" in s and "LANGUAGE js" not in s for s in levenshtein)
     dropped = set(re.findall(r"DROP TABLE IF EXISTS (\w+)", jobs["build"]))  # a build starts without the tables it writes, but people's decisions
-    assert {"records", "placeholders", "fit", "u_sampled", "scored", "gold", "report_counts"} <= dropped and "decisions" not in dropped
+    assert {"records", "placeholders", "fit", "u_sampled", "scored", "gold", "set_aside"} <= dropped and "decisions" not in dropped
     views = re.findall(r"CREATE OR REPLACE VIEW [^;]*", jobs["build"])  # a view's tables named with their dataset: BigQuery reads no default there
     assert len(views) == 2 and all(re.search(r"\bFROM p\.run\.\w+", v) and not re.search(r"\bFROM (?!p\.run\.)\w+\b", v) for v in views), views
     assert "DROP TABLE" not in jobs["update"] and "DECLARE v_refit BOOL DEFAULT FALSE" in jobs["update"]

@@ -20,11 +20,7 @@
 -- Writes:
 --   compared     a view of the columns that the fit and the scores read of a record
 --   fit_sample   the sample, empty on an update
---   fit_prior    the sample's size and the pairs that the near-certain rules find in it
---   em_patterns  EM's patterns of levels, by session (one for each key)
 --   u_records    a view of each scope's records
---   u_outside, u_counted, u_near and u_filled
---                u's exact counts, and the fill that bounds the u of a level no sampled pair reached
 --   u_sampled    the sampled pairs' levels, counted. An update keeps the last job's unless it samples again.
 --   model        each level's m and u as fitted on the sample, its file_m and file_u on the file, and its bits,
 --                log2(file_m / file_u), which a score adds
@@ -61,7 +57,7 @@ CREATE OR REPLACE TABLE fit_sample AS SELECT * FROM compared WHERE FALSE;
 -- 2. λ is how likely two random records are one customer. fit_model estimates it from found, the pairs that any of
 --    the near-certain rules find in the sample, each pair counted once. Each rule's own count is kept too, because a
 --    rule that finds no pair in the sample is skipped, and the report names it.
-CREATE OR REPLACE TABLE fit_prior AS
+CREATE OR REPLACE TEMP TABLE fit_prior AS
 SELECT
   (SELECT COUNT(*) FROM fit_sample) AS records,
   (SELECT COUNT(*) FROM (
@@ -87,7 +83,7 @@ SELECT
 --    and the address session's share an address. Each pattern of levels is stored once, with its count of pairs. A
 --    session can't learn the comparison its key chose the pairs by, as every pair agrees on it, so that comparison
 --    is NULL in its session.
-CREATE OR REPLACE TABLE em_patterns AS
+CREATE OR REPLACE TEMP TABLE em_patterns AS
 WITH paired AS (  -- a pair keeps its two records whole, and name_score runs once a pair for name_level
   SELECT 'phone' AS session, l, r, name_score(l, r) AS s_name
   FROM fit_sample AS l JOIN fit_sample AS r ON l.phone = r.phone AND l.id < r.id
@@ -133,7 +129,7 @@ UNION ALL SELECT scope, 'phone', IF(phone IS NOT NULL, 1, 0), COUNT(*) FROM u_re
 UNION ALL SELECT scope, 'cif', IF(customer_id IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3
 UNION ALL SELECT scope, 'birth', IF(birth_date IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3;
 
-CREATE OR REPLACE TABLE u_outside AS
+CREATE OR REPLACE TEMP TABLE u_outside AS
 WITH every AS (SELECT scope, DIV(COUNT(*) * (COUNT(*) - 1), 2) AS pairs FROM u_records GROUP BY scope),
 missing AS (
   SELECT a.scope, a.comparison, SUM(IF(a.mask = b.mask, DIV(a.n * (a.n - 1), 2), a.n * b.n)) AS pairs
@@ -150,7 +146,7 @@ JOIN every USING (scope) LEFT JOIN missing USING (scope, comparison);
 --     level that follows others counts only the pairs equal on it and on no level before it. Address's 'same address'
 --     level counts the pairs equal on the address code or on the address. Both come by inclusion–exclusion, and sign
 --     adds or takes away each term.
-CREATE OR REPLACE TABLE u_counted AS
+CREATE OR REPLACE TEMP TABLE u_counted AS
 SELECT scope, comparison, label, SUM(sign * DIV(n * (n - 1), 2)) AS pairs
 FROM (
   SELECT scope, 'name' AS comparison, 'exact' AS label, 1 AS sign, COUNT(*) AS n
@@ -205,7 +201,7 @@ UNION ALL SELECT scope, 'cif', customer_id, COUNT(*), LENGTH(customer_id)
 UNION ALL SELECT scope, 'birth', birth_date, COUNT(*), LENGTH(birth_date)
           FROM u_records WHERE birth_date IS NOT NULL GROUP BY scope, birth_date;
 
-CREATE OR REPLACE TABLE u_near AS
+CREATE OR REPLACE TEMP TABLE u_near AS
 WITH substituted AS (
   SELECT scope, comparison, SUM(DIV(s * s - ss, 2)) AS pairs
   FROM (SELECT scope, comparison, SUM(n) AS s, SUM(n * n) AS ss FROM u_values, UNNEST(GENERATE_ARRAY(1, len)) AS i
@@ -248,7 +244,7 @@ LEFT JOIN longer AS l USING (scope, comparison);
 -- 4d. u_filled counts each scope's records, and for each comparison the records that fill its column. For address it
 --     takes the most filled of its three columns. From these, fit_model estimates how many sampled pairs fill each
 --     comparison, and that number bounds the u of a level that no sampled pair reached.
-CREATE OR REPLACE TABLE u_filled AS
+CREATE OR REPLACE TEMP TABLE u_filled AS
 SELECT
   scope, COUNT(*) AS records, COUNT(person_name) AS name, COUNT(company_name) AS company,
   GREATEST(COUNT(address_code), COUNT(address), COUNT(postal_code)) AS address,

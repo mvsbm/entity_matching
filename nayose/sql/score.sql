@@ -25,7 +25,6 @@
 -- Writes:
 --   rule_keys and every_key   each record's keys, which are the index a lookup reads by key
 --   cands                     the pairs the batch's keys list, each with the keys that listed it (sources)
---   gated                     each oversized block that touches the batch, its sample, and whether it was kept
 --   scored                    every pair kept
 -- scored holds every batch's pairs. Each batch adds the pairs that touch its records, a rule's pair with its rule.
 
@@ -112,25 +111,6 @@ CREATE OR REPLACE TEMP TABLE rule_blocks AS
 SELECT i, k, id, id IN (SELECT id FROM fresh) AS new, COUNT(*) OVER (PARTITION BY i, k) AS n
 FROM rule_keys JOIN (SELECT DISTINCT i, k FROM made_rule_keys WHERE id IN (SELECT id FROM fresh)) USING (i, k);
 
-CREATE OR REPLACE TEMP TABLE batch_rule_pairs AS
-WITH found AS (
-  SELECT a.i, LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r
-  FROM rule_blocks AS a JOIN rule_blocks AS b ON a.i = b.i AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
-  -- A function given a row reads all of its columns, so x and y are rows of compared, which holds only the columns
-  -- the comparisons read.
-  JOIN compared AS x ON x.id = a.id JOIN compared AS y ON y.id = b.id
-  WHERE a.new AND a.n < @oversized
-    AND CASE a.i  -- These are the fuzzy rules' tests. The exact rules (X1-X5) and F7 test their keys alone.
-          WHEN 5 THEN near_name(x, y)                         -- F1_NAME~_ADDRCD_PHONE
-          WHEN 6 THEN near_name(x, y) AND near_address(x, y)  -- F2_NAME~_ADDRESS~_PHONE
-          WHEN 7 THEN near_name(x, y)                         -- F3_NAME~_CIF
-          WHEN 8 THEN near_phone(x, y)                        -- F4_NAME_ADDRCD_PHONE~
-          WHEN 9 THEN near_company(x, y)                      -- F5_COMPANY~_PHONE_POSTAL
-          WHEN 10 THEN near_company(x, y)                     -- F6_COMPANY~_ADDRCD_PHONE
-          ELSE TRUE END
-)
-SELECT f.l, f.r, rules.rule
-FROM (SELECT l, r, MIN(i) AS i FROM found GROUP BY l, r) AS f JOIN rules USING (i);
 
 
 -- 2. The keys. Each generator makes a key for each record from one or more of its fields, joined by CHR(31). The
@@ -325,7 +305,7 @@ FROM ranked AS a JOIN ranked AS c ON a.g = c.g AND a.k = c.k AND a.id <> c.id
 WHERE a.new_rank <= @oversized AND c.rank <= @oversized
   AND NOT EXISTS (SELECT 1 FROM listed AS x WHERE x.l = LEAST(a.id, c.id) AND x.r = GREATEST(a.id, c.id));
 
-CREATE OR REPLACE TABLE gated AS
+CREATE OR REPLACE TEMP TABLE gated AS
 WITH scored_sample AS (
   SELECT p.l, p.r,
          weight_of(gamma_name(x, y), gamma_company(x, y), gamma_address(x, y), gamma_phone(x, y), gamma_cif(x, y),
@@ -372,7 +352,27 @@ SELECT pairs.l, pairs.r, named.sources FROM pairs JOIN named USING (bits);
 --    person's or the company's. The batch's pairs are added to the run's scored. Each pair is scored once, in the
 --    batch that brings its later record.
 CREATE OR REPLACE TEMP TABLE batch_pairs AS  -- each of the batch's candidates and rule pairs appears once
-SELECT l, r, c.sources, p.rule FROM cands AS c FULL JOIN batch_rule_pairs AS p USING (l, r);
+WITH found AS (
+  SELECT a.i, LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r
+  FROM rule_blocks AS a JOIN rule_blocks AS b ON a.i = b.i AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
+  -- A function given a row reads all of its columns, so x and y are rows of compared, which holds only the columns
+  -- the comparisons read.
+  JOIN compared AS x ON x.id = a.id JOIN compared AS y ON y.id = b.id
+  WHERE a.new AND a.n < @oversized
+    AND CASE a.i  -- These are the fuzzy rules' tests. The exact rules (X1-X5) and F7 test their keys alone.
+          WHEN 5 THEN near_name(x, y)                         -- F1_NAME~_ADDRCD_PHONE
+          WHEN 6 THEN near_name(x, y) AND near_address(x, y)  -- F2_NAME~_ADDRESS~_PHONE
+          WHEN 7 THEN near_name(x, y)                         -- F3_NAME~_CIF
+          WHEN 8 THEN near_phone(x, y)                        -- F4_NAME_ADDRCD_PHONE~
+          WHEN 9 THEN near_company(x, y)                      -- F5_COMPANY~_PHONE_POSTAL
+          WHEN 10 THEN near_company(x, y)                     -- F6_COMPANY~_ADDRCD_PHONE
+          ELSE TRUE END
+),
+rule_pairs AS (  -- each pair a rule finds, with the first rule in order that finds it
+  SELECT f.l, f.r, rules.rule
+  FROM (SELECT l, r, MIN(i) AS i FROM found GROUP BY l, r) AS f JOIN rules USING (i)
+)
+SELECT l, r, c.sources, p.rule FROM cands AS c FULL JOIN rule_pairs AS p USING (l, r);
 
 CREATE OR REPLACE TEMP TABLE batch_scored AS
 WITH kept AS (  -- kept computes the names' Jaro–Winkler (s_name) once for each pair the bound keeps

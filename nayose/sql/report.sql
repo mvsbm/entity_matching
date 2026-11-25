@@ -16,7 +16,7 @@
 
 -- report_counts holds one row of counts about the run, its latest batch, its entities and kinds, its oversized
 -- blocks, and each field's filled records.
-CREATE OR REPLACE TABLE report_counts AS
+CREATE OR REPLACE TEMP TABLE report_counts AS
 SELECT
   (SELECT COUNT(*) FROM records) AS records,
   (SELECT COUNT(*) FROM records WHERE batch = (SELECT batch FROM this_batch)) AS added,
@@ -48,7 +48,7 @@ FROM records;
 -- whatever the rows' order. It gives the share of a field's filled values that look like its pattern (looks_right),
 -- the share that its most common value holds (top_value), the share with no letter or digit (no_letters), and the
 -- values' mean and longest length.
-CREATE OR REPLACE TABLE report_fields AS
+CREATE OR REPLACE TEMP TABLE report_fields AS
 WITH sample AS (SELECT * FROM records ORDER BY er_hash(id) LIMIT 10000),
 v AS (
   SELECT 'full_name' AS field, full_name AS v FROM sample UNION ALL SELECT 'person_name', person_name FROM sample
@@ -74,7 +74,7 @@ GROUP BY field;
 -- report_scores counts the batch's pairs by band. A pair scored at 0 points or more is in band k if k of @edges are
 -- at or below its points. Band -1 counts the rest of the batch's pairs (batch_pairs). With [score] keep_from at 0,
 -- those are the pairs that scored below 0 points, and the pairs that the bound kept from being scored.
-CREATE OR REPLACE TABLE report_scores AS
+CREATE OR REPLACE TEMP TABLE report_scores AS
 SELECT band, COUNT(*) AS pairs
 FROM (SELECT ARRAY_LENGTH(ARRAY(SELECT e FROM UNNEST(@edges) AS e WHERE e <= match_weight)) AS band
       FROM batch_scored WHERE match_weight >= 0)
@@ -85,7 +85,7 @@ SELECT -1, (SELECT COUNT(*) FROM batch_pairs) - (SELECT COUNT(*) FROM batch_scor
 -- report_patterns splits the batch's pairs at 0 points or more into two bands, below the review floor (@floor) and
 -- from it up. For each band it keeps the 12 most common patterns of levels, each with its pairs and their mean
 -- points. It also gives the band's total pairs and how many patterns the band holds (kinds).
-CREATE OR REPLACE TABLE report_patterns AS
+CREATE OR REPLACE TEMP TABLE report_patterns AS
 WITH p AS (
   SELECT match_weight >= @floor AS up, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth,
          COUNT(*) AS n, AVG(match_weight) AS w
@@ -102,7 +102,7 @@ SELECT * FROM (
 -- report_keys describes each key that the run uses. pairs counts the candidates it listed, each pair once, even if
 -- a deletion key listed the pair through several of its deletions. largest is the size of its largest block that
 -- holds a batch record, and oversized counts its blocks of @oversized records or more.
-CREATE OR REPLACE TABLE report_keys AS
+CREATE OR REPLACE TEMP TABLE report_keys AS
 WITH listing AS (SELECT name, COUNT(*) AS pairs FROM cands, UNNEST(SPLIT(sources, '+')) AS name GROUP BY name),
 blocks AS (
   SELECT g, MAX(n) AS largest, COUNT(DISTINCT CASE WHEN n >= @oversized THEN k END) AS oversized
@@ -114,5 +114,5 @@ FROM generators AS g LEFT JOIN listing AS l USING (name) LEFT JOIN blocks AS b U
 WHERE g.used;
 
 -- report_clusters counts the entities of each size.
-CREATE OR REPLACE TABLE report_clusters AS
+CREATE OR REPLACE TEMP TABLE report_clusters AS
 SELECT n AS size, COUNT(*) AS entities FROM (SELECT COUNT(*) AS n FROM gold GROUP BY cluster_id) GROUP BY n;
