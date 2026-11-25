@@ -2,12 +2,14 @@
 -- given, a match table that people filled in. They are stored with the run's earlier decisions, and each pair's latest
 -- decision is its standing. The entities are the connected components of the pairs whose latest decision is match
 -- (entities_of, nayose/entities.py), and each is named by its smallest ID. So a later no_match on a pair parts what
--- only that pair joined. Nothing merges by itself, so a record that no decision joins is an entity alone. A build runs
--- this file with nothing given, to make its entities from the decisions the run holds. O(D + N) for D decisions.
+-- only that pair joined. Nothing merges by itself, so a record that no decision joins is an entity alone. A build and
+-- an update run this file without @given, to make their entities from the decisions the run holds: they skip
+-- sections 1 and 2, which read given. O(D + N) for D decisions.
 --
--- Reads: given, the job's table of id_l, id_r, decision and why (empty for a build), records, and decisions if the
+-- Reads: given, the job's table of id_l, id_r, decision and why (with @given alone), records, and decisions if the
 -- run has any.
--- Values: none. A blank value is one that blank() finds (functions.sql): spaces alone, of any width.
+-- Values: given, TRUE if the job was given decisions. A blank value is one that blank() finds (functions.sql): spaces
+-- alone, of any width.
 -- Writes: decisions (each decision that changed its pair's standing, with its round, and each pair's latest flagged)
 -- and gold (each record's entity, what joined it, its kind and its entity's kind). A round is one call of this job.
 
@@ -15,10 +17,9 @@ CREATE TABLE IF NOT EXISTS decisions (id_l STRING, id_r STRING, decision STRING,
 
 -- 1. given_text reads what people said, each value as text. A blank value (spaces of any width) is missing, and the
 --    decision is put in lower case. An ID that a spreadsheet saved as a number (151 for 0000000151) then names no
---    record, and the last check below refuses it. said holds each decided pair once, with the lower ID first and one
---    why. A row without a decision is skipped. Each check below refuses the table and says what to do. They refuse a
---    decided row without both IDs, a table with rows but no decision, a decision other than match or no_match, a pair
---    decided both ways, and an ID that names no record of the run.
+--    record, and the check below refuses it. said holds each decided pair once, with the lower ID first and one
+--    why. A row without a decision is skipped.
+-- when: @given
 CREATE OR REPLACE TEMP TABLE given_text AS
 SELECT IF(blank(l), NULL, l) AS id_l, IF(blank(r), NULL, r) AS id_r,
        NULLIF(LOWER(trimmed(d)), '') AS decision, NULLIF(trimmed(why), '') AS why
@@ -26,34 +27,39 @@ FROM (SELECT CAST(id_l AS STRING) AS l, CAST(id_r AS STRING) AS r, CAST(decision
              CAST(why AS STRING) AS why
       FROM given);
 
-SELECT IF(COUNT(*) > 0, ERROR(CONCAT('given: ', CAST(COUNT(*) AS STRING), ' decided rows lack an ID; fill in both IDs of each decided row, or clear its decision')), 0)
-FROM given_text WHERE decision IS NOT NULL AND (id_l IS NULL OR id_r IS NULL);
-
-SELECT IF(COUNT(*) > 0 AND COUNT(decision) = 0, ERROR('given: no row has a decision; write match or no_match in the decision column'), 0)
-FROM given_text;
-
+-- when: @given
 CREATE OR REPLACE TEMP TABLE said AS
 SELECT id_l, id_r, decision, MIN(why) AS why
 FROM (SELECT LEAST(id_l, id_r) AS id_l, GREATEST(id_l, id_r) AS id_r, decision, why
       FROM given_text WHERE decision IS NOT NULL)
 GROUP BY id_l, id_r, decision;
 
-SELECT IF(COUNT(*) > 0, ERROR(CONCAT('given: a decision is match or no_match, not ', STRING_AGG(DISTINCT decision, ', '),
-                                     '; correct those rows, or leave them empty')), 0)
-FROM said WHERE decision NOT IN ('match', 'no_match');
-
-SELECT IF(COUNT(*) > 0, ERROR(CONCAT('given: ', CAST(COUNT(*) AS STRING), ' pairs decided both ways, as ', MIN(id_l), ' and ', MIN(id_r),
-                                     '; keep one decision per pair')), 0)
-FROM (SELECT id_l, id_r FROM said GROUP BY id_l, id_r HAVING COUNT(*) > 1);
-
-SELECT IF(COUNT(*) > 0, ERROR(CONCAT('given: ', CAST(COUNT(*) AS STRING), ' IDs name no record of the run, as ', MIN(id),
-                                     '; check the IDs as the run wrote them: a spreadsheet may read 0000000151 as the number 151')), 0)
-FROM (SELECT id_l AS id FROM said UNION DISTINCT SELECT id_r FROM said)
-WHERE id NOT IN (SELECT id FROM records);
+-- The check refuses the table and says what to do, for the first of these it finds, in this order: a decided row
+-- without both IDs, a table with rows but no decision, a decision other than match or no_match, a pair decided both
+-- ways, and an ID that names no record of the run. They are one statement, as BigQuery spends about a second on each.
+-- when: @given
+SELECT CASE
+  WHEN lacking > 0 THEN ERROR(CONCAT('given: ', CAST(lacking AS STRING), ' decided rows lack an ID; fill in both IDs of each decided row, or clear its decision'))
+  WHEN given_rows > 0 AND decided = 0 THEN ERROR('given: no row has a decision; write match or no_match in the decision column')
+  WHEN other_decisions IS NOT NULL THEN ERROR(CONCAT('given: a decision is match or no_match, not ', other_decisions,
+                                                     '; correct those rows, or leave them empty'))
+  WHEN both_ways > 0 THEN ERROR(CONCAT('given: ', CAST(both_ways AS STRING), ' pairs decided both ways, as ', both_l, ' and ', both_r,
+                                       '; keep one decision per pair'))
+  WHEN unknown > 0 THEN ERROR(CONCAT('given: ', CAST(unknown AS STRING), ' IDs name no record of the run, as ', unknown_id,
+                                     '; check the IDs as the run wrote them: a spreadsheet may read 0000000151 as the number 151'))
+  ELSE 0 END
+FROM (SELECT COUNT(CASE WHEN decision IS NOT NULL AND (id_l IS NULL OR id_r IS NULL) THEN 1 END) AS lacking,
+             COUNT(*) AS given_rows, COUNT(decision) AS decided FROM given_text),
+     (SELECT STRING_AGG(DISTINCT decision, ', ') AS other_decisions FROM said WHERE decision NOT IN ('match', 'no_match')),
+     (SELECT COUNT(*) AS both_ways, MIN(id_l) AS both_l, MIN(id_r) AS both_r
+      FROM (SELECT id_l, id_r FROM said GROUP BY id_l, id_r HAVING COUNT(*) > 1)),
+     (SELECT COUNT(*) AS unknown, MIN(id) AS unknown_id
+      FROM (SELECT id_l AS id FROM said UNION DISTINCT SELECT id_r FROM said) WHERE id NOT IN (SELECT id FROM records));
 
 
 -- 2. decisions keeps the run's decisions and adds each new one that changes its pair's latest decision, so a table
 --    given twice adds nothing. The new ones get the next round's number. Each pair's last decision is flagged latest.
+-- when: @given
 CREATE OR REPLACE TABLE decisions AS
 WITH stored_and_said AS (
   SELECT id_l, id_r, decision, why, round FROM decisions

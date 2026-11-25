@@ -50,9 +50,6 @@ ONE_BYTE = "".join(map(chr, range(1, 0x61)))  # one byte for each character of t
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a column name config.toml may give
 MAPPED = ("input_rows", "mapped")  # the tables a mapping makes, for records.sql
 METHOD = "CREATE OR REPLACE TABLE method AS SELECT @fingerprint AS fingerprint"  # a build's last statement
-# What decide.sql reads as given when nothing is given (a build's or an update's last step): no decisions, as a file
-# with none would be. The CLI's decide and the deploy's build and update procedures make it.
-NOTHING_GIVEN = "CREATE OR REPLACE TEMP TABLE given (id_l STRING, id_r STRING, decision STRING, why STRING)"
 CHANGED = ("the method, its values or the mapping changed since the run was built: "
            "this code would read its tables, and score its batches, otherwise")
 UNCHANGED = (f"SELECT IF((SELECT fingerprint FROM method) IS DISTINCT FROM @fingerprint, "  # a NULL one differs too
@@ -285,12 +282,13 @@ def name_weights() -> pd.DataFrame:
     return pd.DataFrame({"term": model["terms"].tolist(), "coef": model["coef"]})
 
 
-def values_of(name: str, refit: bool = True, lookup: bool = False) -> dict:
+def values_of(name: str, refit: bool = True, lookup: bool = False, given: bool = True) -> dict:
     """Return the values stage `name` reads as @name, from config.toml.
 
     A run here passes them as query parameters; a BigQuery procedure declares them (engines.procedures). `refit` is
     True for a build, False for a build given a model, which keeps it. With `lookup`, the batch is a record asked about.
-    match's @threshold and lookup.sql's values come from their jobs.
+    `given` is False for the decide stage of a build or an update, which is given no decisions. match's @threshold and
+    lookup.sql's values come from their jobs.
     """
     c = config()
     if name == "mapping":
@@ -322,6 +320,8 @@ def values_of(name: str, refit: bool = True, lookup: bool = False) -> dict:
                     floor=floor, oversized=int(c["score"]["oversized"]),
                     sample_records=int(c["report"]["sample_records"]),
                     patterns_shown=int(c["report"]["patterns_shown"]))
+    if name == "decide":
+        return dict(given=given)
     return {}
 
 
@@ -649,10 +649,8 @@ def decide(engine: Engine, files: list) -> None:
         if lack := sorted({"id_l", "id_r", "decision"} - {n.casefold() for n, _ in engine.columns("given")}):
             raise InputError(f"the decisions lack the columns {lack}", fix="give back a match table with decision "
                              "filled in, or a file with id_l, id_r and decision")
-    else:
-        engine.run(NOTHING_GIVEN)
     stage(engine, "functions")
-    stage(engine, "decide", **values_of("decide"))
+    stage(engine, "decide", **values_of("decide", given=bool(files)))
 
 
 def check_threshold(threshold: float) -> None:

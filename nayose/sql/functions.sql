@@ -1,5 +1,4 @@
--- The functions that nayose's SQL calls, each written once, and the comparisons' levels. Every job runs this file
--- first. It has five sections.
+-- The functions that nayose's SQL calls, each written once. Every job runs this file first. It has four sections.
 --
 -- 1. The intake. mapping.sql reads every input column through read_value(value, numeric, @nulls), which fixes what
 --    can be fixed without losing anything. O(bytes). It applies these fixes in order:
@@ -31,13 +30,10 @@
 -- 3. The rules' fuzzy tests, which score.sql calls. Each says whether two names, companies, addresses or phones are
 --    close enough.
 --
--- 4. The table levels. It lists each comparison's levels as section 2 numbers them, with their labels and agreements.
---    fit.sql reads it.
---
--- 5. The steps that the stages share: pairs_of, which counts the pairs a block's records make, and the steps of the
+-- 4. The steps that the stages share: pairs_of, which counts the pairs a block's records make, and the steps of the
 --    address copy (records.sql).
 --
--- Writes: levels (a temporary table).
+-- Writes: no table. The table of the levels that section 2 numbers is fit.sql's (levels), its one reader.
 
 
 -- ---------- 1. The intake ----------
@@ -383,40 +379,7 @@ CREATE OR REPLACE TEMP FUNCTION near_phone(x ANY TYPE, y ANY TYPE) AS (
 );
 
 
--- ---------- 4. The levels ----------
-
--- The table levels lists each comparison's levels, numbered as the functions above number them, with what the fit and
--- the report read of a level. agreement is exact (an equality alone), fuzzy (a distance or a similarity) or else.
--- position is the comparison's place in the model.
-CREATE OR REPLACE TEMP TABLE levels AS
-SELECT * FROM UNNEST([
-  STRUCT(1 AS position, 'name' AS comparison, 6 AS gamma, 'exact' AS label, 'exact' AS agreement),
-  STRUCT(1, 'name', 5, 'fold exact', 'exact'),
-  STRUCT(1, 'name', 4, 'same reading', 'exact'),
-  STRUCT(1, 'name', 3, 'fold JW high', 'fuzzy'),
-  STRUCT(1, 'name', 2, 'given name', 'exact'),
-  STRUCT(1, 'name', 1, 'fold JW low', 'fuzzy'),
-  STRUCT(1, 'name', 0, 'else', 'else'),
-  STRUCT(2, 'company', 2, 'exact', 'exact'),
-  STRUCT(2, 'company', 1, 'JW low', 'fuzzy'),
-  STRUCT(2, 'company', 0, 'else', 'else'),
-  STRUCT(3, 'address', 3, 'same address', 'exact'),
-  STRUCT(3, 'address', 2, 'address close', 'fuzzy'),
-  STRUCT(3, 'address', 1, 'same postal', 'exact'),
-  STRUCT(3, 'address', 0, 'else', 'else'),
-  STRUCT(4, 'phone', 2, 'exact', 'exact'),
-  STRUCT(4, 'phone', 1, 'one digit off', 'fuzzy'),
-  STRUCT(4, 'phone', 0, 'else', 'else'),
-  STRUCT(5, 'cif', 2, 'exact', 'exact'),
-  STRUCT(5, 'cif', 1, 'one digit off', 'fuzzy'),
-  STRUCT(5, 'cif', 0, 'else', 'else'),
-  STRUCT(6, 'birth', 2, 'exact', 'exact'),
-  STRUCT(6, 'birth', 1, 'one digit off', 'fuzzy'),
-  STRUCT(6, 'birth', 0, 'else', 'else')
-]);
-
-
--- ---------- 5. The steps that the stages share ----------
+-- ---------- 4. The steps that the stages share ----------
 
 -- pairs_of(n) returns the number of pairs that n records make, n(n − 1)/2.
 CREATE OR REPLACE TEMP FUNCTION pairs_of(n INT64) AS (DIV(n * (n - 1), 2));

@@ -68,9 +68,10 @@ def test_each_job_is_a_procedure_of_its_stages_with_every_value_it_reads_declare
     assert all(") OPTIONS (strict_mode = FALSE)\nBEGIN" in sql for sql in jobs.values())  # made before any table it reads
     assert not [j for j, sql in jobs.items() if re.search(r"\bLIMIT (?!\d)", CODE.sub("", sql))]  # a number: no variable there
     assert f"LIMIT {nayose.config()['fit']['fit_records']})" in jobs["build"]
-    for job in ("build", "update"):  # decide.sql's given: theirs empty, made first; the decide job's, the file loaded
-        assert jobs[job].index(nayose.NOTHING_GIVEN) < jobs[job].index("FROM given)") and "`p.run`.given" not in jobs[job]
-    assert nayose.NOTHING_GIVEN not in jobs["decide"] and "FROM `p.run`.given)" in jobs["decide"]
+    for job in ("build", "update"):  # given no decisions: decide.sql's statements that read given aren't there at all
+        assert "given" not in re.findall(r"\bFROM\s+(?:`p\.run`\.)?(\w+)", CODE.sub("", jobs[job])) and "given_text" not in jobs[job]
+    assert "FROM `p.run`.given)" in jobs["decide"] and "IF v_given" not in jobs["decide"]  # the decide job: always
+    assert not [j for j, sql in jobs.items() if re.search(r"^IF [^\n]*\bv_(lookup|given)\b", sql, re.M)]  # known: folded
 
 
 def test_a_procedure_names_every_table_with_its_dataset_but_the_job_s_temporary_tables():  # BigQuery reads no default there
@@ -80,7 +81,9 @@ def test_a_procedure_names_every_table_with_its_dataset_but_the_job_s_temporary_
         body = job_statements(job, stages, "p.run", None)[0]
         temp = {t for sql in body for t in made.findall(" ".join(CODE.sub(" ", sql).split()))}
         assert "block_size" in temp or job not in ("build", "update"), job  # made by CREATE TEMP TABLE IF NOT EXISTS
-        for sql in body + [f"SELECT {guard}" for guard in re.findall(r"^IF ([\s\S]*?) THEN\n", "\n".join(body), re.M)]:
+        asked = [f"SELECT {c}" for x in body for c in re.findall(r"^SET v_\w+ = \((.*)\);\n", x)]  # queried_once's
+        body = [re.sub(r"^SET v_\w+ = \(.*\);\n", "", x) for x in body]
+        for sql in body + asked + [f"SELECT {guard}" for guard in re.findall(r"^IF ([\s\S]*?) THEN\n", "\n".join(body), re.M)]:
             inner = re.fullmatch(r"IF [\s\S]*? THEN\n([\s\S]*);\nEND IF", sql)
             tree = sqlglot.parse_one(inner[1] if inner else sql, read="bigquery")
             ctes = {c.alias_or_name for c in tree.find_all(sqlglot.exp.CTE)}
@@ -93,6 +96,30 @@ def test_a_procedure_names_every_table_with_its_dataset_but_the_job_s_temporary_
 def test_the_deploy_sends_the_functions_bodies_as_written():  # qualified names the calls of the SQL alone
     from nayose.engines import qualified
     assert [qualified(sql, "p.run") for sql in functions("p.run")] == functions("p.run")
+
+
+def test_a_condition_on_a_value_the_procedure_declares_is_decided_when_the_deploy_makes_it():
+    from nayose.engines import folded, in_procedure
+    known = {"v_lookup": False, "v_given": True}
+    assert folded("NOT v_lookup", known) is True and folded("v_lookup", known) is False and folded("v_given", known) is True
+    assert folded("NOT v_lookup AND (SELECT batch FROM this_batch) = 0", known) == "(SELECT batch FROM this_batch) = 0"
+    assert folded("v_lookup OR EXISTS (SELECT 1 FROM t)", known) == "EXISTS(SELECT 1 FROM t)"
+    assert folded("EXISTS (SELECT 1 FROM changed WHERE redone)", known) == "EXISTS (SELECT 1 FROM changed WHERE redone)"
+    assert in_procedure("-- when: @lookup\nSELECT 1", "p.run", set(), known) is None  # never runs: left out
+    assert in_procedure("-- when: NOT @lookup\nSELECT 1", "p.run", set(), known) == "-- when: NOT v_lookup\nSELECT 1"
+
+
+def test_a_condition_a_procedure_asks_again_is_asked_once_where_nothing_between_writes_what_it_reads():
+    from nayose.engines import procedures, queried_once
+    ask = ["IF EXISTS (SELECT 1 FROM t) THEN\nDELETE FROM a WHERE TRUE;\nEND IF", "SELECT 1",
+           "IF EXISTS (SELECT 1 FROM t) THEN\nDELETE FROM b WHERE TRUE;\nEND IF"]
+    body, names = queried_once(list(ask))
+    assert names == ["condition_1"] and body[0].startswith("SET v_condition_1 = (EXISTS (SELECT 1 FROM t));\nIF v_condition_1 THEN")
+    assert body[2].startswith("IF v_condition_1 THEN\nDELETE FROM b")
+    assert queried_once([ask[0], "CREATE OR REPLACE TEMP TABLE t AS SELECT 1 AS x", ask[2]])[1] == []  # t made again between
+    for job in [s for s in procedures("p.run") if "CREATE OR REPLACE PROCEDURE" in s]:  # each condition a query once
+        asked = re.findall(r"^IF (.*) THEN$", job, re.M) + re.findall(r"^SET v_\w+ = \((.*)\);$", job, re.M)
+        assert len([c for c in asked if "SELECT" in c]) == len({c for c in asked if "SELECT" in c}), job[:60]
 
 
 def test_a_when_condition_names_the_run_s_tables_with_the_dataset_as_its_statement_does():

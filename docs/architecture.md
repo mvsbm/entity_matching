@@ -324,7 +324,10 @@ both.
 on the job's values and tables, on a `--` line of its leading comments (one within a `/* */` comment is that
 comment's text). `run_file` asks the engine and skips the statement where it is false. The deploy makes it the
 procedure's `IF <condition> THEN … END IF`, and each `@name` the procedure's variable `v_name`, in the code and its
-`--` comments but never in a string. BigQuery bills a statement's scans whatever its result, so a
+`--` comments but never in a string. A condition on a value the procedure declares TRUE or FALSE (`@given`, FALSE for
+a build's and an update's decide stage; `@lookup`, FALSE in every procedure) is decided as the deploy makes it
+(`engines.folded`): the statement is there without its `IF`, or not there at all, as BigQuery runs every other
+condition as a query of its own. BigQuery bills a statement's scans whatever its result, so a
 statement that isn't run is the only one that bills nothing.
 
 **DuckDB** runs the SQL after `duckdb_sql` translates it (sqlglot, BigQuery to DuckDB, cached per statement). Some
