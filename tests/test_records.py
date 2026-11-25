@@ -78,8 +78,7 @@ def test_the_mapping_parses_as_bigquery_and_translates(path):
                                  "CREATE OR REPLACE TEMP TABLE given AS SELECT 1 AS v;  -- decide.sql's, people's decisions",
                                  "CREATE OR REPLACE TEMP TABLE helper AS SELECT 1 AS x;  # a note",
                                  "SELECT 1 AS x;\n# the end",
-                                 "/* a note;\n*/\nSELECT 1 AS x;",  # its ';' ends the statement inside the comment
-                                 "/* reads @x */ SELECT 1 AS x;"])  # an @name in a /* */ comment: a value read
+                                 "/* a note;\n*/\nSELECT 1 AS x;"])  # its ';' ends the statement inside the comment
 def test_a_mapping_that_makes_more_than_temporary_tables_of_its_own_is_refused_by_the_deploy_and_by_a_job(tmp_path, monkeypatch, bad):
     from nayose.engines import procedures
     given = tmp_path / "mapping.sql"
@@ -94,10 +93,14 @@ def test_a_mapping_that_makes_more_than_temporary_tables_of_its_own_is_refused_b
 
 
 def test_a_mapping_in_the_documented_form_is_accepted(tmp_path):
+    from nayose.engines import procedures
     text = (nayose.HERE / "mapping.sql").read_text(encoding="utf-8").replace("TEMP TABLE mapped", "TEMPORARY TABLE mapped")
     given = tmp_path / "mapping.sql"
-    given.write_text(text + "\nSELECT IF(COUNT(*) = 0, ERROR('no records'), 0) FROM mapped;  -- a check of its own\n", encoding="utf-8")
-    assert len(nayose.mapping_statements(given)) == len(nayose.statements(text)) + 1
+    given.write_text(text + "\nSELECT IF(COUNT(*) = 0, ERROR('no records'), 0) FROM mapped;  -- a check of its own\n"
+                     "/* the customer's ID, see #3 @x */ SELECT read_value(CONT_ID, TRUE, @nulls) AS id, 'a' AS w FROM input;\n", encoding="utf-8")
+    assert len(nayose.mapping_statements(given)) == len(nayose.statements(text)) + 2
+    build = next(s for s in procedures("p.run", given) if "PROCEDURE `p.run`.build(" in s)  # past the apostrophe, @nulls declared
+    assert "TRUE, v_nulls) AS id, 'a' AS w FROM input" in build and "@nulls" not in build
 
 
 VALUES = ["ヤマダタロウ", "ヤマダ　タロウ", " サトウ", "サトウ ", "　", "  ", "NULL", " NULL ", "－", "譁ｰ縺励＞", "abc\x01", "タ​ナカ", "a\tb",

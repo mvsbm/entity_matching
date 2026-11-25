@@ -64,10 +64,8 @@ FIELDS = (  # a record's fields, as report.txt lists them
 
 # Reading a statement from its text: run_file, for_lookup and the deploy's procedures do.
 PARAMETER = re.compile(r"@(\w+)")  # a value a statement reads, by name: run_file passes it, the deploy declares it
-NOT_CODE = re.compile(  # a -- comment, or any of BigQuery's strings and quoted names: the parts that aren't code
-    r"""--[^\n]*|'''.*?'''|\"\"\".*?\"\"\"|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`[^`]*`""", re.S)
-# What NOT_CODE finds, and the /* */ comments: a -- when: line or an @name within a /* */ comment is plain text
-BLOCK = re.compile(NOT_CODE.pattern + r"|/\*.*?\*/", re.S)
+NOT_CODE = re.compile(  # a comment (-- or /* */), or any of BigQuery's strings and quoted names: not code
+    r"""--[^\n]*|/\*.*?\*/|'''.*?'''|\"\"\".*?\"\"\"|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`[^`]*`""", re.S)
 WHEN = re.compile(r"^\s*--\s*when:(.*)$", re.M | re.I)  # a `-- when: <condition>` line: see when()
 LEAD = r"(?P<lead>(?:\s*--[^\n]*\n|\s*/\*.*?\*/)*\s*)"  # a statement's leading comments
 # A statement that writes a table: its leading comments, its verb, and the table it writes. The verbs are tried in
@@ -172,14 +170,13 @@ def mapping_statements(path: Path) -> list[str]:
 
     A mapping turns the input's columns into fields and keeps nothing. So each statement, as BigQuery parses it, must
     be one query, or make one temporary table with a name the method doesn't use (in any case), and its comments
-    should start with --. A # comment is refused. A /* */ one is not, but nayose reads it as code (the last reason),
-    so it is refused where that breaks the statement: where a line in it ends in ';', or where it holds an @name.
-    The reasons:
+    should start with --. A # comment is refused. A /* */ one is not, unless a line in it ends in ';' (the last
+    reason). The reasons:
     - a table of its own would be dropped by the next build, which makes again every table it writes;
     - a temporary table named like one of the method's would hide it, as a statement reads a temporary table first;
     - a function of its own would replace one of the method's on BigQuery, but not on DuckDB;
-    - nayose finds a statement's end, and the @values it reads, past -- comments alone (statements, run_file): in a
-      /* */ comment, a line ending in ';' ends the statement, and an @name is a value it reads.
+    - nayose finds a statement's end past -- comments alone (statements): in a /* */ comment, a line ending in ';'
+      ends the statement.
     """
     try:
         out = statements(path.read_text(encoding="utf-8"))
@@ -191,20 +188,12 @@ def mapping_statements(path: Path) -> list[str]:
     return out
 
 
-def block_comments(sql: str) -> list[str]:
-    """Return a statement's /* */ comments, those in its strings and -- comments aside."""
-    return [part for part in (m[0] for m in BLOCK.finditer(sql)) if part.startswith("/*")]
-
-
 def check_mapping_statement(file: str, sql: str) -> None:
     """Raise InputError unless one statement of the mapping `file` keeps to a mapping's form (mapping_statements)."""
     tail = " ".join(sql.split())[-100:]
     if "#" in NOT_CODE.sub("", sql):
         raise InputError(f"{file}: a comment starts with --, as in the method's files: {tail}",
                          fix="write each # comment as --")
-    if any(PARAMETER.search(c) for c in block_comments(sql)):
-        raise InputError(f"{file}: a /* */ comment holds an @name, which nayose would read as a value: {tail}",
-                         fix="write the comment with --")
     try:
         parsed = sqlglot.parse(sql, read="bigquery")
     except sqlglot.errors.SqlglotError as e:  # ParseError; TokenError where a line ending in ';' cut a /* */ comment
@@ -759,7 +748,7 @@ def when(sql: str) -> str | None:
     deploy makes functions apart from the procedures), or where one stands past the statement's leading comments.
     """
     def lines(text: str) -> list[str]:  # the conditions of text's -- lines, outside its /* */ comments
-        return WHEN.findall(BLOCK.sub(lambda m: " " if m[0].startswith("/*") else m[0], text))
+        return WHEN.findall(NOT_CODE.sub(lambda m: " " if m[0].startswith("/*") else m[0], text))
 
     conditions = lines(re.match(LEAD, sql, re.S)["lead"])
     start = sql.strip()[:80]  # the statement's start, for a refusal

@@ -466,8 +466,8 @@ def in_procedure(sql: str, dataset: str) -> str:
     """Return a stage's statement as its procedure runs it.
 
     Each @name becomes v_name, in the code and in its -- comments, where a `-- when:` condition is read from, but never
-    in a string or a quoted name, which run_file leaves as written too. A view names its tables with their dataset
-    (in_dataset). A statement with a `-- when:` condition is wrapped in IF ... END IF.
+    in a string, a quoted name or a /* */ comment, which run_file leaves as written too. A view names its tables with
+    their dataset (in_dataset). A statement with a `-- when:` condition is wrapped in IF ... END IF.
     """
     sql = VALUE_OR_NOT_CODE.sub(as_variable, sql)
     guard = nayose.when(sql)  # read before in_dataset, whose SQL keeps no comment
