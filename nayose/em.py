@@ -7,7 +7,7 @@ The model has three sorts of number:
     u   how often two different entities fall into a level by chance: counted exactly where fit.sql counts it, else
         measured on sampled pairs, else, when no sampled pair reached the level, an upper bound.
     m   how often one entity's two records fall into a level: learned by EM sessions on the sample's pairs that
-        share a key, each session starting from what the sessions before it learned. A level's m is the median.
+        share a field, each session starting from what the sessions before it learned. A level's m is the median.
 
 After learning, u is measured again on the file to be scored: in a bigger file, a field whose values grow with it
 agrees by chance less often. An update scores with the model as the build left it, as a saved model is reused;
@@ -15,7 +15,7 @@ building again measures u on the run as it has grown.
 
 fit() is a pure function, JSON in and JSON out, using the standard library only. fit.sql calls it as fit_model, on
 BigQuery as a Python UDF (engines.functions) and on DuckDB alike. Cost:
-O(rounds · patterns · K) for K comparisons.
+O(iterations · patterns · K) for K comparisons.
 """
 import copy
 import json
@@ -24,7 +24,7 @@ import statistics
 
 START_M = 0.95  # Splink's first guess of m for a comparison's first level
 UNSEEN_M = 1e-6  # the m Splink gives a level that no pair of the session reached
-MAX_ROUNDS = 25  # Splink's max_iterations
+MAX_ITERATIONS = 25  # Splink's max_iterations
 CONVERGED = 1e-4  # Splink's em_convergence: stop once no m and no λ moves by more than this
 ELSE = "else"  # the label of each comparison's last level: none of the others
 LAMBDA_CAP = 1 - 1e-9  # the most the rescaled λ can be, a hair under 1, so that its log-odds stay finite (score.sql's)
@@ -170,19 +170,19 @@ def comparisons(levels: list[dict]) -> list[str]:
 def learn(levels: list[dict], counts: dict, prior_counts: dict, patterns: list[dict], settings: dict) -> dict:
     """Learn the model on the sample: u, then λ, then m by the EM sessions in order.
 
-    Raises ValueError when no near-certain rule, or no session's key, finds a pair in the sample, or the rules find
+    Raises ValueError when no near-certain rule, or no session's field, finds a pair in the sample, or the rules find
     more pairs than their recall allows.
     """
     names = comparisons(levels)
     model, filled_u = sample_u(levels, counts, names)
     records, prior_pairs = prior_counts["records"], prior_counts["prior_pairs"]
     rules_found = [rule for rule in PRIOR_RULES if prior_counts[rule]]
-    sessions = [s["key"] for s in settings["em_sessions"]]
+    sessions = [s["field"] for s in settings["em_sessions"]]
     patterns_of = {s: [tuple(p[n] for n in names) + (p["pairs"],) for p in patterns if p["session"] == s]
                    for s in sessions}
     em_pairs = {s: sum(p[-1] for p in patterns_of[s]) for s in sessions if patterns_of[s]}
     lam = prior_rate(records, prior_pairs, rules_found, sessions, em_pairs, settings["prior_recall"])
-    with_pairs = [s for s in settings["em_sessions"] if s["key"] in em_pairs]
+    with_pairs = [s for s in settings["em_sessions"] if s["field"] in em_pairs]
     learned, filled_m = learn_m(model, with_pairs, patterns_of, names, lam)
     adjusted = sensible_m(model, {tuple(x) for x in filled_m})
     skipped = [PRIOR_RULES[r] for r in PRIOR_RULES if r not in rules_found] + [s for s in sessions if s not in em_pairs]
@@ -208,7 +208,7 @@ def prior_rate(records: int, prior_pairs: int, rules_found: list[str], sessions:
                recall: float) -> float:
     """Return λ: the pairs the near-certain rules find, over their recall, over every pair of the sample.
 
-    Raises ValueError when no near-certain rule, or no session's key, finds a pair in the sample, or the rules find
+    Raises ValueError when no near-certain rule, or no session's field, finds a pair in the sample, or the rules find
     more pairs than their recall allows.
     """
     if not rules_found:
@@ -235,8 +235,8 @@ def learn_m(model: dict, with_pairs: list[dict], patterns_of: dict[str, list[tup
     trained: dict[tuple[str, str], list[float]] = {}  # each level's m, as each session so far learned it
     learned = {}
     for s in with_pairs:
-        learned[s["key"]] = session(model, patterns_of[s["key"]], names, s, lam, trained)
-        for key, value in learned[s["key"]].items():
+        learned[s["field"]] = session(model, patterns_of[s["field"]], names, s, lam, trained)
+        for key, value in learned[s["field"]].items():
             trained.setdefault(key, []).append(value)
     filled_m = []
     for lv in model["levels"]:
@@ -269,15 +269,15 @@ def odds(p: float) -> float:
 
 def session(model: dict, patterns: list[tuple], names: list[str], s: dict, lam: float,
             trained: dict) -> dict[tuple[str, str], float]:
-    """Run one EM session on the pairs that share its key, and return each level's m after its last round.
+    """Run one EM session on the pairs that share its field, and return each level's m after its last iteration.
 
-    `patterns` holds each pattern of levels with its count, in order; a comparison the key fixed is None. λ among
-    these pairs starts from λ with the evidence of the exact levels the key guarantees. Each round guesses each
+    `patterns` holds each pattern of levels with its count, in order; a comparison the field fixed is None. λ among
+    these pairs starts from λ with the evidence of the exact levels the field guarantees. Each iteration guesses each
     pattern's chance of a match from λ's bits and its levels' bits, added left to right (E), then counts m from those
-    guesses (M). The session stops once nothing moves by CONVERGED, or after MAX_ROUNDS. A level no pair reached is
+    guesses (M). The session stops once nothing moves by CONVERGED, or after MAX_ITERATIONS. A level no pair reached is
     left out of the result.
     """
-    learns = [i for i, name in enumerate(names) if all(p[i] is not None for p in patterns)]  # the key fixed the others
+    learns = [i for i, name in enumerate(names) if all(p[i] is not None for p in patterns)]  # its field fixed the rest
     order = [names[i] for i in learns]
     start = odds(lam)
     for name, label in s["start"]:
@@ -290,7 +290,7 @@ def session(model: dict, patterns: list[tuple], names: list[str], s: dict, lam: 
     m: dict[tuple[str, int], float | None] = {key: first_m(model, key[0], key[1], trained) for key in u}
     # in order, as SQL's ORDER BY ALL sorts them
     rows = [(list(x[:-1]), x[-1]) for x in sorted(tuple(p[i] for i in learns) + (p[-1],) for p in patterns)]
-    for _ in range(MAX_ROUNDS):
+    for _ in range(MAX_ITERATIONS):
         bits_at_level = {key: bits(seen(m[key]), u[key]) for key in m}
         bits_at_level |= {(n, -1): 0.0 for n in order}  # a missing comparison weighs nothing
         matches, pairs, expected = expect(rows, order, bits_at_level, math.log2(odds(lam_s)))

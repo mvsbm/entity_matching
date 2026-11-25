@@ -176,7 +176,7 @@ Every choice of the method (`nayose/sql/`, and its values in `nayose/config.toml
 | rule | a condition that pairs two records on strong evidence alone, such as the same customer ID and the same name | 4 |
 | generator | one way of listing pairs: it makes keys for each record, such as its phone and prefecture, or a value with each letter deleted in turn (`[score] generators`) | 3 |
 | key, block | a value a generator makes for a record; the records that share a key form a block, and only pairs inside a block are listed. A pair's generators are those whose keys listed it | 3 |
-| verdict | the gate's word on an oversized block: joined, or skipped | 3 |
+| verdict | the gate's word on an oversized block: listed, or skipped | 3 |
 | candidates | every generator's pairs together: with the rules' pairs, the only pairs scored | 3 |
 | potential match | a true pair whose fields would reach the threshold, if it were scored | 3 |
 | level, agreement | where a pair lands in a comparison, such as "same address"; a level's agreement is exact, fuzzy or else | 5 |

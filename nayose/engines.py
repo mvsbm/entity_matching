@@ -65,7 +65,7 @@ def avoided(sql: str) -> list[str]:
     That is the forms of AVOID, and a decimal literal, which BigQuery reads as FLOAT64 and DuckDB as DECIMAL
     (write CAST(1.5 AS FLOAT64)).
     """
-    out = [why for pattern, why in AVOID.items() if re.search(pattern, sql, flags=re.I)]
+    out = [why for regex, why in AVOID.items() if re.search(regex, sql, flags=re.I)]
     trees = [tree for tree in sqlglot.parse(sql, read="bigquery") if tree]
     for lit in (lit for tree in trees for lit in tree.find_all(exp.Literal)):
         decimal = lit.is_number and re.search(r"[.eE]", lit.this)
@@ -93,7 +93,7 @@ def as_bigquery(node: exp.Expression) -> exp.Expression:
     - array[OFFSET(i)] where i isn't a number: DuckDB's array[i + 1] (sqlglot moves a number's base only);
     - UNNEST ... WITH OFFSET: counted from 0, as BigQuery counts (sqlglot writes DuckDB's WITH ORDINALITY, from 1);
     - DIV(a, b): DuckDB's a // b, each side and the whole in brackets (sqlglot writes DIV(x - y, 2) as x - y // 2);
-    - REGEXP_EXTRACT: the group's match where the pattern has one, and NULL where it doesn't match
+    - REGEXP_EXTRACT: the group's match where the regex has one, and NULL where it doesn't match
       (regexp_as_bigquery)."""
     if isinstance(node, exp.ClusterProperty):
         return None
@@ -143,15 +143,15 @@ def translate_arguments(node: exp.Expression) -> None:
 def regexp_as_bigquery(node: exp.RegexpExtract | exp.RegexpExtractAll) -> exp.Expression:
     """Return REGEXP_EXTRACT(_ALL) as BigQuery answers it: its group's match, and NULL where nothing matches.
 
-    Where the pattern has one group, the match is that group's: sqlglot counts groups with Python's re, which can't
+    Where the regex has one group, the match is that group's: sqlglot counts groups with Python's re, which can't
     read RE2's \\x{3000} or \\p{Nd} (groups()). REGEXP_EXTRACT gives NULL where it doesn't match; DuckDB's gives ''.
     """
     translate_arguments(node)
-    pattern = node.expression
-    if (pattern.is_string or isinstance(pattern, exp.RawString)) and groups(pattern.name) == 1:
+    regex = node.expression
+    if (regex.is_string or isinstance(regex, exp.RawString)) and groups(regex.name) == 1:
         node.set("group", exp.Literal.number(1))
     if isinstance(node, exp.RegexpExtract):
-        return exp.If(this=exp.RegexpLike(this=node.this.copy(), expression=pattern.copy()), true=node)
+        return exp.If(this=exp.RegexpLike(this=node.this.copy(), expression=regex.copy()), true=node)
     return node
 
 
@@ -167,9 +167,9 @@ def offsets_from_zero(select: exp.Select) -> None:
             col.replace(exp.alias_(shifted, name) if col.parent is select else shifted)  # a selected one keeps its name
 
 
-def groups(pattern: str) -> int:
-    """Return how many capturing groups an RE2 pattern has, counted by Python's re once RE2's own escapes are read."""
-    python = re.sub(r"\\x\{([0-9a-fA-F]+)\}", lambda m: f"\\U{int(m[1], 16):08x}", pattern)
+def groups(regex: str) -> int:
+    """Return how many capturing groups an RE2 regex has, counted by Python's re once RE2's own escapes are read."""
+    python = re.sub(r"\\x\{([0-9a-fA-F]+)\}", lambda m: f"\\U{int(m[1], 16):08x}", regex)
     return re.compile(re.sub(r"\\[pP](?:\{[^}]*\}|[A-Za-z])", r"\\w", python)).groups
 
 
@@ -523,7 +523,7 @@ def method_functions() -> set[str]:
 
 
 def calls_of(names, flags: int = 0) -> re.Pattern:
-    """Return the pattern of a call of any of these functions, by its name alone (not yet qualified with a dataset)."""
+    """Return the regex of a call of any of these functions, by its name alone (not yet qualified with a dataset)."""
     return re.compile(r"(?<![\w.`])(" + "|".join(sorted(names, key=len, reverse=True)) + r")\s*\(", flags)
 
 

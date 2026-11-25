@@ -224,7 +224,7 @@ def report_steps(counts, notes: dict, steps: dict[str, float], job: str) -> list
                 f"persons {n('persons')} · not sure {n('unsure')}",
         fit=f"fit_records {notes['fit_records']:,}",
         score=f"candidates {n('candidates')} · scored {n('scored')} · rule pairs {n('ruled')} · "
-              f"oversized_joined {n('oversized_joined')} · oversized_skipped {n('oversized_skipped')}",
+              f"oversized_listed {n('oversized_listed')} · oversized_skipped {n('oversized_skipped')}",
         decide=f"decided {n('decided')} · entities {n('entities')}")
     rows = [dict(step=s, seconds=f"{x:.2f}", facts=facts.get(s, "")) for s, x in steps.items()]
     return ["STEPS", *text_table(pd.DataFrame(rows)), ""]
@@ -295,8 +295,8 @@ def unmapped(engine: Engine, c: dict, looks: dict[str, str]) -> pd.DataFrame | N
     counted = con.execute(f"SELECT c, COUNT(*), COUNT(DISTINCT v) FROM ({filled}) GROUP BY c", [BLANK]).fetchall()
     shape = {x: (k / n, d / max(1, k)) for x, k, d in counted}
     fits = {x: {} for x in columns}
-    for field, pattern in looks.items():
-        matched = con.execute(f"SELECT c, AVG(regexp_matches(v, ?)::INT) FROM ({filled}) GROUP BY c", [pattern, BLANK])
+    for field, regex in looks.items():
+        matched = con.execute(f"SELECT c, AVG(regexp_matches(v, ?)::INT) FROM ({filled}) GROUP BY c", [regex, BLANK])
         for x, share in matched.fetchall():
             fits[x][field] = share
     best = {x: max(fits[x].items(), key=lambda kv: kv[1], default=("", 0.0)) for x in columns}

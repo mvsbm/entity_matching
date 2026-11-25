@@ -113,7 +113,7 @@ def test_each_value_is_read_as_recorded():
     nayose.stage(engine, "functions")
     for numeric in (False, True):  # a column of text, a column of numbers
         got = [r[0] for r in engine.rows("SELECT read_value(v, @numeric, @nulls) FROM UNNEST(@values) AS v WITH OFFSET AS i ORDER BY i",
-                                         {"numeric": numeric, "nulls": nayose.nulls_pattern(nulls), "values": VALUES})]
+                                         {"numeric": numeric, "nulls": nayose.null_regex(nulls), "values": VALUES})]
         want = EXPECTED["read_value"]["numbers" if numeric else "text"]
         assert [(v, g, w) for v, g, w in zip(VALUES, got, want) if g != w] == []
 

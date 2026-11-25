@@ -1,6 +1,6 @@
 """Every job's tables on the tests' population, held to the results recorded in tests/fixtures/parity.json: each
 table's digest (its rows in order, floats to 9 places).
-A build with two crowds of 70 (one block gated and skipped, one joined), match runs and two rounds of people's
+A build with two crowds of 70 (one block gated and skipped, one listed), match runs and two rounds of people's
 decisions; an update whose batch brings a placeholder past the line; lookups of stored records and of typed values.
 A change that moves any is a change of results: say so in its pull request, and write the digests again
 (NAYOSE_PARITY_WRITE=1)."""
@@ -62,7 +62,7 @@ def got(tmp_path_factory, population) -> dict:
     nayose.match(engine, 6.0)
     out["match_again"] = digest(engine.frame("SELECT * FROM matched"))
     for name, ask in (("kin", dict(values={"FULL_NAME_KANA": "ヤマダ ハナコ", "POST_CD": "1500001"})), ("crowd", dict(record="8000000000"))):
-        out[f"lookup.{name}"] = hashlib.sha256(json.dumps(nayose.lookup(engine, **ask), ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]  # an oversized block the gate joins
+        out[f"lookup.{name}"] = hashlib.sha256(json.dumps(nayose.lookup(engine, **ask), ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]  # an oversized block the gate lists
 
     first, rest = g.df.iloc[: len(g.df) // 2].copy(), g.df.iloc[len(g.df) // 2:].copy()
     first.loc[first.index[:2], "PHONE_NUM_4"] = "4321"

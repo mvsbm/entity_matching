@@ -62,22 +62,23 @@ FROM ranked AS rk LEFT JOIN joined AS j USING (entity)
 WHERE rk.nth = 1 AND (rk.points >= @at_least OR j.rule IS NOT NULL);
 
 -- checked reports what was looked up. For each generator the run uses, it gives how many records the record's blocks
--- of normal size hold (records), whether the record lacks its key (lacks), and the record's oversized blocks with the
--- gate's verdict (oversized). records counts a stored record asked about, but not a typed one. Then, for each rule
--- whose key value is held by @oversized records or more, untrusted gives how many records hold it.
+-- of normal size hold (in_blocks), whether the record lacks its key (lacks), and the record's oversized blocks with
+-- the gate's verdict (oversized). in_blocks counts a stored record asked about, but not a typed one. Then, for each
+-- rule whose key value is held by @oversized records or more, untrusted gives how many records hold it.
 CREATE OR REPLACE TEMP TABLE checked AS
 WITH mine AS (
   SELECT g, key, n FROM key_blocks WHERE id IN (SELECT id FROM batch_records)
 ),
 normal AS (
-  SELECT m.g, COUNT(DISTINCT b.id) - IF(@stored, 0, 1) AS records
+  SELECT m.g, COUNT(DISTINCT b.id) - IF(@stored, 0, 1) AS in_blocks
   FROM mine AS m JOIN key_blocks AS b USING (g, key) WHERE m.n < @oversized GROUP BY m.g
 ),
 oversized_blocks AS (
   SELECT m.g, ARRAY_AGG(STRUCT(m.n AS records, z.sampled, z.best, z.verdict) ORDER BY m.key) AS blocks
   FROM mine AS m JOIN gated AS z ON z.g = m.g AND z.key = m.key WHERE m.n >= @oversized GROUP BY m.g
 )
-SELECT g AS position, name AS generator, COALESCE(normal.records, 0) AS records, g NOT IN (SELECT g FROM mine) AS lacks,
+SELECT g AS position, name AS generator, COALESCE(normal.in_blocks, 0) AS in_blocks,
+       g NOT IN (SELECT g FROM mine) AS lacks,
        CAST(NULL AS INT64) AS untrusted, oversized_blocks.blocks AS oversized
 FROM generators LEFT JOIN normal USING (g) LEFT JOIN oversized_blocks USING (g)
 WHERE used

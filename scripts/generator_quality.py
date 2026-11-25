@@ -2,7 +2,7 @@
 real records can be read anywhere: which generators find a match no other generator or rule finds, and which can go
 together losing none.
 
-    python scripts/key_quality.py RUN [--truth TRUTH.parquet] [--points 6]
+    python scripts/generator_quality.py RUN [--truth TRUTH.parquet] [--points 6]
 
 RUN: a build's run folder (its run.duckdb, read-only; an update keeps its last batch's candidates alone, so refused).
 A match: a pair the run scored at --points or more with a name compared ([lookup] likely_from: as people review), or a
@@ -10,7 +10,7 @@ rule's pair. A generator's candidates: the pairs its keys list (cands' generator
 lists and no rule finds, lost were the generator to go. Can go together: the generators that list no match alone, less,
 one at a time, the one whose
 return keeps the most matches, until none is lost. TRUTH (a generated population's: CONT_ID, ENTITY_ID) splits each
-count into true and false. O(C·G) for C candidates.
+count into true and false. O(C) for each generator the run uses, for C candidates.
 """
 import argparse
 import sys
