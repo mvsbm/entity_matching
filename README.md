@@ -69,7 +69,7 @@ procedures of the run's dataset, and Jenkins calls them ([operations](docs/opera
 | Path | Holds |
 |---|---|
 | `nayose/sql/` | the method: functions, records, fit, score, decide, match, lookup, report |
-| `nayose/config.toml` | the values the SQL reads, a section a stage, and the keys and rules a run uses |
+| `nayose/config.toml` | the values the SQL reads, a section a stage, and the generators and rules a run uses |
 | `nayose/mapping.sql` | the input's columns as fields (each deployment has its own) |
 | `nayose/__main__.py`, `__init__.py`, `reporting.py` | the jobs and the run's folder; each stage run with its values; report.txt |
 | `nayose/engines.py` | DuckDB and BigQuery: the translation, the function twins, the deploy's statements |

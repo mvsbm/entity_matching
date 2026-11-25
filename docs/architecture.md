@@ -63,7 +63,7 @@ SQL locally.*
 
 Design time never runs in prod: `scripts/generate.py` (synthetic records with known answers),
 `scripts/benchmark.py` (quality and cost on them), `scripts/train_name_model.py` (`config/kind_names.npz`) and
-`design/`. A run only loads the name model. `scripts/key_quality.py` reads a run, a real one too: each key's
+`design/`. A run only loads the name model. `scripts/key_quality.py` reads a run, a real one too: each generator's
 candidates and matches, as counts alone.
 
 ## 2 · Components
@@ -122,7 +122,7 @@ flowchart TB
   names[/"name_weights: config/kind_names.npz"/]
   records["records.sql: set aside, standardize, tell the kind,<br/>read placeholders as missing, make the copies<br/>O(Δ·L) + O(N)"]
   fit["fit.sql + fit_model (em.py): sample, λ, EM, u on the sample and the file;<br/>an update doesn't run it: it scores with the build's model<br/>O(n + P·K) + O(N + max_pairs·K)"]
-  score["score.sql: rules, the keys' candidates, the gate on big blocks,<br/>the bound, the scores of the pairs touching the batch<br/>O(Δ·b + C·K·L²) + O(N·L)"]
+  score["score.sql: rules, the generators' candidates, the gate on big blocks,<br/>the bound, the scores of the pairs touching the batch<br/>O(Δ·b + C·K·L²) + O(N·L)"]
   decide["decide.sql + entities_of (entities.py): decisions stored,<br/>entities by connected components<br/>O(D + N)"]
   report["report.sql: the run's numbers, no record's value<br/>O(N·F + C)"]
   match["match.sql (the match job): the pairs at a threshold,<br/>less those people said differ<br/>O(C + P·F)"]
@@ -182,7 +182,7 @@ counted over the run's records and the batch's together, which is the `O(N)` ter
 and comparisons read are made, among them `one_byte_hash`, which bounds an edit distance cheaply.
 
 **fit.sql · `O(n + P·K)` on the sample, `O(N + max_pairs·K)` on the file.** The model is Fellegi–Sunter, fitted
-without labels, as Splink 5.0 fits it. The sample is whole postal areas by hash, `fit_rows` records, so the cost of
+without labels, as Splink 5.0 fits it. The sample is whole postal areas by hash, `fit_records` records, so the cost of
 learning does not grow with the file. λ comes from the pairs the near-certain rules find. m comes from EM sessions on
 the sample's pairs that share a phone, then an address (`fit_model`). u is counted exactly where equality allows, from
 how many records hold each value, and is sampled elsewhere. It is measured once on the sample and once on the file,
@@ -193,15 +193,15 @@ because in a bigger file a field agrees by chance less often. The `model` table 
 
 1. The rules, in order, give the certain pairs (`rule_pairs`, in `batch_pairs`). A rule ignores a key value held by `oversized` records
    or more.
-2. The 22 key generators list the pairs worth comparing (`every_key`). Some match a value exactly, some a value with
+2. The 22 generators' keys list the pairs worth comparing (`every_key`). Some match a value exactly, some a value with
    one character deleted, and some a name's reading.
-3. The model's bits (`weights`), and an exact upper bound on each pair's weight from its equalities and lengths alone
-   (`bound_of`). The costly fuzzy comparisons run only on the pairs that could reach `keep_from`.
+3. The model's bits (`level_bits`), and an exact upper bound on each pair's points from its equalities and lengths
+   alone (`bound_of`). The costly fuzzy comparisons run only on the pairs that could reach `keep_from`.
 4. The gate handles blocks of `oversized` records or more. Such a block is joined only if a sample of its pairs holds
    one at `search_floor` points or more (`gated`), because a placeholder's block holds no true match.
-5. The candidates: the pairs the keys list, and every pair of a kept block that touches the batch (`cands`).
-6. The scores: each kept pair gets its level of each comparison and its weight (`weight_of`). `scored` keeps every
-   pair from `keep_from` bits up, and every rule pair.
+5. The candidates: the pairs the keys list, and every pair of a joined block that touches the batch (`cands`).
+6. The scores: each kept pair gets its level of each comparison and its points (`points_of`). `scored` keeps every
+   pair from `keep_from` points up, and every rule pair.
 
 The key index is kept: a job makes the keys of its batch's records and of the records made again, and those join the index once the records made again have left it. Reading the index for the blocks the batch's keys name is the `O(N·L)` term, a scan. Nothing merges here.
 
@@ -217,8 +217,8 @@ job loads:
 |---|---|
 | records | `records` (a record a row: its fields, kind, copies and `batch`), `set_aside`, `placeholders`, `name_weights` |
 | fit | `compared` (a view: the columns the fit and the scores read of a record), `model`, `fit` (λ, sizes, notes, and `fitted`: the model whole, which an update scores with) |
-| score | `rule_keys` and `every_key` (each record's keys: the index lookups read), `cands` (the last batch's candidates, which `scripts/key_quality.py` reads), `scored` (each pair once: `id_l`, `id_r`, its levels, `match_weight`, `match_probability`, `rule`, `sources`) |
-| decide | `decisions` (every decision that changed its pair, the latest flagged), `gold` (each record's `cluster_id`, its kind and its customer's) |
+| score | `rule_keys` and `every_key` (each record's keys: the index lookups read), `cands` (the last batch's candidates, each with its `generators`, which `scripts/key_quality.py` reads), `scored` (each pair once: `id_l`, `id_r`, its levels, `points`, `match_probability`, `rule`, `generators`) |
+| decide | `decisions` (every decision that changed its pair, with its `round`, the latest flagged), `gold` (each record's `entity`, its kind and its entity's: `entity_kind`) |
 | match | `matched` (on BigQuery; here the job writes it to a file) |
 
 ## 4 · Values and columns
@@ -226,7 +226,7 @@ job loads:
 The SQL text never changes between runs. What changes is given to it:
 
 - **`nayose/config.toml`** holds the values, one section per stage file: thresholds, seeds, lists (legal forms,
-  prefectures, kana folding) and sizes. `[score]` names the key generators and rules that a run uses (`keys`,
+  prefectures, kana folding) and sizes. `[score]` names the generators and rules that a run uses (`generators`,
   `rules`). Each one is written once in `score.sql`, and leaving one out of the list runs without it. `nayose.values_of`
   turns a section into the `@name` parameters a stage reads, together with the patterns built from the lists.
   `run_file` gives each statement only the values it names, because BigQuery refuses a parameter that a statement
@@ -240,7 +240,7 @@ The SQL text never changes between runs. What changes is given to it:
 mapping, the name model and the functions the deploy makes, any byte of them, and of every value the stages read as
 the Python makes it from `config.toml`, so two reports show whether two runs ran the same method.
 
-## 5 · An increment
+## 5 · An update
 
 A run grows by batches, and a build is its first batch. Every record carries its `batch` number, and `this_batch`
 names the latest. An update (`nayose.update`) runs the build's stages on a new batch:
@@ -264,8 +264,8 @@ An update costs `O(Δ·(L + b) + C_Δ·K·L²)`, plus `O(N)` scans of the run's 
 Nothing merges by itself. The **match job** (`match.sql`, `O(C + P·F)`) lists the pairs at `@threshold` points or more,
 less those whose latest decision is `no_match`. The list is one table for people, highest points first. Each row has
 an empty `decision`, both records' fields side by side, each comparison's level and bits, the rule that joins the
-pair, the keys that listed it, and whether it may be two people of one household. A threshold below `keep_from` is
-refused, because the run keeps no pair below it.
+pair, the generators whose keys listed it, and whether it may be two people of one household. A threshold below
+`keep_from` is refused, because the run keeps no pair below it.
 
 The **decide job** (`decide.sql`, `O(D + N)`) reads that table back once it is filled in (`given`: `id_l`, `id_r`,
 `decision`, and `why` where given). It refuses a decided row without both IDs, a decision other than `match` or
@@ -287,7 +287,7 @@ alone would score it. It reads what it touches, in three steps:
    and `rule_keys`, clustered by key on BigQuery. Every record of its rule keys comes back, and of its blocks, but of
    an oversized block (`oversized` records or more) only the first 65 by hash: the gate's sample and one more, so the
    record asked about may rank anywhere. Such a block's whole size goes in `block_size`, which `key_blocks` takes
-   for its count, so sizes and the gate's report stay exact. If the gate keeps such a block, every pair of it is a
+   for its count, so sizes and the gate's report stay exact. If the gate joins such a block, every pair of it is a
    candidate: the lookup reads the rest of it from the run's index and scores again.
 3. **The record scored against those records alone,** read by ID, with their entities (`records` and `gold` are
    clustered by ID). `score.sql` scores every candidate, whatever its points, with the run's model as it stands. Its
@@ -298,9 +298,9 @@ run's table of the same name. `engine.scratch` holds them in a transaction rolle
 of their own on BigQuery. With `temp`, the lookup's temporary tables, `run_file` makes every table a statement creates a
 temporary one, and refuses a
 statement that would change a run's table, so a lookup writes nothing. `lookup.sql` gives each entity from `[lookup] at_least` points up, or joined by a rule, with its best
-record, its points, each comparison's level and the keys that listed it. With no such entity, it gives the closest
-record. It also reports, key by key, what was looked up and what the gate decided for big blocks. The cost is
-`O(G)` for its keys, plus `O(G·b + C·K·L²)`.
+record, its points, each comparison's level and the generators whose keys listed it. With no such entity, it gives
+the closest record. It also reports, generator by generator, what was looked up and the gate's verdict on big blocks.
+The cost is `O(G)` for its keys, plus `O(G·b + C·K·L²)`.
 
 ## 8 · Two engines
 

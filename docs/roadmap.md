@@ -27,6 +27,6 @@ Each of these is kept only where the sandbox shows the bill falling, every table
   slot time costs less.
 - **Pruning for small batches.** An update's batch keys passed to the clustered key index as a parameter, as a
   lookup's are, where the batch is small enough to.
-- **Search indexes** on `records.id`, `gold.id` and the key index's `k`, for the lookups.
+- **Search indexes** on `records.id`, `gold.id` and the key index's `key`, for the lookups.
 - **Storage.** Physical (compressed) storage billing, with two days of time travel: each update adds to the key index
   and rewrites the fit's tables, and time travel keeps every version it replaces.

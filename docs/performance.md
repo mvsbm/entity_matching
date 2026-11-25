@@ -12,13 +12,13 @@ What a run costs, and how each figure is measured. BigQuery bills in one of two 
 |---|---|
 | N | the run's records |
 | Δ | the records in a batch (a build: Δ = N) |
-| n | the records the model is fitted on (`[fit] fit_rows`, 100,000; fixed) |
+| n | the records the model is fitted on (`[fit] fit_records`, 100,000; fixed) |
 | S | the pairs u is sampled on (`u_max_pairs`, about 10⁷ on the file; `fit_u_max_pairs`, 10⁶ on the sample) |
 | L | the characters in a name or an address |
 | K | the comparisons in the model (6) |
 | b | the records in one key block |
-| G | the keys a run uses (`[score] keys`, 22) |
-| ΣP | the pairs inside every key's blocks, before they are deduplicated |
+| G | the generators a run uses (`[score] generators`, 22) |
+| ΣP | the pairs inside every generator's blocks, before they are deduplicated |
 | C, C_Δ | the candidate pairs; those touching the batch |
 | P_em | the pairs in EM's blocks (equal phone, equal address) within the sample |
 | D | people's decisions |
@@ -36,7 +36,7 @@ What a run costs, and how each figure is measured. BigQuery bills in one of two 
 | lookup | `lookup.sql` | O(G) + O(G·b + C·K·L²) | the record's keys made alone; the key index read by them; the record scored against its blocks' records alone |
 | report | `report.sql` | O(N·F) + O(C) | each field's fill; the batch's pairs by band |
 
-A build is O(N·L + n + S·K + ΣP + C·K·L²): linear in N while each key's pairs per record stay flat as the file grows (report.txt's BLOCKS shows them). An update's expensive work grows with its batch. Its O(N) part is scans: the run's records for the placeholders, and the key index for the blocks its keys name.
+A build is O(N·L + n + S·K + ΣP + C·K·L²): linear in N while each generator's pairs per record stay flat as the file grows (report.txt's BLOCKS shows them). An update's expensive work grows with its batch. Its O(N) part is scans: the run's records for the placeholders, and the key index for the blocks its keys name.
 
 ## Measuring BigQuery's cost on DuckDB
 
@@ -75,7 +75,7 @@ dollars(match) =    199 × 10⁶ B / 2⁴⁰ × $6.25 = 0.0002 TiB × $6.25 ≈ 
 
 These use the US list price; the region's price differs (`asia-northeast1` is the Terraform default). Score bills over half of the build's bytes. For each stage, the estimator lists the five costliest statements, by their shares of bytes, rows and calls together.
 
-- **At 1B records** (each statement's a·N^b, b from 200k and 1M): records 1.2 TiB, fit 0.3 TiB, decide and match under 0.1 TiB. Score's projection, 5,487 TiB, is no estimate: a phone key's blocks grow with the square of the file only until the gate caps them at 64 records, which no power law fitted between 200k and 1M sees.
+- **At 1B records** (each statement's a·N^b, b from 200k and 1M): records 1.2 TiB, fit 0.3 TiB, decide and match under 0.1 TiB. Score's projection, 5,487 TiB, is no estimate: a phone generator's blocks grow with the square of the file only until the gate caps them at 64 records, which no power law fitted between 200k and 1M sees.
 - **On BigQuery itself:** not measured yet: it needs the sandbox dataset
 
 ## An update, a decision, a lookup
@@ -92,13 +92,14 @@ A lookup reads the key index by its keys, and the records it touches by ID. Of a
 
 The run's tables are DuckDB's. Past `memory_limit` (`--compute memory_limit=8GB`), DuckDB spills to `temp_directory`. Python holds only small results: the fit's counts, the model and report.txt's numbers. Peak memory and `run.duckdb`'s size at 1M: 6.4 GB and 1.14 GB at 1,039,995 records, 0.75 GB of it the key index (`every_key`, `rule_keys`: 43.5M rows; about 1.7 TB at 1B in BigQuery's bytes). For files of growing size, `scripts/benchmark.py` builds each one in a process of its own and writes `reports/benchmark.md`: [reports/benchmark.md](../reports/benchmark.md): a build grows like N^0.35 between 13,019 and 1,039,995 records, 5.1 s to 24.1 s, 1.29 GB to 6.4 GB at peak. A small file's build is mostly the fit's u sample, about ten million pairs at any size.
 
-## Each key's worth
+## Each generator's worth
 
-`python scripts/key_quality.py RUN [--truth TRUTH.parquet] [--points 6]` counts, for each key of a build's run, the pairs it lists
-(candidates), the matches among them (6 points or more with a name compared, or a rule's), and the matches it alone
-finds, which no other key or rule does. It then names the keys that can go together losing no match, and what they
-cost: their index rows and the candidates only they list. Counts alone, so a run on real records can be read anywhere.
-On 1M generated records, 9 of the 22 keys can go together: 19% of `every_key`'s rows and 25% of the candidates.
+`python scripts/key_quality.py RUN [--truth TRUTH.parquet] [--points 6]` counts, for each generator of a build's run,
+the pairs its keys list (candidates), the matches among them (6 points or more with a name compared, or a rule's), and
+the matches it alone finds, which no other generator or rule does. It then names the generators that can go together
+losing no match, and what they cost: their index rows and the candidates only they list. Counts alone, so a run on real
+records can be read anywhere. On 1M generated records, 9 of the 22 generators can go together: 19% of `every_key`'s
+rows and 25% of the candidates.
 
 ## What keeps the cost down
 
@@ -109,7 +110,7 @@ Every speed-up keeps every table the same: `tests/test_parity.py` holds each job
 - **Only the columns compared are read:** fit and score read records through `fit.sql`'s view `compared`, so only those columns are billed.
 - **Oversized blocks checked first:** a block of `oversized` (64) records or more is joined only if a sample of its pairs holds one at `search_floor` or more. A rule leaves out a value held that often.
 - **Placeholders read as missing,** so a dummy phone's block never forms.
-- **A bound before the comparisons:** a pair is compared in full only if the best weight its equalities allow reaches `keep_from`; every rule pair is compared whatever its bound.
+- **A bound before the comparisons:** a pair is compared in full only if the most points its equalities allow reach `keep_from`; every rule pair is compared whatever its bound.
 - **Cheap tests before a comparison call:** an edit distance is never less than the two lengths' difference, nor less than the distance between the values' `one_byte_hash` copies. A Jaro–Winkler is never more than the lengths and the common start allow (`jaro_winkler_most`), nor, for two katakana names, more than the letters both hold allow (`name_jw_most`, from each record's letter bits). Those are tested first, so many pairs never reach the JavaScript (or, on DuckDB, rapidfuzz).
 - **On DuckDB, its own functions** where both strings are one byte per character, and a comparison told its threshold stops once the answer is known (`cl_*_cut`). BigQuery computes it in full.
 - **Each distinct name scored once** by the name model, however many records share it.

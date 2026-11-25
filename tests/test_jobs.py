@@ -25,11 +25,11 @@ def test_a_run_is_built_updated_matched_decided_and_looked_up_in_its_folder(tmp_
     g.df.iloc[half:].to_parquet(tmp_path / "batch.parquet", index=False)
     run = tmp_path / "run"
     code, said = job("build", tmp_path / "first.parquet", "--out", run)
-    assert code == 0 and said["records"] == half and (run / "run.duckdb").is_file() and "full run" in (run / "report.txt").read_text(encoding="utf-8")
+    assert code == 0 and said["records"] == half and (run / "run.duckdb").is_file() and "· build ·" in (run / "report.txt").read_text(encoding="utf-8")
     assert job("build", tmp_path / "first.parquet", "--out", run)[0] == 2  # a folder that holds a run: refused without --overwrite
     code, said = job("update", tmp_path / "batch.parquet", "--out", run)
     told = (run / "report.txt").read_text(encoding="utf-8")
-    assert code == 0 and said["added"] == len(g.df) - half and "increment of" in told
+    assert code == 0 and said["added"] == len(g.df) - half and "· update of " in told
     assert "fit" not in said["steps"] and "build again" in told  # the build's model, and the run has grown past it
     assert job("update", tmp_path / "batch.parquet", "--out", run)[1]["added"] == 0  # given twice: nothing new, nothing written
     code, said = job("match", "--out", run, "--threshold", 6)
@@ -39,8 +39,11 @@ def test_a_run_is_built_updated_matched_decided_and_looked_up_in_its_folder(tmp_
     table.head(3).assign(decision="match")[["id_l", "id_r", "decision"]].to_parquet(tmp_path / "decided.parquet", index=False)
     code, said = job("decide", tmp_path / "decided.parquet", "--out", run)
     assert code == 0 and said["decisions"] == 3 and said["entities"] < len(g.df)
+    older = DuckDB(run / "run.duckdb")  # as a run built before decisions named their round holds them: as batch
+    older.con.execute("ALTER TABLE decisions RENAME COLUMN round TO batch")
+    older.close()
     code, said = job("build", tmp_path / "first.parquet", "--out", run, "--overwrite")
-    assert code == 0 and DuckDB(run / "run.duckdb").value("SELECT COUNT(*) FROM decisions") == 3  # people's decisions stay
+    assert code == 0 and DuckDB(run / "run.duckdb").value("SELECT COUNT(round) FROM decisions") == 3  # people's decisions stay
     code, said = job("lookup", "--out", run, "--record", g.df["CONT_ID"].iloc[0])
     assert code == 0 and said["record"]["id"] == g.df["CONT_ID"].iloc[0] and "entities" in said
     assert job("lookup", "--out", run, "NOPE=1")[0] == 2 and job("lookup", "--out", tmp_path / "none", "--record", "1")[0] == 2
@@ -73,9 +76,9 @@ def test_people_s_decisions_are_read_in_either_order_and_any_width_of_space_once
         return engine.value("SELECT COUNT(*) FROM decisions")
 
     assert given([("b", "a", "　Match "), ("c", "d", None), ("c", "d", "　")]) == 1  # a blank decision skips its row
-    assert engine.rows("SELECT id, cluster_id, resolved_by FROM gold ORDER BY id") == [("a", "a", "review"), ("b", "a", "review"), ("c", "c", None), ("d", "d", None)]
+    assert engine.rows("SELECT id, entity, resolved_by FROM gold ORDER BY id") == [("a", "a", "review"), ("b", "a", "review"), ("c", "c", None), ("d", "d", None)]
     assert given([("a", "b", "match")]) == 1  # given again: nothing new
-    assert given([("a", "b", "no_match")]) == 2 and engine.value("SELECT COUNT(DISTINCT cluster_id) FROM gold") == 4  # the latest stands
+    assert given([("a", "b", "no_match")]) == 2 and engine.value("SELECT COUNT(DISTINCT entity) FROM gold") == 4  # the latest stands
     for rows, columns, refused in [([("a", "b", "same")], None, "match or no_match, not same"),
                                    ([("a", "b", "match"), ("b", "a", "no_match")], None, "decided both ways"),
                                    ([("a", "151", "match")], None, "name no record"),
@@ -96,7 +99,7 @@ def test_an_update_is_refused_once_the_method_its_values_or_the_mapping_changed_
         nayose.update(engine, [tmp_path / "in.parquet"])
 
 
-def test_each_key_s_candidates_and_matches_are_counted_and_the_keys_that_can_go_lose_none(tmp_path, population):
+def test_each_generator_s_candidates_and_matches_are_counted_and_the_generators_that_can_go_lose_none(tmp_path, population):
     import importlib.util
     import duckdb
     import nayose
@@ -110,18 +113,18 @@ def test_each_key_s_candidates_and_matches_are_counted_and_the_keys_that_can_go_
     nayose.build(engine, [tmp_path / "in.parquet"])
     engine.close()
     got = kq.measure(tmp_path, tmp_path / "truth.parquet", 6.0)
-    used = set(nayose.config()["score"]["keys"])
-    assert {r["key"] for r in got["keys"]} == used and got["matches"] >= got["true"] > 0
-    assert all(r["only"] == 0 for r in got["keys"] if r["key"] in got["drop"])
+    used = set(nayose.config()["score"]["generators"])
+    assert {r["generator"] for r in got["generators"]} == used and got["matches"] >= got["true"] > 0
+    assert all(r["only"] == 0 for r in got["generators"] if r["generator"] in got["drop"])
     con = duckdb.connect(str(tmp_path / "run.duckdb"), read_only=True)
-    lost = con.execute("SELECT COUNT(*) FROM scored WHERE rule IS NULL AND match_weight >= 6 AND named AND sources IS NOT NULL "
-                       "AND list_has_all(?, string_split(sources, '+'))", [got["drop"]]).fetchone()[0]
+    lost = con.execute("SELECT COUNT(*) FROM scored WHERE rule IS NULL AND points >= 6 AND named AND generators IS NOT NULL "
+                       "AND list_has_all(?, string_split(generators, '+'))", [got["drop"]]).fetchone()[0]
     text = kq.report(got, truth=True)
     values = {str(v) for v in population.df.stack().unique() if len(str(v)) > 3}
     assert got["drop"] and lost == 0 and not [v for v in values if v in text]  # some go, none lost; no record's value shown
-    listed = con.execute("SELECT COUNT(*) FROM (SELECT unnest(string_split(sources, '+')) FROM cands)").fetchone()[0]
-    alone = con.execute("SELECT COUNT(*) FROM scored WHERE rule IS NULL AND match_weight >= 6 AND named AND sources NOT LIKE '%+%'").fetchone()[0]
-    assert sum(r["candidates"] for r in got["keys"]) == listed and sum(r["only"] for r in got["keys"]) == alone
+    listed = con.execute("SELECT COUNT(*) FROM (SELECT unnest(string_split(generators, '+')) FROM cands)").fetchone()[0]
+    alone = con.execute("SELECT COUNT(*) FROM scored WHERE rule IS NULL AND points >= 6 AND named AND generators NOT LIKE '%+%'").fetchone()[0]
+    assert sum(r["candidates"] for r in got["generators"]) == listed and sum(r["only"] for r in got["generators"]) == alone
 
 
 def test_a_build_runs_on_a_file_where_a_compared_field_is_never_filled(tmp_path, population):

@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import run  # noqa: E402
 from nayose.engines import BigQuery, DuckDB  # noqa: E402
 
-COMPARED = {"scored": "SELECT id_l, id_r, ROUND(match_weight, 9) AS w, rule, sources FROM scored ORDER BY id_l, id_r",
-            "gold": "SELECT id, cluster_id, customer_kind FROM gold ORDER BY id",
+COMPARED = {"scored": "SELECT id_l, id_r, ROUND(points, 9) AS points, rule, generators FROM scored ORDER BY id_l, id_r",
+            "gold": "SELECT id, entity, entity_kind FROM gold ORDER BY id",
             # BigQuery's EDIT_DISTANCE (cl_levenshtein's there) counts characters, as the twin does: 3, and the cut's 2,
             # not the bytes' counts
             "levenshtein": "SELECT cl_levenshtein('東京都港区芝', '東京府北区') AS d, "

@@ -32,7 +32,7 @@ A *normalizer* maps every variant of one fact to one standard form. We use four.
 | コバヤシ | コハヤシ |
 | サトー | サトウ |
 
-**Address parsing** turns any typed address into one key. It converts full-width characters to normal ones, drops the prefecture, rewrites 丁目, 番 and 号 as dashes, and cuts off the building: what follows the first space past the street number. A space before the number, between the city and the town, is dropped and cuts nothing. All three addresses above become `千代田区丸の内1-3-17`.
+**Address parsing** turns any typed address into one standard form. It converts full-width characters to normal ones, drops the prefecture, rewrites 丁目, 番 and 号 as dashes, and cuts off the building: what follows the first space past the street number. A space before the number, between the city and the town, is dropped and cuts nothing. All three addresses above become `千代田区丸の内1-3-17`.
 
 **Company names** lose their legal form before comparing, wherever it stands and however it is written: カブシキガイシャカネコカイソウテン, カネコカイソウテン(カ) and ｶﾌﾞｼｷｶﾞｲｼｬｶﾈｺｶｲｿｳﾃﾝ all become カネコカイソウテン.
 
@@ -58,14 +58,14 @@ A field built this way is filled more often than any of its sources. A blank val
 
 Normalizing is not perfectly safe:
 
-- **Folding can merge different names.** ショウジ and ショウシ are different names, but both fold to シヨウシ. That's why a folded match is a level of its own in the model, with its own weight ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
-- **Cutting the building merges neighbours.** Two flats in one building get the same address key. Different households at one address are a known source of look-alikes.
+- **Folding can merge different names.** ショウジ and ショウシ are different names, but both fold to シヨウシ. That's why a folded match is a level of its own in the model ("fold exact"), with its own weight ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+- **Cutting the building merges neighbours.** Two flats in one building get the same standard address. Different households at one address are a known source of look-alikes.
 
 **In short:** normalize first, so that the same fact is written once.
 
 ## Challenge: how close is "close"?
 
-After folding, マツモトヒサオ and マツモトヒサウ still differ in one character. We need a number that says how close two strings are. The right number depends on **how the field goes wrong**. A phone number goes wrong differently from a name, so each field gets a function built for its kind of mistake.
+After folding, マツモトヒサオ and マツモトヒサウ still differ in one character. We need a number that says how close two strings are. The right number depends on **how the field goes wrong**. A phone number goes wrong differently from a name, so each field gets a function built for how it goes wrong.
 
 The functions come in four families:
 
@@ -167,14 +167,14 @@ $$JW = J + 0.1\,\ell\,(1 - J)$$
 - **It is forgiving at the end and strict at the start.**
 - **It runs in O(m·n)** in the worst case. Names are short, so it is cheap.
 
-**Where we use it, and why.** **Names in the model:** "very close" at 0.95 or more, "close" at 0.75 or more; company names, with the legal form removed, at 0.8 or more. Matt Jaro and William Winkler designed it at the US Census Bureau for exactly this job: comparing personal names with typing errors. Three of its properties fit our names:
+**Where we use it, and why.** **Names in the model:** "fold JW high" at 0.95 or more, "fold JW low" at 0.75 or more, both after folding; company names, with the legal form removed, "JW low" at 0.8 or more. Matt Jaro and William Winkler designed it at the US Census Bureau for exactly this job: comparing personal names with typing errors. Three of its properties fit our names:
 1. It judges a slip against the length of the name, as a person would.
 2. The first character is the one people most often get right. Folding has already removed the kana variants that do touch it, such as ガトウ → カトウ.
 3. Japanese names start with the surname, so the shared start is usually the shared surname.
 
 The rules also use Jaro–Winkler for addresses (0.9 or more). A normalized address shares a long start, the city and town, and differs, if at all, near the end.
 
-**Its blind spot.** Different people who share a surname score high. サトウヒロシ and サトウタカシ reach **0.844**, which counts as "close" (at least 0.75). That's why "close" is weak evidence in the model, worth only about 6 bits ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+**Its blind spot.** Different people who share a surname score high. サトウヒロシ and サトウタカシ reach **0.844**, which counts as "fold JW low" (at least 0.75). That's why "fold JW low" is weak evidence in the model, worth only about 6 bits ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
 
 ### Jaccard similarity: shared characters, in any order
 
@@ -228,7 +228,7 @@ Reading down each column shows what each function notices:
 
 | Field | How it goes wrong | Function | Why this one | Stage |
 |---|---|---|---|---|
-| person name | a kana wrong or dropped (spelling variants are folded first) | Jaro–Winkler: ≥ 0.95 very close, ≥ 0.75 close | judges a slip against the name's length, and rewards the shared surname at the start | model |
+| person name | a kana wrong or dropped (spelling variants are folded first) | Jaro–Winkler: ≥ 0.95 fold JW high, ≥ 0.75 fold JW low | judges a slip against the name's length, and rewards the shared surname at the start | model |
 | | | Damerau–Levenshtein ≤ 2, on folded names | a simple count, safe because the rule also needs an exact CIF ID or phone | rules |
 | company name | the legal form before or after the name, written in several ways | removed by the normalizer | then order doesn't matter | both |
 | | a kana wrong | Jaro–Winkler ≥ 0.8, with the legal form removed | as for person names | model |
@@ -266,7 +266,7 @@ The SQL calls character-level versions of each function by name: `cl_jaro_winkle
 
 ### Why it matters
 
-The gap is not cosmetic. Our model treats Jaro–Winkler at or above 0.95 as "very close", worth far more evidence than "close". The byte-level score of 0.981 would lift this pair over that line. Every katakana pair would look closer than it really is.
+The gap is not cosmetic. Our model treats Jaro–Winkler at or above 0.95 as "fold JW high", worth far more evidence than "fold JW low". The byte-level score of 0.981 would lift this pair over that line. Every katakana pair would look closer than it really is.
 
 **In short:** count characters, not bytes.
 
@@ -277,7 +277,7 @@ The gap is not cosmetic. Our model treats Jaro–Winkler at or above 0.95 as "ve
 - `nayose/config.toml` `[records]`: `kana_fold_from` and `kana_fold_to` (the folding table), `legal_forms`, `legal_front`, `legal_end`, `prefectures`; `nayose/__init__.py`: `legal_pattern`, the legal forms where banks write them
 - `nayose/sql/functions.sql`: 2. The comparisons (`name_score` and `name_level` (`gamma_name` the gate's), `gamma_company`, `gamma_address`, `gamma_phone`, `gamma_cif`, `gamma_birth`); 3. The rules' fuzzy tests (`near_name`, `near_company`, `near_address`, `near_phone`)
 - the `cl_*` functions: `nayose/strings.js` (BigQuery), `nayose/engines.py` (DuckDB: `FUNCTIONS`, `compare`, `native`; `avoided`, the forms refused)
-- `tests/test_functions.py`: the JavaScript, the twins and DuckDB's own functions score alike; `tests/test_records.py`: the intake, and the address key
+- `tests/test_functions.py`: the JavaScript, the twins and DuckDB's own functions score alike; `tests/test_records.py`: the intake, and the address copy
 
 ## Further reading
 

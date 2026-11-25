@@ -20,7 +20,7 @@ def rounded(x):  # a float to 12 significant digits, in lists and dicts too: a l
     return float(f"{x:.12g}") if isinstance(x, float) else [rounded(v) for v in x] if isinstance(x, (list, tuple)) else {k: rounded(v) for k, v in x.items()} if isinstance(x, dict) else x
 
 
-@pytest.mark.parametrize("sizes", [{}, {"fit_rows": 300, "fit_u_max_pairs": 2000, "u_max_pairs": 5000}], ids=["whole", "sampled"])
+@pytest.mark.parametrize("sizes", [{}, {"fit_records": 300, "fit_u_max_pairs": 2000, "u_max_pairs": 5000}], ids=["whole", "sampled"])
 def test_the_model_is_as_recorded(tmp_path, population, monkeypatch, sizes):
     g = population
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
@@ -32,7 +32,7 @@ def test_the_model_is_as_recorded(tmp_path, population, monkeypatch, sizes):
     nayose.fit(engine)
     notes = json.loads(engine.value("SELECT notes FROM fit"))
     got = rounded(dict(levels=[list(r) for r in engine.rows("SELECT comparison, label, m, u, file_m, file_u FROM model ORDER BY comparison, gamma")],
-                       fit=list(engine.rows("SELECT probability, fit_rows FROM fit")[0]),
+                       fit=list(engine.rows("SELECT probability, fit_records FROM fit")[0]),
                        notes={k: notes[k] for k in ("filled", "skipped", "adjusted", "em_pairs", "file_adjusted")}))
     key, said = f"model_{'sampled' if sizes else 'whole'}", hashlib.sha256(json.dumps(got, sort_keys=True).encode()).hexdigest()[:16]
     if os.environ.get("NAYOSE_PARITY_WRITE"):

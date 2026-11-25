@@ -41,7 +41,7 @@ def test_each_job_is_a_procedure_of_its_stages_with_every_value_it_reads_declare
     out = procedures("p.run")
     made = {re.search(r"FUNCTION `p\.run`\.(\w+)\(", s)[1]: s for s in out if "CREATE OR REPLACE FUNCTION" in s}
     jobs = {re.search(r"PROCEDURE `p\.run`\.(\w+)\(", s)[1]: s for s in out if "CREATE OR REPLACE PROCEDURE" in s}
-    assert set(jobs) == {"build", "update", "decide", "match"} and {"read_value", "name_level", "weight_of", "bound_of", "household"} <= set(made)
+    assert set(jobs) == {"build", "update", "decide", "match"} and {"read_value", "name_level", "points_of", "bound_of", "household"} <= set(made)
     for job, sql in jobs.items():
         body = sql.split("BEGIN\n", 1)[1].rsplit(";\nEND", 1)[0]
         code = CODE.sub("", body)

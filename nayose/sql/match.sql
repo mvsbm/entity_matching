@@ -3,7 +3,7 @@
 -- Each row holds:
 --   an empty decision, for people to fill in with match or no_match;
 --   the pair, its points and its probability;
---   the rule that also joins the pair, if one does, and the keys that listed it (sources);
+--   the rule that also joins the pair, if one does, and the generators whose keys listed it;
 --   whether a name was compared (named), and whether the pair may be two people of one household;
 --   both records' fields side by side, and each comparison's level with the bits it earned.
 -- People give the filled table back to the decide job (decide.sql).
@@ -45,8 +45,8 @@ WITH pair_records AS (
   FROM records
 )
 SELECT
-  CAST(NULL AS STRING) AS decision, s.id_l, s.id_r, s.match_weight, s.match_probability, s.rule, s.named,
-  household(x, y) AS household, s.sources,
+  CAST(NULL AS STRING) AS decision, s.id_l, s.id_r, s.points, s.match_probability, s.rule, s.named,
+  household(x, y) AS household, s.generators,
   x.person_name AS person_name_l, y.person_name AS person_name_r,
   x.given_name AS given_name_l, y.given_name AS given_name_r,
   x.company_name AS company_name_l, y.company_name AS company_name_r,
@@ -65,7 +65,7 @@ JOIN shown AS a ON a.comparison = 'address' AND a.gamma = s.gamma_address
 JOIN shown AS p ON p.comparison = 'phone' AND p.gamma = s.gamma_phone
 JOIN shown AS i ON i.comparison = 'cif' AND i.gamma = s.gamma_cif
 JOIN shown AS b ON b.comparison = 'birth' AND b.gamma = s.gamma_birth
-WHERE s.match_weight >= @threshold
+WHERE s.points >= @threshold
   AND NOT EXISTS (SELECT 1 FROM decisions AS d
                   WHERE d.id_l = s.id_l AND d.id_r = s.id_r AND d.latest AND d.decision = 'no_match')
-ORDER BY s.match_weight DESC, s.id_l, s.id_r;
+ORDER BY s.points DESC, s.id_l, s.id_r;
