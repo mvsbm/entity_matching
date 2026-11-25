@@ -76,7 +76,39 @@ dollars(match) =    199 × 10⁶ B / 2⁴⁰ × $6.25 = 0.0002 TiB × $6.25 ≈ 
 These use the US list price; the region's price differs (`asia-northeast1` is the Terraform default). Score bills over half of the build's bytes. For each stage, the estimator lists the five costliest statements, by their shares of bytes, rows and calls together.
 
 - **At 1B records** (each statement's a·N^b, b from 200k and 1M): records 1.2 TiB, fit 0.3 TiB, decide and match under 0.1 TiB. Score's projection, 5,487 TiB, is no estimate: a phone generator's blocks grow with the square of the file only until the gate caps them at 64 records, which no power law fitted between 200k and 1M sees.
-- **On BigQuery itself:** not measured yet: it needs the sandbox dataset
+- **On BigQuery itself:** see the next section.
+
+## On BigQuery itself
+
+Measured on a BigQuery sandbox (`deploy/bigquery_check.py --plans`, asia-northeast1, on-demand). A build is its
+procedure's wall clock and BigQuery's own sums over the statements it ran; the update adds the second half of the
+file. These are the parity scenario's runs (two crowds of 70, a placeholder the update finds):
+
+| Records (build → after update) | build: wall clock, slot time, billed | update: wall clock, slot time, billed | decide |
+|---|---|---|---|
+| 386 → 702 | 206 s, 259 slot-s, 1,248 MB | 143 s, 169 slot-s, 1,070 MB | 29 s |
+| 2,734 → 5,198 | 210 s, 233 slot-s, 1,248 MB | 146 s, 206 slot-s, 1,070 MB | 30 s |
+| 37,619 → 75,169 | 246 s, 321 slot-s, 1,318 MB | 154 s, 265 slot-s, 1,145 MB | 34 s |
+
+Up to 75k records, a job's cost hardly depends on its size: it is the fixed cost of each statement.
+
+- **Each statement waits about 1.2 s** to be scheduled, besides its own run: 113 of the build's 246 s, for 94
+  statements (each `IF` condition and refusal check is one). An update of a few records still takes about 2.5
+  minutes.
+- **A statement that calls the JavaScript comparisons costs 20–30 slot-seconds** whatever it compares: the update's
+  `gated` read one row for 26. Past that, a scored pair costs about 1.6 ms (`batch_scored`, 16,298 pairs in 27
+  slot-seconds). On-demand billing charges bytes, not slots.
+- **A Python function takes 13–15 s** to start: the fit (`learned`, in a build) and the entities (`joined`, in a
+  build, an update and a decide).
+- **The fit's u sample** (`u_patterns`) is the longest statement, 36 s: it compares each sampled pair at every
+  level, about 10 ms a pair. The sample's size is fixed (`[fit] fit_records`), so this cost doesn't grow with N.
+- **Bytes billed are mostly BigQuery's 10 MB minimum** a table read: 49 of the build's 52 billing statements billed a
+  multiple of it at 37,619 records, 1,318 MB billed for 333 MB processed.
+- **`scripts/estimate_cost.py` is calibrated:** for that build it estimates 1,198 MB billed for records, fit, score
+  and decide, and BigQuery billed 1,150 MB for them (report.sql's 168 MB aside): within 4%, above.
+
+A sandbox stores 10 GiB in its life, so a build of a million records (about 8 GB written) is left to staging,
+where the scale rehearsal measures what grows with N ([roadmap](roadmap.md)).
 
 ## An update, a decision, a lookup
 
