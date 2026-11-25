@@ -50,58 +50,7 @@ JOIN (SELECT id FROM records WHERE @refit ORDER BY er_hash(postal_code__first3),
   USING (id);
 
 
--- 2. λ is how likely two random records are one entity. fit_model estimates it from prior_pairs, the pairs that
---    any of the near-certain rules find in the sample, each pair counted once. Each rule's own count is kept too,
---    because a rule that finds no pair in the sample is skipped, and the report names it.
---    The near-certain rules are score.sql's X1, X2 and X4. X3 (customer ID and phone) and X5 (company name, address
---    code and phone) are left out, because [fit] prior_recall is the share of all matches that X1, X2 and X4 find,
---    as measured on labelled data, and λ divides prior_pairs by it.
-CREATE OR REPLACE TEMP TABLE fit_prior AS
-SELECT
-  (SELECT COUNT(*) FROM fit_sample) AS records,
-  (SELECT COUNT(*) FROM (
-     SELECT x.id AS l, y.id AS r FROM fit_sample AS x JOIN fit_sample AS y  -- X1, customer ID and full name
-       ON x.customer_id = y.customer_id AND x.full_name = y.full_name AND x.id < y.id
-     UNION DISTINCT
-     SELECT x.id, y.id FROM fit_sample AS x JOIN fit_sample AS y  -- X2, customer ID and company name
-       ON x.customer_id = y.customer_id AND x.company_name = y.company_name AND x.id < y.id
-     UNION DISTINCT
-     SELECT x.id, y.id FROM fit_sample AS x JOIN fit_sample AS y  -- X4, full name, address code and phone
-       ON x.full_name = y.full_name AND x.address_code = y.address_code AND x.phone = y.phone AND x.id < y.id
-  )) AS prior_pairs,
-  (SELECT COALESCE(SUM(pairs_of(n)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample  -- X1's pairs
-     WHERE customer_id IS NOT NULL AND full_name IS NOT NULL GROUP BY customer_id, full_name)) AS cif_name,
-  (SELECT COALESCE(SUM(pairs_of(n)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample  -- X2's pairs
-     WHERE customer_id IS NOT NULL AND company_name IS NOT NULL GROUP BY customer_id, company_name)) AS cif_company,
-  (SELECT COALESCE(SUM(pairs_of(n)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample  -- X4's pairs
-     WHERE full_name IS NOT NULL AND address_code IS NOT NULL AND phone IS NOT NULL
-     GROUP BY full_name, address_code, phone)) AS name_code_phone;
-
-
--- 3. EM learns in sessions, one for each field it pairs records by ([fit] em_sessions). The phone session's pairs are
---    the sample's pairs that share a phone, and the address session's share an address. Each pattern of levels is
---    stored once, with its count of pairs. A session can't learn the comparison its field chose the pairs by, as
---    every pair agrees on it, so that comparison is NULL in its session.
-CREATE OR REPLACE TEMP TABLE em_patterns AS
-WITH paired AS (  -- a pair keeps its two records whole, and name_score runs once a pair for name_level
-  SELECT 'phone' AS session, x, y, name_score(x, y) AS s_name
-  FROM fit_sample AS x JOIN fit_sample AS y ON x.phone = y.phone AND x.id < y.id
-  UNION ALL
-  SELECT 'address', x, y, name_score(x, y)
-  FROM fit_sample AS x JOIN fit_sample AS y ON x.address__address = y.address__address AND x.id < y.id
-)
-SELECT session, name, company, address, phone, cif, birth, COUNT(*) AS pairs
-FROM (
-  SELECT session, name_level(x, y, s_name) AS name, gamma_company(x, y) AS company,
-         IF(session = 'address', CAST(NULL AS INT64), gamma_address(x, y)) AS address,
-         IF(session = 'phone', CAST(NULL AS INT64), gamma_phone(x, y)) AS phone, gamma_cif(x, y) AS cif,
-         gamma_birth(x, y) AS birth
-  FROM paired
-)
-GROUP BY session, name, company, address, phone, cif, birth;
-
-
--- 4. u is how often two different entities land in a level. It is counted on the sample, which the model is
+-- 2. u is how often two different entities land in a level. It is counted on the sample, which the model is
 --    learned with, and on the file, which the scores use. The two differ because in a bigger file, a field whose
 --    values grow with the file agrees by chance less often. A comparison's equality levels before its first fuzzy
 --    level are counted exactly, from how many records hold each value, never pair by pair. So is the one-edit level
@@ -110,7 +59,7 @@ GROUP BY session, name, company, address, phone, cif, birth;
 --    Each count reads u_records, the two scopes' records, as a WITH of its own: it costs what a view would, and a
 --    view can't read the temporary fit_sample.
 
--- 4a. u_outside counts each comparison's pairs outside its missing level, and each u is a share of these pairs. A
+-- 2a. u_outside counts each comparison's pairs outside its missing level, and each u is a share of these pairs. A
 --     pair is missing if each of the comparison's columns is empty on at least one side. A record's mask has a bit
 --     for each of the comparison's columns it fills, so two records make a missing pair if their masks share no bit.
 --     u_outside is every pair less the missing ones.
@@ -141,7 +90,7 @@ SELECT c.scope, c.comparison, all_pairs.pairs - COALESCE(missing.pairs, 0) AS pa
 FROM (SELECT DISTINCT scope, comparison FROM u_masks) AS c
 JOIN all_pairs USING (scope) LEFT JOIN missing USING (scope, comparison);
 
--- 4b. u_counted counts each comparison's equality levels, up to its first fuzzy level. The pairs equal on a set of
+-- 2b. u_counted counts each comparison's equality levels, up to its first fuzzy level. The pairs equal on a set of
 --     columns, all filled, number Σ n(n−1)/2, with n the number of records holding each combination of values. A
 --     level that follows others counts only the pairs equal on it and on no level before it. Address's 'same address'
 --     level counts the pairs equal on the address code or on the address. Both come by inclusion–exclusion, and sign
@@ -187,7 +136,7 @@ FROM (
 )
 GROUP BY scope, comparison, label;
 
--- 4c. u_one_edit counts the one-edit level ('one digit off') that follows equality for phone, cif and birth. It counts
+-- 2c. u_one_edit counts the one-edit level ('one digit off') that follows equality for phone, cif and birth. It counts
 --     by keys, never pair by pair. Two values of one length that differ by one substitution share exactly one key,
 --     the value without its i-th character, together with i. For cif and birth, Damerau–Levenshtein also counts two
 --     swapped neighbours as one edit. Two such values share exactly one swap key, the value with its i-th and
@@ -243,18 +192,7 @@ LEFT JOIN substituted AS s USING (scope, comparison)
 LEFT JOIN swapped AS sw USING (scope, comparison)
 LEFT JOIN longer AS lg USING (scope, comparison);
 
--- 4d. u_filled counts each scope's records, and for each comparison the records that fill its column. For address it
---     takes the most filled of its three columns. From these, fit_model estimates how many sampled pairs fill each
---     comparison, and that number bounds the u of a level that no sampled pair reached.
-CREATE OR REPLACE TEMP TABLE u_filled AS
-WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared)
-SELECT
-  scope, COUNT(*) AS records, COUNT(person_name) AS name, COUNT(company_name) AS company,
-  GREATEST(COUNT(address_code), COUNT(address), COUNT(postal_code)) AS address,
-  COUNT(phone) AS phone, COUNT(customer_id) AS cif, COUNT(birth_date) AS birth
-FROM u_records GROUP BY scope;
-
--- 4e. The other levels' u is sampled as Splink samples it. A scope's records are drawn if the hash of their ID and
+-- 2d. The other levels' u is sampled as Splink samples it. A scope's records are drawn if the hash of their ID and
 --     @seed falls under the scope's cut. Every pair of a scope's drawn records gets its level in each comparison,
 --     and the levels are counted. A comparison isn't sampled if all its levels are counted exactly. That happens if
 --     its exact and one-edit levels both hold pairs, and some pairs are left for its else level. u_plan tells, for
@@ -314,49 +252,112 @@ FROM (  -- a subquery, so that the GROUP BY's phone, cif and birth name the leve
 )
 GROUP BY scope, name, company, address, phone, cif, birth;
 
-CREATE OR REPLACE TEMP TABLE u_sampled AS
-SELECT scope, 'name' AS comparison, name AS gamma, SUM(pairs) AS pairs FROM u_patterns GROUP BY scope, name
-UNION ALL SELECT scope, 'company', company, SUM(pairs) FROM u_patterns GROUP BY scope, company
-UNION ALL SELECT scope, 'address', address, SUM(pairs) FROM u_patterns GROUP BY scope, address
-UNION ALL SELECT scope, 'phone', phone, SUM(pairs) FROM u_patterns WHERE phone IS NOT NULL GROUP BY scope, phone
-UNION ALL SELECT scope, 'cif', cif, SUM(pairs) FROM u_patterns WHERE cif IS NOT NULL GROUP BY scope, cif
-UNION ALL SELECT scope, 'birth', birth, SUM(pairs) FROM u_patterns WHERE birth IS NOT NULL GROUP BY scope, birth;
-
-
+-- 3. fit_model learns the model from every count above, passed as one JSON text, and returns it as one JSON text. A
+--    build given a model passes it (fit), which fit_model keeps. The answer holds each level's m and u as fitted
+--    on the sample, its file_m and file_u on the file, and its bits from those, which the scores add. What only
+--    fit_model reads is a WITH here, each read once: the levels, λ's counts, EM's patterns, the records that fill
+--    each comparison, and the sampled levels' pairs.
+CREATE OR REPLACE TEMP TABLE learned AS
+WITH
 -- levels lists each comparison's levels, numbered as functions.sql's section 2 numbers them, with what the fit
 -- reads of a level. agreement is exact (an equality alone), fuzzy (a distance or a similarity) or else.
 -- position is the comparison's place in the model.
-CREATE OR REPLACE TEMP TABLE levels AS
-SELECT * FROM UNNEST([
-  STRUCT(1 AS position, 'name' AS comparison, 6 AS gamma, 'exact' AS label, 'exact' AS agreement),
-  STRUCT(1, 'name', 5, 'fold exact', 'exact'),
-  STRUCT(1, 'name', 4, 'same reading', 'exact'),
-  STRUCT(1, 'name', 3, 'fold JW high', 'fuzzy'),
-  STRUCT(1, 'name', 2, 'given name', 'exact'),
-  STRUCT(1, 'name', 1, 'fold JW low', 'fuzzy'),
-  STRUCT(1, 'name', 0, 'else', 'else'),
-  STRUCT(2, 'company', 2, 'exact', 'exact'),
-  STRUCT(2, 'company', 1, 'JW low', 'fuzzy'),
-  STRUCT(2, 'company', 0, 'else', 'else'),
-  STRUCT(3, 'address', 3, 'same address', 'exact'),
-  STRUCT(3, 'address', 2, 'address close', 'fuzzy'),
-  STRUCT(3, 'address', 1, 'same postal', 'exact'),
-  STRUCT(3, 'address', 0, 'else', 'else'),
-  STRUCT(4, 'phone', 2, 'exact', 'exact'),
-  STRUCT(4, 'phone', 1, 'one digit off', 'fuzzy'),
-  STRUCT(4, 'phone', 0, 'else', 'else'),
-  STRUCT(5, 'cif', 2, 'exact', 'exact'),
-  STRUCT(5, 'cif', 1, 'one digit off', 'fuzzy'),
-  STRUCT(5, 'cif', 0, 'else', 'else'),
-  STRUCT(6, 'birth', 2, 'exact', 'exact'),
-  STRUCT(6, 'birth', 1, 'one digit off', 'fuzzy'),
-  STRUCT(6, 'birth', 0, 'else', 'else')
-]);
-
--- 5. fit_model learns the model from every count above, passed as one JSON text, and returns it as one JSON text. A
---    build given a model passes it (fit), which fit_model keeps. The answer holds each level's m and u as fitted
---    on the sample, its file_m and file_u on the file, and its bits from those, which the scores add.
-CREATE OR REPLACE TEMP TABLE learned AS
+levels AS (
+  SELECT * FROM UNNEST([
+    STRUCT(1 AS position, 'name' AS comparison, 6 AS gamma, 'exact' AS label, 'exact' AS agreement),
+    STRUCT(1, 'name', 5, 'fold exact', 'exact'),
+    STRUCT(1, 'name', 4, 'same reading', 'exact'),
+    STRUCT(1, 'name', 3, 'fold JW high', 'fuzzy'),
+    STRUCT(1, 'name', 2, 'given name', 'exact'),
+    STRUCT(1, 'name', 1, 'fold JW low', 'fuzzy'),
+    STRUCT(1, 'name', 0, 'else', 'else'),
+    STRUCT(2, 'company', 2, 'exact', 'exact'),
+    STRUCT(2, 'company', 1, 'JW low', 'fuzzy'),
+    STRUCT(2, 'company', 0, 'else', 'else'),
+    STRUCT(3, 'address', 3, 'same address', 'exact'),
+    STRUCT(3, 'address', 2, 'address close', 'fuzzy'),
+    STRUCT(3, 'address', 1, 'same postal', 'exact'),
+    STRUCT(3, 'address', 0, 'else', 'else'),
+    STRUCT(4, 'phone', 2, 'exact', 'exact'),
+    STRUCT(4, 'phone', 1, 'one digit off', 'fuzzy'),
+    STRUCT(4, 'phone', 0, 'else', 'else'),
+    STRUCT(5, 'cif', 2, 'exact', 'exact'),
+    STRUCT(5, 'cif', 1, 'one digit off', 'fuzzy'),
+    STRUCT(5, 'cif', 0, 'else', 'else'),
+    STRUCT(6, 'birth', 2, 'exact', 'exact'),
+    STRUCT(6, 'birth', 1, 'one digit off', 'fuzzy'),
+    STRUCT(6, 'birth', 0, 'else', 'else')
+  ])
+),
+-- λ is how likely two random records are one entity. fit_model estimates it from prior_pairs, the pairs that
+-- any of the near-certain rules find in the sample, each pair counted once. Each rule's own count is kept too,
+-- because a rule that finds no pair in the sample is skipped, and the report names it.
+-- The near-certain rules are score.sql's X1, X2 and X4. X3 (customer ID and phone) and X5 (company name, address
+-- code and phone) are left out, because [fit] prior_recall is the share of all matches that X1, X2 and X4 find,
+-- as measured on labelled data, and λ divides prior_pairs by it.
+fit_prior AS (
+  SELECT
+    (SELECT COUNT(*) FROM fit_sample) AS records,
+    (SELECT COUNT(*) FROM (
+       SELECT x.id AS l, y.id AS r FROM fit_sample AS x JOIN fit_sample AS y  -- X1, customer ID and full name
+         ON x.customer_id = y.customer_id AND x.full_name = y.full_name AND x.id < y.id
+       UNION DISTINCT
+       SELECT x.id, y.id FROM fit_sample AS x JOIN fit_sample AS y  -- X2, customer ID and company name
+         ON x.customer_id = y.customer_id AND x.company_name = y.company_name AND x.id < y.id
+       UNION DISTINCT
+       SELECT x.id, y.id FROM fit_sample AS x JOIN fit_sample AS y  -- X4, full name, address code and phone
+         ON x.full_name = y.full_name AND x.address_code = y.address_code AND x.phone = y.phone AND x.id < y.id
+    )) AS prior_pairs,
+    (SELECT COALESCE(SUM(pairs_of(n)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample  -- X1's pairs
+       WHERE customer_id IS NOT NULL AND full_name IS NOT NULL GROUP BY customer_id, full_name)) AS cif_name,
+    (SELECT COALESCE(SUM(pairs_of(n)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample  -- X2's pairs
+       WHERE customer_id IS NOT NULL AND company_name IS NOT NULL GROUP BY customer_id, company_name)) AS cif_company,
+    (SELECT COALESCE(SUM(pairs_of(n)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample  -- X4's pairs
+       WHERE full_name IS NOT NULL AND address_code IS NOT NULL AND phone IS NOT NULL
+       GROUP BY full_name, address_code, phone)) AS name_code_phone
+),
+-- EM learns in sessions, one for each field it pairs records by ([fit] em_sessions). The phone session's pairs are
+-- the sample's pairs that share a phone, and the address session's share an address. Each pattern of levels is
+-- stored once, with its count of pairs. A session can't learn the comparison its field chose the pairs by, as
+-- every pair agrees on it, so that comparison is NULL in its session.
+em_pairs AS (  -- a pair keeps its two records whole, and name_score runs once a pair for name_level
+  SELECT 'phone' AS session, x, y, name_score(x, y) AS s_name
+  FROM fit_sample AS x JOIN fit_sample AS y ON x.phone = y.phone AND x.id < y.id
+  UNION ALL
+  SELECT 'address', x, y, name_score(x, y)
+  FROM fit_sample AS x JOIN fit_sample AS y ON x.address__address = y.address__address AND x.id < y.id
+),
+em_patterns AS (
+  SELECT session, name, company, address, phone, cif, birth, COUNT(*) AS pairs
+  FROM (
+    SELECT session, name_level(x, y, s_name) AS name, gamma_company(x, y) AS company,
+           IF(session = 'address', CAST(NULL AS INT64), gamma_address(x, y)) AS address,
+           IF(session = 'phone', CAST(NULL AS INT64), gamma_phone(x, y)) AS phone, gamma_cif(x, y) AS cif,
+           gamma_birth(x, y) AS birth
+    FROM em_pairs
+  )
+  GROUP BY session, name, company, address, phone, cif, birth
+),
+-- u_filled counts each scope's records, and for each comparison the records that fill its column. For address it
+-- takes the most filled of its three columns. From these, fit_model estimates how many sampled pairs fill each
+-- comparison, and that number bounds the u of a level that no sampled pair reached.
+u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared),
+u_filled AS (
+  SELECT
+    scope, COUNT(*) AS records, COUNT(person_name) AS name, COUNT(company_name) AS company,
+    GREATEST(COUNT(address_code), COUNT(address), COUNT(postal_code)) AS address,
+    COUNT(phone) AS phone, COUNT(customer_id) AS cif, COUNT(birth_date) AS birth
+  FROM u_records GROUP BY scope
+),
+-- u_sampled counts the pairs the sampled levels hold, a comparison at a time, from u_patterns.
+u_sampled AS (
+  SELECT scope, 'name' AS comparison, name AS gamma, SUM(pairs) AS pairs FROM u_patterns GROUP BY scope, name
+  UNION ALL SELECT scope, 'company', company, SUM(pairs) FROM u_patterns GROUP BY scope, company
+  UNION ALL SELECT scope, 'address', address, SUM(pairs) FROM u_patterns GROUP BY scope, address
+  UNION ALL SELECT scope, 'phone', phone, SUM(pairs) FROM u_patterns WHERE phone IS NOT NULL GROUP BY scope, phone
+  UNION ALL SELECT scope, 'cif', cif, SUM(pairs) FROM u_patterns WHERE cif IS NOT NULL GROUP BY scope, cif
+  UNION ALL SELECT scope, 'birth', birth, SUM(pairs) FROM u_patterns WHERE birth IS NOT NULL GROUP BY scope, birth
+)
 SELECT fit_model(TO_JSON_STRING(STRUCT(
   (SELECT ARRAY_AGG(t) FROM levels AS t) AS levels, (SELECT ARRAY_AGG(t) FROM fit_prior AS t) AS prior,
   (SELECT ARRAY_AGG(t) FROM em_patterns AS t) AS patterns, (SELECT ARRAY_AGG(t) FROM u_outside AS t) AS outside,
