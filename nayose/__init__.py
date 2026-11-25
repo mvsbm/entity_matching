@@ -52,7 +52,8 @@ MAPPED = ("input_rows", "mapped")  # the tables a mapping makes, for records.sql
 METHOD = "CREATE OR REPLACE TABLE method AS SELECT @fingerprint AS fingerprint"  # a build's last statement
 CHANGED = ("the method, its values or the mapping changed since the run was built: "
            "a batch or a lookup would be scored otherwise")
-UNCHANGED = f"SELECT IF((SELECT fingerprint FROM method) <> @fingerprint, ERROR('{CHANGED}; build the run again'), 0)"
+UNCHANGED = (f"SELECT IF((SELECT fingerprint FROM method) IS DISTINCT FROM @fingerprint, "  # a NULL one differs too
+             f"ERROR('{CHANGED}; build the run again'), 0)")
 QUERY = "￿asked"  # the ID of a record looked up by its values: no record has it, and it sorts after every ID
 SHOWN = ("full_name", "person_name", "company_name", "address", "postal_code", "phone", "birth_date", "customer_id")
 BLANK = "".join(ch for ch in map(chr, range(0x3001)) if ch.isspace())  # a blank value's characters: Python's whitespace
@@ -65,6 +66,8 @@ FIELDS = (  # a record's fields, as report.txt lists them
 PARAMETER = re.compile(r"@(\w+)")  # a value a statement reads, by name: run_file passes it, the deploy declares it
 NOT_CODE = re.compile(  # a -- comment, or any of BigQuery's strings and quoted names: the parts that aren't code
     r"""--[^\n]*|'''.*?'''|\"\"\".*?\"\"\"|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`[^`]*`""", re.S)
+# What NOT_CODE finds, and the /* */ comments: a -- when: line or an @name within a /* */ comment is plain text
+BLOCK = re.compile(NOT_CODE.pattern + r"|/\*.*?\*/", re.S)
 WHEN = re.compile(r"^\s*--\s*when:(.*)$", re.M | re.I)  # a `-- when: <condition>` line: see when()
 LEAD = r"(?P<lead>(?:\s*--[^\n]*\n|\s*/\*.*?\*/)*\s*)"  # a statement's leading comments
 # A statement that writes a table: its leading comments, its verb, and the table it writes. The verbs are tried in
@@ -143,7 +146,8 @@ def mapping_statements(path: Path) -> list[str]:
     A mapping turns the input's columns into fields and keeps nothing. So each statement, as BigQuery parses it, must
     be one query, or make one temporary table with a name the method doesn't use (in any case), and its comments
     should start with --. A # comment is refused. A /* */ one is not, but nayose reads it as code (the last reason),
-    so it is refused only where that breaks the statement. The reasons:
+    so it is refused where that breaks the statement: where a line in it ends in ';', or where it holds an @name.
+    The reasons:
     - a table of its own would be dropped by the next build, which makes again every table it writes;
     - a temporary table named like one of the method's would hide it, as a statement reads a temporary table first;
     - a function of its own would replace one of the method's on BigQuery, but not on DuckDB;
@@ -160,16 +164,26 @@ def mapping_statements(path: Path) -> list[str]:
     return out
 
 
+def block_comments(sql: str) -> list[str]:
+    """Return a statement's /* */ comments, those in its strings and -- comments aside."""
+    return [part for part in (m[0] for m in BLOCK.finditer(sql)) if part.startswith("/*")]
+
+
 def check_mapping_statement(file: str, sql: str) -> None:
     """Raise InputError unless one statement of the mapping `file` keeps to a mapping's form (mapping_statements)."""
     tail = " ".join(sql.split())[-100:]
     if "#" in NOT_CODE.sub("", sql):
         raise InputError(f"{file}: a comment starts with --, as in the method's files: {tail}",
                          fix="write each # comment as --")
+    if any(PARAMETER.search(c) for c in block_comments(sql)):
+        raise InputError(f"{file}: a /* */ comment holds an @name, which nayose would read as a value: {tail}",
+                         fix="write the comment with --")
     try:
         parsed = sqlglot.parse(sql, read="bigquery")
-    except sqlglot.errors.ParseError as e:
-        raise InputError(f"{file}: a statement doesn't parse as BigQuery's: {tail}", fix=str(e).split("\n")[0]) from e
+    except sqlglot.errors.SqlglotError as e:  # ParseError; TokenError where a line ending in ';' cut a /* */ comment
+        raise InputError(f"{file}: a statement doesn't parse as BigQuery's: {tail}",
+                         fix=f"{str(e).splitlines()[0]}; start each comment with --, as a line ending in ';' ends a "
+                             "statement even in a /* */ comment") from e
     trees = [t for t in parsed if t is not None and not isinstance(t, exp.Semicolon)]  # a comment after ';' too
     tree = trees[0] if len(trees) == 1 else None
     name = temp_table_name(tree)
@@ -712,13 +726,15 @@ def verb_of(head: re.Match) -> str:
 def when(sql: str) -> str | None:
     """Return a statement's condition, from a `-- when: <condition>` line among its leading comments, or None.
 
-    A comment after the condition is left out. Raises ValueError where a statement holds two conditions, where a
-    function holds one (the deploy makes functions apart from the procedures), or where one stands past the
-    statement's leading comments.
+    Only a -- line carries a condition: one within a /* */ comment is that comment's text. A comment after the
+    condition is left out. Raises ValueError where a statement holds two conditions, where a function holds one (the
+    deploy makes functions apart from the procedures), or where one stands past the statement's leading comments.
     """
-    leading = re.match(LEAD, sql, re.S)["lead"]
-    conditions = WHEN.findall(leading)
-    if len(conditions) > 1 or (conditions and TEMP_FUNCTION.match(sql)) or len(WHEN.findall(sql)) > len(conditions):
+    def lines(text: str) -> list[str]:  # the conditions of text's -- lines, outside its /* */ comments
+        return WHEN.findall(BLOCK.sub(lambda m: " " if m[0].startswith("/*") else m[0], text))
+
+    conditions = lines(re.match(LEAD, sql, re.S)["lead"])
+    if len(conditions) > 1 or (conditions and TEMP_FUNCTION.match(sql)) or len(lines(sql)) > len(conditions):
         raise ValueError("a statement holds one condition, in its leading comments, and a function none: "
                          f"{sql.strip()[:80]}")
     if not conditions:

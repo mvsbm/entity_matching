@@ -38,6 +38,20 @@ def test_what_is_written_instead_translates_and_answers_as_bigquery_would():
     assert duck.rows("SELECT i FROM (SELECT i, x FROM UNNEST(['a', 'b']) AS x WITH OFFSET AS i) ORDER BY i") == [(0,), (1,)]  # selected, by its name
     # REGEXP_EXTRACT: the group's match, also where the pattern holds RE2's own escapes; NULL where nothing matches
     assert duck.rows(r"SELECT REGEXP_EXTRACT('\u3000a12', r'^[\x{3000}]a(\p{Nd}+)$'), REGEXP_EXTRACT('x', r'^(\d+)$'), REGEXP_EXTRACT('a', r'a(b*)')") == [("12", None, "")]
+    # a rewritten form's arguments are translated too: transform goes into no node it replaced
+    assert duck.value("SELECT DIV(DIV(7 - 1, 2), 2)") == 1  # untranslated within: 3
+    assert duck.rows("SELECT DIV([10, 20, 30][OFFSET(i)], 2) FROM UNNEST([0, 2]) AS i ORDER BY i") == [(5,), (15,)]
+    assert duck.value("SELECT REGEXP_EXTRACT('a1', REGEXP_EXTRACT('zz', r'^q'))") is None  # the pattern is NULL: no ''
+
+
+def test_a_null_fingerprint_or_none_differs_from_the_method_s():  # NULL <> x is NULL, which IF reads as false
+    duck = DuckDB()
+    for stored in ("SELECT CAST(NULL AS STRING) AS fingerprint", "SELECT 'f' AS fingerprint WHERE FALSE"):
+        duck.run(f"CREATE OR REPLACE TABLE method AS {stored}")
+        with pytest.raises(Exception, match="changed since the run was built"):
+            duck.run(nayose.UNCHANGED, {"fingerprint": "f"})
+    duck.run("CREATE OR REPLACE TABLE method AS SELECT 'f' AS fingerprint")
+    duck.run(nayose.UNCHANGED, {"fingerprint": "f"})
 
 
 def test_a_stage_file_splits_into_its_statements_and_each_gets_the_values_it_names(tmp_path, monkeypatch):
@@ -77,6 +91,17 @@ def test_every_statement_of_every_stage_parses_as_bigquery_and_translates(path):
     for sql in nayose.statements(path.read_text(encoding="utf-8")):
         assert sqlglot.parse_one(sql, read="bigquery") is not None
         duckdb_sql(sql)  # refused by name if it holds a form DuckDB would answer otherwise
+
+
+def test_a_condition_is_a_line_of_the_leading_comments_outside_any_block_comment():
+    assert nayose.when("-- the first\n-- when: @a  -- why\nSELECT 1") == "@a"
+    assert nayose.when("/* a note */\n-- when: @b\nSELECT 1") == "@b" and nayose.when("/* a */ -- when: @c\nSELECT 1") == "@c"
+    assert nayose.when("/* a note\n-- when: @a\n*/\nSELECT 1") is None  # a block comment's text
+    assert nayose.when("/* a */ SELECT 1 /*\n-- when: @a\n*/") is None
+    for sql in ("-- when: @a\n-- when: @b\nSELECT 1", "SELECT 1\n-- when: @a\nFROM t",
+                "-- when: @a\nCREATE TEMP FUNCTION f(x INT64) AS (x)"):
+        with pytest.raises(ValueError, match="one condition"):
+            nayose.when(sql)
 
 
 class Recorded:  # a BigQuery client that records what it was sent
@@ -191,3 +216,87 @@ def test_a_regexp_extract_within_another_is_translated_too():  # NULL where noth
     from nayose.engines import duckdb_sql
     sql = "SELECT REGEXP_EXTRACT(COALESCE(REGEXP_EXTRACT('abc', r'[0-9]+'), 'z9'), r'[0-9]') AS x"
     assert duckdb.sql(duckdb_sql(sql)).fetchall() == [("9",)]  # untranslated, the inner gives '' and COALESCE keeps it
+
+
+# The stage files in the order the jobs run them, and the mapping: a table each reads is made by one before it.
+IN_ORDER = [nayose.SQL / f"{name}.sql" for name in ("functions", "records", "fit", "score", "decide", "report", "match", "lookup")]
+IN_ORDER.insert(1, nayose.HERE / "mapping.sql")
+
+
+def selected(scope, tables: dict) -> set[str]:
+    """Return the names a query's scope gives its reader: a * read as its sources' columns."""
+    from sqlglot import exp
+    query = scope.expression
+    if isinstance(query, exp.SetOperation):
+        return selected(scope.set_operation_scopes[0], tables)
+    if isinstance(query, exp.Unnest):  # its alias's names, or its STRUCTs' fields
+        alias = query.args.get("alias")
+        return {c.name for c in alias.columns} if alias and alias.columns else {
+            e.alias_or_name for s in [*query.find_all(exp.Struct)][:1] for e in s.expressions}
+    names = set()
+    for e in query.selects:
+        star = e if isinstance(e, exp.Star) else e.this if isinstance(e, exp.Column) and isinstance(e.this, exp.Star) else None
+        if star is None:
+            names.add(e.alias_or_name)
+            continue
+        read = [scope.sources[e.table]] if isinstance(e, exp.Column) and e.table else scope.sources.values()
+        names |= {c for source in read for c in columns_of(source, tables)} - {c.name for c in star.args.get("except_") or []}
+    return names
+
+
+def columns_of(source, tables: dict) -> set[str]:
+    """Return the columns a FROM source gives: a WITH's, a subquery's or an UNNEST's (selected), or a table's (`tables`)."""
+    from sqlglot.optimizer.scope import Scope
+    return selected(source, tables) if isinstance(source, Scope) else tables.get(source.name.lower(), set())
+
+
+def test_no_column_is_read_bare_where_a_from_item_of_its_name_is_in_scope():  # BigQuery reads the item's whole row
+    """BigQuery's analyzer gives a FROM item's name (a range variable) precedence over a column's, so a column read
+    bare where an item of its name is in scope is read as that item's row, a STRUCT; DuckDB reads the column. A row
+    read on purpose (x and y passed to a comparison) is no clash: no source in scope has a column of its name. An
+    UNNEST's name is its element on both engines."""
+    import sqlglot
+    from sqlglot import exp
+    from sqlglot.optimizer.scope import Scope, build_scope, traverse_scope
+    c = nayose.config()
+    tables = {"input": set(c["input"]["columns"]), "name_weights": {"term", "coef"},
+              "given": {"id_l", "id_r", "decision", "why"}, "method": {"fingerprint"}}  # what Python makes
+    clashes = []
+    for path in IN_ORDER:
+        for sql in nayose.statements(path.read_text(encoding="utf-8")):
+            tree = sqlglot.parse_one(sql, read="bigquery")
+            for scope in traverse_scope(tree):
+                for col in scope.columns:
+                    item = None if col.table else scope.sources.get(col.name)
+                    if item is None or isinstance(item, Scope) and isinstance(item.expression, exp.Unnest):
+                        continue
+                    if any(col.name in columns_of(source, tables) for source in scope.sources.values()):
+                        clashes.append(f"{path.name}: {col.name} in {str(col.parent)[:60]}")
+            if isinstance(tree, exp.Create) and tree.kind in ("TABLE", "VIEW"):  # the table it makes, for those after
+                schema = tree.this if isinstance(tree.this, exp.Schema) else None
+                made = schema.this if schema else tree.this
+                tables[made.name.lower()] = ({d.name for d in schema.expressions} if schema
+                                             else selected(build_scope(tree.expression), tables))
+    assert not clashes, clashes
+
+
+# GoogleSQL's reserved keywords, from https://cloud.google.com/bigquery/docs/reference/standard-sql/lexical#reserved_keywords
+RESERVED = set("""
+ALL AND ANY ARRAY AS ASC ASSERT_ROWS_MODIFIED AT BETWEEN BY CASE CAST COLLATE CONTAINS CREATE CROSS CUBE CURRENT DEFAULT
+DEFINE DESC DISTINCT ELSE END ENUM ESCAPE EXCEPT EXCLUDE EXISTS EXTRACT FALSE FETCH FOLLOWING FOR FROM FULL GRAPH_TABLE
+GROUP GROUPING GROUPS HASH HAVING IF IGNORE IN INNER INTERSECT INTERVAL INTO IS JOIN LATERAL LEFT LIKE LIMIT LOOKUP MERGE
+NATURAL NEW NO NOT NULL NULLS OF ON OR ORDER OUTER OVER PARTITION PRECEDING PROTO QUALIFY RANGE RECURSIVE RESPECT RIGHT
+ROLLUP ROWS SELECT SET SOME STRUCT TABLESAMPLE THEN TO TREAT TRUE UNBOUNDED UNION UNNEST USING WHEN WHERE WINDOW WITH
+WITHIN""".split())
+
+
+@pytest.mark.parametrize("path", IN_ORDER, ids=lambda p: p.name)
+def test_no_name_is_a_reserved_keyword_unless_backquoted(path):
+    """A column, an alias, a WITH's or a table's name, a function's parameter: each an identifier BigQuery refuses
+    where it is a reserved keyword. A named parameter (@name) may be one: "A named query parameter can start with an
+    identifier or a reserved keyword" (the same page), and a procedure declares it as v_name."""
+    import sqlglot
+    from sqlglot import exp
+    named = {node.name for sql in nayose.statements(path.read_text(encoding="utf-8"))
+             for node in sqlglot.parse_one(sql, read="bigquery").find_all(exp.Identifier) if not node.quoted}
+    assert not {n for n in named if n.upper() in RESERVED}

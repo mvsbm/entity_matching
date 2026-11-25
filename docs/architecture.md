@@ -308,10 +308,15 @@ The cost is `O(G)` for its keys, plus `O(G·b + C·K·L²)`.
 dataset is the session's default, so statements name tables alone. Calls to the deploy's functions are qualified with
 the dataset (`engines.CALLS`), and so are the method's own SQL functions, which the deploy made in the dataset
 (`engines.OWN`): a statement that would make one again, Python's (a lookup's, the report's), isn't sent.
+BigQuery reads a bare name as a `FROM` item before a column, so no column is read bare where an item of its name is
+in scope (it would be the item's whole row), and no name is one of its reserved keywords; `tests/test_sql.py` holds
+both.
 
 **A statement that may not need to run** says when it does, in a comment: `-- when: <condition>`, a SQL condition
-on the job's values and tables. `run_file` asks the engine and skips the statement where it is false. The deploy
-makes it the procedure's `IF <condition> THEN … END IF`. BigQuery bills a statement's scans whatever its result, so a
+on the job's values and tables, on a `--` line of its leading comments (one within a `/* */` comment is that
+comment's text). `run_file` asks the engine and skips the statement where it is false. The deploy makes it the
+procedure's `IF <condition> THEN … END IF`, and each `@name` the procedure's variable `v_name`, in the code and its
+`--` comments but never in a string. BigQuery bills a statement's scans whatever its result, so a
 statement that isn't run is the only one that bills nothing.
 
 **DuckDB** runs the SQL after `duckdb_sql` translates it (sqlglot, BigQuery to DuckDB, cached per statement). Some
@@ -329,7 +334,8 @@ forms would translate into another result, and `avoided` refuses each one by nam
 
 Where sqlglot's translation answers otherwise, `as_bigquery` rewrites the node to keep BigQuery's answer. This covers
 `DIV`, an `ANY TYPE` parameter, `UNNEST … WITH OFFSET` counted from 0, `array[OFFSET(i)]` with a computed `i`, and
-`REGEXP_EXTRACT`'s group and its NULL on no match.
+`REGEXP_EXTRACT`'s group and its NULL on no match. A node it replaces has its arguments translated first, as
+sqlglot's transform goes into no node it replaced.
 
 **The function twins.** The SQL calls each function by one name, and each engine supplies its own version:
 

@@ -109,6 +109,7 @@ def as_bigquery(node: exp.Expression) -> exp.Expression:
         offsets_from_zero(node)
         return node
     if isinstance(node, exp.IntDiv) and first_visit(node):
+        translate_arguments(node)
         node.set("this", exp.Paren(this=node.this))
         node.set("expression", exp.Paren(this=node.expression))
         return exp.Paren(this=node)
@@ -120,13 +121,23 @@ def as_bigquery(node: exp.Expression) -> exp.Expression:
 def first_visit(node: exp.Expression) -> bool:
     """Return whether as_bigquery meets `node` for the first time, and mark it met.
 
-    A node met before is left as it is, should transform meet it again inside what replaced it (DIV's brackets,
-    REGEXP_EXTRACT's IF): wrapped twice, or a SELECT's offsets shifted twice, it would answer otherwise.
+    transform never meets a node twice: it goes into no node it replaced, nor into what replaced it. The mark is a
+    guard should a tree be translated twice: a DIV wrapped twice, or a SELECT's offsets shifted twice, would answer
+    otherwise.
     """
     if node.args.get("bigquery"):
         return False
     node.set("bigquery", True)
     return True
+
+
+def translate_arguments(node: exp.Expression) -> None:
+    """Translate each argument of `node` (as_bigquery), before node is replaced: transform goes into no node it
+    replaced, so a DIV within a DIV, an array[OFFSET(i)] or a REGEXP_EXTRACT within one would stay as sqlglot writes
+    it."""
+    for key, value in list(node.args.items()):
+        if isinstance(value, exp.Expression):
+            node.set(key, value.transform(as_bigquery))
 
 
 def regexp_as_bigquery(node: exp.RegexpExtract | exp.RegexpExtractAll) -> exp.Expression:
@@ -135,11 +146,10 @@ def regexp_as_bigquery(node: exp.RegexpExtract | exp.RegexpExtractAll) -> exp.Ex
     Where the pattern has one group, the match is that group's: sqlglot counts groups with Python's re, which can't
     read RE2's \\x{3000} or \\p{Nd} (groups()). REGEXP_EXTRACT gives NULL where it doesn't match; DuckDB's gives ''.
     """
+    translate_arguments(node)
     pattern = node.expression
     if (pattern.is_string or isinstance(pattern, exp.RawString)) and groups(pattern.name) == 1:
         node.set("group", exp.Literal.number(1))
-    # transform goes on into no node it replaced, so the calls this one holds are translated here
-    node.set("this", node.this.transform(as_bigquery))
     if isinstance(node, exp.RegexpExtract):
         return exp.If(this=exp.RegexpLike(this=node.this.copy(), expression=pattern.copy()), true=node)
     return node
@@ -455,15 +465,26 @@ def job_statements(job: str, stages: list, dataset: str, mapping: Path | None) -
 def in_procedure(sql: str, dataset: str) -> str:
     """Return a stage's statement as its procedure runs it.
 
-    Each @name becomes v_name. A view names its tables with their dataset (in_dataset). A statement with a `-- when:`
-    condition is wrapped in IF ... END IF.
+    Each @name becomes v_name, in the code and in its -- comments, where a `-- when:` condition is read from, but never
+    in a string or a quoted name, which run_file leaves as written too. A view names its tables with their dataset
+    (in_dataset). A statement with a `-- when:` condition is wrapped in IF ... END IF.
     """
-    sql = nayose.PARAMETER.sub(r"v_\1", sql)  # in comments too: a -- when: condition is read from them
+    sql = VALUE_OR_NOT_CODE.sub(as_variable, sql)
     guard = nayose.when(sql)  # read before in_dataset, whose SQL keeps no comment
     head = WRITE.match(sql)
     if head and "VIEW" in nayose.verb_of(head):
         sql = in_dataset(sql, dataset)
     return f"IF {guard} THEN\n{sql};\nEND IF" if guard else sql
+
+
+VALUE_OR_NOT_CODE = re.compile(nayose.NOT_CODE.pattern + r"|@(\w+)", re.S)  # what isn't code, or a value it reads
+
+
+def as_variable(part: re.Match) -> str:
+    """Return a part VALUE_OR_NOT_CODE found as a procedure reads it: @name as v_name, also in a -- comment."""
+    if part[1]:
+        return f"v_{part[1]}"
+    return nayose.PARAMETER.sub(r"v_\1", part[0]) if part[0].startswith("--") else part[0]
 
 
 def run_table_written(sql: str) -> str | None:

@@ -146,9 +146,11 @@ judged AS (
   LEFT JOIN name_sums AS sums ON sums.t = LOWER(s.any_name)
 ),
 name_chance AS (  -- name_p is the chance that the name is a company's, or NULL if the model can read no name.
-  -- The logistic takes two forms so that EXP never gets a large argument, which BigQuery refuses as an overflow.
+  -- The logistic is 1 / (1 + EXP(-logit)). EXP overflows past about 709.78, which BigQuery refuses, so for a logit
+  -- under -700 it takes the form EXP(logit) / (1 + EXP(logit)), equal but for rounding. Every other logit keeps the
+  -- first form, to the bit.
   SELECT *, IF(written, CAST(1 AS FLOAT64),
-               IF(logit >= 0, 1 / (1 + EXP(-logit)), EXP(logit) / (1 + EXP(logit)))) AS name_p
+               IF(logit >= -700, 1 / (1 + EXP(-logit)), EXP(logit) / (1 + EXP(logit)))) AS name_p
   FROM judged
 ),
 sure AS (  -- sure_kind is the engine's kind if the engine is sure (2 company, 1 person), and 0 if it isn't.

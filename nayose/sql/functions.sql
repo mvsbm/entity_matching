@@ -60,9 +60,12 @@ CREATE OR REPLACE TEMP FUNCTION without_controls(v ANY TYPE) AS (
                  r'[\t\r\n]+', ' ')
 );
 
--- null_token_marked writes CHR(1) for a null token. nulls is the pattern that nayose.nulls_pattern makes of [input]
--- nulls, and it also matches a value of spaces alone.
-CREATE OR REPLACE TEMP FUNCTION null_token_marked(v ANY TYPE, nulls ANY TYPE) AS (REGEXP_REPLACE(v, nulls, CHR(1)));
+-- null_token_marked writes CHR(1) for a null token. null_regex is the pattern that nayose.nulls_pattern makes of
+-- [input] nulls, and it also matches a value of spaces alone. The parameter isn't named nulls, a word BigQuery
+-- reserves.
+CREATE OR REPLACE TEMP FUNCTION null_token_marked(v ANY TYPE, null_regex ANY TYPE) AS (
+  REGEXP_REPLACE(v, null_regex, CHR(1))
+);
 
 -- The two number steps change a value only if numeric is TRUE. cut_short_marked writes CHR(1) for a number cut short
 -- in E notation (1.23E+11), whose digits are gone, and whole_number writes a whole number written as a float
@@ -130,8 +133,8 @@ CREATE OR REPLACE TEMP FUNCTION unlisted(v STRING) RETURNS STRING AS (
 
 -- read_value returns a value as read, with section 1's fixes in order: unlisted, then the four steps above. Last,
 -- NULLIF makes CHR(1) missing.
-CREATE OR REPLACE TEMP FUNCTION read_value(v STRING, numeric BOOL, nulls STRING) RETURNS STRING AS (
-  NULLIF(whole_number(cut_short_marked(null_token_marked(without_controls(unlisted(v)), nulls), numeric), numeric),
+CREATE OR REPLACE TEMP FUNCTION read_value(v STRING, numeric BOOL, null_regex STRING) RETURNS STRING AS (
+  NULLIF(whole_number(cut_short_marked(null_token_marked(without_controls(unlisted(v)), null_regex), numeric), numeric),
          CHR(1))
 );
 
