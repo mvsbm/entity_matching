@@ -120,3 +120,16 @@ def test_each_key_s_candidates_and_matches_are_counted_and_the_keys_that_can_go_
     listed = con.execute("SELECT COUNT(*) FROM (SELECT unnest(string_split(sources, '+')) FROM cands)").fetchone()[0]
     alone = con.execute("SELECT COUNT(*) FROM scored WHERE rule IS NULL AND match_weight >= 6 AND named AND sources NOT LIKE '%+%'").fetchone()[0]
     assert sum(r["candidates"] for r in got["keys"]) == listed and sum(r["only"] for r in got["keys"]) == alone
+
+
+def test_a_build_runs_on_a_file_where_a_compared_field_is_never_filled(tmp_path, population):
+    df = population.df.copy()
+    df["BIRTH_DATE"] = None  # no record has it: its comparison has nothing to count, so it is sampled and bounded
+    df.to_parquet(tmp_path / "in.parquet", index=False)
+    engine = DuckDB()
+    nayose.build(engine, [tmp_path / "in.parquet"])
+    assert engine.value("SELECT COUNT(*) FROM gold") == len(df)
+    df["PHONE_NUM_4"] = None  # a near-certain rule reads the phone too: a population this small then finds no pair
+    df.to_parquet(tmp_path / "in.parquet", index=False)
+    with pytest.raises(Exception, match="agree on any near-certain rule"):  # the fit's own refusal, its fix said
+        nayose.build(DuckDB(), [tmp_path / "in.parquet"])
