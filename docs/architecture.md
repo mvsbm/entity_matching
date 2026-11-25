@@ -295,7 +295,8 @@ alone would score it. It reads what it touches, in three steps:
 
 Steps 1 and 3 run in temporary tables named like the run's, since a statement reads a temporary table before the
 run's table of the same name. `engine.scratch` holds them in a transaction rolled back on DuckDB, and in a session
-of their own on BigQuery. `run_file`'s scratch makes every table a statement creates a temporary one, and refuses a
+of their own on BigQuery. With `temp`, the lookup's temporary tables, `run_file` makes every table a statement creates a
+temporary one, and refuses a
 statement that would change a run's table, so a lookup writes nothing. `lookup.sql` gives each entity from `[lookup] at_least` points up, or joined by a rule, with its best
 record, its points, each comparison's level and the keys that listed it. With no such entity, it gives the closest
 record. It also reports, key by key, what was looked up and what the gate decided for big blocks. The cost is

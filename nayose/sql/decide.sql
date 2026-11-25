@@ -21,9 +21,9 @@ CREATE TABLE IF NOT EXISTS decisions (id_l STRING, id_r STRING, decision STRING,
 --    decided both ways, and an ID that names no record of the run.
 CREATE OR REPLACE TEMP TABLE given_text AS
 SELECT IF(blank(l), NULL, l) AS id_l, IF(blank(r), NULL, r) AS id_r,
-       NULLIF(LOWER(trimmed(d)), '') AS decision, NULLIF(trimmed(w), '') AS why
+       NULLIF(LOWER(trimmed(d)), '') AS decision, NULLIF(trimmed(why), '') AS why
 FROM (SELECT CAST(id_l AS STRING) AS l, CAST(id_r AS STRING) AS r, CAST(decision AS STRING) AS d,
-             CAST(why AS STRING) AS w
+             CAST(why AS STRING) AS why
       FROM given);
 
 SELECT IF(COUNT(*) > 0, ERROR(CONCAT('given: ', CAST(COUNT(*) AS STRING), ' decided rows lack an ID; fill in both IDs of each decided row, or clear its decision')), 0)
@@ -55,7 +55,7 @@ WHERE id NOT IN (SELECT id FROM records);
 -- 2. decisions keeps the run's decisions and adds each new one that changes its pair's latest decision, so a table
 --    given twice adds nothing. The new ones get the next batch number. Each pair's last decision is flagged latest.
 CREATE OR REPLACE TABLE decisions AS
-WITH every AS (
+WITH stored_and_said AS (
   SELECT id_l, id_r, decision, why, batch FROM decisions
   UNION ALL
   SELECT s.id_l, s.id_r, s.decision, s.why, (SELECT COALESCE(MAX(batch), -1) + 1 FROM decisions)
@@ -63,7 +63,7 @@ WITH every AS (
   WHERE NOT EXISTS (SELECT 1 FROM decisions AS d
                     WHERE d.latest AND d.id_l = s.id_l AND d.id_r = s.id_r AND d.decision = s.decision)
 )
-SELECT *, ROW_NUMBER() OVER (PARTITION BY id_l, id_r ORDER BY batch DESC) = 1 AS latest FROM every;
+SELECT *, ROW_NUMBER() OVER (PARTITION BY id_l, id_r ORDER BY batch DESC) = 1 AS latest FROM stored_and_said;
 
 
 -- 3. Each record is its own entity until the pairs whose latest decision is match join it to others. Only pairs of
@@ -87,8 +87,8 @@ FROM asked, UNNEST(JSON_QUERY_ARRAY(entities_of(asked.pairs))) AS e;
 
 CREATE OR REPLACE TABLE gold CLUSTER BY id AS  -- a lookup reads gold by its records' IDs
 WITH placed AS (
-  SELECT r.id, COALESCE(j.entity, r.id) AS cluster_id, r.kind, r.kind_p, r.kind_by, r.kind_flagged
-  FROM records AS r LEFT JOIN joined AS j USING (id)
+  SELECT rec.id, COALESCE(j.entity, rec.id) AS cluster_id, rec.kind, rec.kind_p, rec.kind_by, rec.kind_flagged
+  FROM records AS rec LEFT JOIN joined AS j USING (id)
 ),
 entity AS (
   SELECT cluster_id, COUNT(*) AS n,

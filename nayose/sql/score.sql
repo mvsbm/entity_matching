@@ -1,5 +1,5 @@
 -- Stage 3, score. This stage finds the pairs worth scoring and scores them. It pairs the records of the run's latest
--- batch with all the run's records. In a build, every record is new.
+-- batch with all the run's records. In a build, every record is the batch's.
 -- The pairs come from the rules and from the keys. Every pair that a key lists is a candidate. If a key's block holds
 -- @oversized records or more, the stage first scores a sample of the block's pairs, and joins the block only if the
 -- sample holds a pair at @search_floor points or more. Each pair gets its level of each comparison (functions.sql)
@@ -29,21 +29,22 @@
 -- scored holds every batch's pairs. Each batch adds the pairs that touch its records, a rule's pair with its rule.
 
 -- 0. The batch's records, the generators and the rules.
-CREATE OR REPLACE TEMP TABLE fresh AS SELECT id FROM records WHERE batch = (SELECT batch FROM this_batch);
+CREATE OR REPLACE TEMP TABLE batch_records AS SELECT id FROM records WHERE batch = (SELECT batch FROM this_batch);
 
 -- changed holds the records whose keys this job makes: the batch's, and the run's records that records.sql made again
--- (redone), marked again. Every other record's keys are as the last job left them, since a record's keys change only
--- when the record does.
+-- (redone), with redone TRUE. Every other record's keys are as the last job left them, since a record's keys change
+-- only when the record does.
 -- when: NOT @lookup
-CREATE OR REPLACE TEMP TABLE changed AS SELECT id, FALSE AS again FROM fresh UNION ALL SELECT id, TRUE FROM redone;
+CREATE OR REPLACE TEMP TABLE changed AS
+SELECT id, FALSE AS redone FROM batch_records UNION ALL SELECT id, TRUE FROM redone;
 
 -- A lookup's records table holds only the records the lookup read, and its index starts empty, so it makes the keys
 -- of every record it holds.
 -- when: @lookup
-CREATE OR REPLACE TEMP TABLE changed AS SELECT id, FALSE AS again FROM records;
+CREATE OR REPLACE TEMP TABLE changed AS SELECT id, FALSE AS redone FROM records;
 
 -- The generators and the rules are listed by name, in order. The statements below name each one, and read its
--- position from these lists. A generator's position (g) is its bit in the pairs' bits, which cands turns into
+-- position from these lists. A generator's position (g) is its bit in a pair's mask, which cands turns into
 -- sources. A rule's position (i) is its rank: if several rules find a pair, the first one names it. config.toml says
 -- which ones this run uses, and a name it gives that isn't listed here is refused.
 CREATE OR REPLACE TEMP TABLE generators AS
@@ -71,92 +72,95 @@ FROM (SELECT x FROM UNNEST(@keys) AS x WHERE x NOT IN (SELECT name FROM generato
 --    value is held by @oversized records or more, it can't be one customer's, so the rule leaves it out. The model
 --    can still match those records. The batch's records are paired with all the run's records, each pair once, with
 --    the lower ID first.
+--    A key of several fields joins them with CHR(31), the unit separator. read_value removes every control character
+--    (functions.sql), so no field holds it, and two different lists of values never make the same key.
 CREATE OR REPLACE TEMP TABLE made_rule_keys AS  -- the rule keys of the records in changed
-WITH remade AS (SELECT * FROM records WHERE id IN (SELECT id FROM changed))
+WITH changed_records AS (SELECT * FROM records WHERE id IN (SELECT id FROM changed))
 SELECT rules.i, k, id FROM (
-  SELECT 'X1_CIF_PERSON_NAME' AS rule, customer_id || CHR(31) || full_name AS k, id FROM remade
-  UNION ALL SELECT 'X2_CIF_COMPANY_NAME', customer_id || CHR(31) || company_name, id FROM remade
-  UNION ALL SELECT 'X3_CIF_PHONE', customer_id || CHR(31) || phone, id FROM remade
+  SELECT 'X1_CIF_PERSON_NAME' AS rule, customer_id || CHR(31) || full_name AS k, id FROM changed_records
+  UNION ALL SELECT 'X2_CIF_COMPANY_NAME', customer_id || CHR(31) || company_name, id FROM changed_records
+  UNION ALL SELECT 'X3_CIF_PHONE', customer_id || CHR(31) || phone, id FROM changed_records
   UNION ALL SELECT 'X4_PERSON_NAME_ADDRCD_PHONE', full_name || CHR(31) || address_code || CHR(31) || phone, id
-    FROM remade
+    FROM changed_records
   UNION ALL SELECT 'X5_COMPANY_NAME_ADDRCD_PHONE', company_name || CHR(31) || address_code || CHR(31) || phone, id
-    FROM remade
-  UNION ALL SELECT 'F1_NAME~_ADDRCD_PHONE', address_code || CHR(31) || phone, id FROM remade
-  UNION ALL SELECT 'F2_NAME~_ADDRESS~_PHONE', phone || CHR(31) || address__address_first3, id FROM remade
-  UNION ALL SELECT 'F3_NAME~_CIF', customer_id, id FROM remade
-  UNION ALL SELECT 'F4_NAME_ADDRCD_PHONE~', person_name || CHR(31) || address_code, id FROM remade
-  UNION ALL SELECT 'F5_COMPANY~_PHONE_POSTAL', phone || CHR(31) || postal_code, id FROM remade
-  UNION ALL SELECT 'F6_COMPANY~_ADDRCD_PHONE', address_code || CHR(31) || phone, id FROM remade
-  UNION ALL SELECT 'F7_GIVEN_ADDRCD_PHONE', given_name || CHR(31) || address_code || CHR(31) || phone, id FROM remade
+    FROM changed_records
+  UNION ALL SELECT 'F1_NAME~_ADDRCD_PHONE', address_code || CHR(31) || phone, id FROM changed_records
+  UNION ALL SELECT 'F2_NAME~_ADDRESS~_PHONE', phone || CHR(31) || address__address_first3, id FROM changed_records
+  UNION ALL SELECT 'F3_NAME~_CIF', customer_id, id FROM changed_records
+  UNION ALL SELECT 'F4_NAME_ADDRCD_PHONE~', person_name || CHR(31) || address_code, id FROM changed_records
+  UNION ALL SELECT 'F5_COMPANY~_PHONE_POSTAL', phone || CHR(31) || postal_code, id FROM changed_records
+  UNION ALL SELECT 'F6_COMPANY~_ADDRCD_PHONE', address_code || CHR(31) || phone, id FROM changed_records
+  UNION ALL SELECT 'F7_GIVEN_ADDRCD_PHONE', given_name || CHR(31) || address_code || CHR(31) || phone, id FROM changed_records
 ) JOIN rules USING (rule)
 WHERE k IS NOT NULL AND rules.used;
 
 -- rule_keys holds every record's rule keys. The records made again leave it, and the changed records' keys join it.
 CREATE TABLE IF NOT EXISTS rule_keys CLUSTER BY k AS SELECT i, k, id FROM made_rule_keys WHERE FALSE;
 
--- when: EXISTS (SELECT 1 FROM changed WHERE again)
-DELETE FROM rule_keys WHERE id IN (SELECT id FROM changed WHERE again);
+-- when: EXISTS (SELECT 1 FROM changed WHERE redone)
+DELETE FROM rule_keys WHERE id IN (SELECT id FROM changed WHERE redone);
 
 INSERT INTO rule_keys SELECT i, k, id FROM made_rule_keys;
 
--- rule_blocks holds every record of each rule key the batch holds. new is TRUE for the batch's records, and n is the
--- number of records that hold the key.
+-- rule_blocks holds every record of each rule key the batch holds. in_batch is TRUE for the batch's records, and n is
+-- the number of records that hold the key.
 -- In the run's first batch (batch 0) every record is the batch's, so every rule key is. A lookup takes the second
--- form whatever its batch, so that only the record it looks up counts as new.
+-- form whatever its batch, so that only the record it looks up is in_batch.
 -- when: NOT @lookup AND (SELECT batch FROM this_batch) = 0
 CREATE OR REPLACE TEMP TABLE rule_blocks AS
-SELECT i, k, id, TRUE AS new, COUNT(*) OVER (PARTITION BY i, k) AS n FROM rule_keys;
+SELECT i, k, id, TRUE AS in_batch, COUNT(*) OVER (PARTITION BY i, k) AS n FROM rule_keys;
 
 -- when: @lookup OR (SELECT batch FROM this_batch) > 0
 CREATE OR REPLACE TEMP TABLE rule_blocks AS
-SELECT i, k, id, id IN (SELECT id FROM fresh) AS new, COUNT(*) OVER (PARTITION BY i, k) AS n
-FROM rule_keys JOIN (SELECT DISTINCT i, k FROM made_rule_keys WHERE id IN (SELECT id FROM fresh)) USING (i, k);
+SELECT i, k, id, id IN (SELECT id FROM batch_records) AS in_batch, COUNT(*) OVER (PARTITION BY i, k) AS n
+FROM rule_keys JOIN (SELECT DISTINCT i, k FROM made_rule_keys WHERE id IN (SELECT id FROM batch_records)) USING (i, k);
 
 
--- 2. The keys. Each generator makes a key for each record from one or more of its fields, joined by CHR(31). The
+-- 2. The keys. Each generator makes a key for each record from one or more of its fields, joined by CHR(31) as a
+--    rule's are. The
 --    records with the same key form a block. A deletion generator makes several keys for a record. They are its value
 --    with each character deleted in turn, and the value whole, each joined to the generator's other fields. Deleting
 --    any character of a run of equal characters gives the same value, so a run gives its key once.
 CREATE OR REPLACE TEMP TABLE made_keys AS  -- the keys of the records in changed
-WITH remade AS (SELECT * FROM records WHERE id IN (SELECT id FROM changed))
+WITH changed_records AS (SELECT * FROM records WHERE id IN (SELECT id FROM changed))
 SELECT generators.g, k, id FROM (
-  SELECT 'cif' AS name, customer_id AS k, id FROM remade
-  UNION ALL SELECT 'phone_prefecture', phone || CHR(31) || prefecture, id FROM remade
-  UNION ALL SELECT 'phone_postal_area', phone || CHR(31) || postal_code__first3, id FROM remade
-  UNION ALL SELECT 'phone_name_initial', phone || CHR(31) || any_name__initial, id FROM remade
-  UNION ALL SELECT 'person_name', person_name__kana_fold, id FROM remade
-  UNION ALL SELECT 'company_name', company_name__nfkc_strip_legal_form_kana_fold, id FROM remade
+  SELECT 'cif' AS name, customer_id AS k, id FROM changed_records
+  UNION ALL SELECT 'phone_prefecture', phone || CHR(31) || prefecture, id FROM changed_records
+  UNION ALL SELECT 'phone_postal_area', phone || CHR(31) || postal_code__first3, id FROM changed_records
+  UNION ALL SELECT 'phone_name_initial', phone || CHR(31) || any_name__initial, id FROM changed_records
+  UNION ALL SELECT 'person_name', person_name__kana_fold, id FROM changed_records
+  UNION ALL SELECT 'company_name', company_name__nfkc_strip_legal_form_kana_fold, id FROM changed_records
   UNION ALL SELECT 'company_name_deletions', SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1), id
-    FROM (SELECT company_name__nfkc_strip_legal_form_kana_fold AS x, id FROM remade
+    FROM (SELECT company_name__nfkc_strip_legal_form_kana_fold AS x, id FROM changed_records
           WHERE company_name__nfkc_strip_legal_form_kana_fold IS NOT NULL),
       UNNEST(GENERATE_ARRAY(1, LENGTH(x) + 1)) AS i
     WHERE i = 1 OR i > LENGTH(x) OR SUBSTR(x, i - 1, 1) <> SUBSTR(x, i, 1)
-  UNION ALL SELECT 'person_name_deletions_postal_area', w || CHR(31) || SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1), id
-    FROM (SELECT person_name__kana_fold AS x, postal_code__first3 AS w, id FROM remade
+  UNION ALL SELECT 'person_name_deletions_postal_area', rest || CHR(31) || SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1), id
+    FROM (SELECT person_name__kana_fold AS x, postal_code__first3 AS rest, id FROM changed_records
           WHERE person_name__kana_fold IS NOT NULL),
       UNNEST(GENERATE_ARRAY(1, LENGTH(x) + 1)) AS i
     WHERE i = 1 OR i > LENGTH(x) OR SUBSTR(x, i - 1, 1) <> SUBSTR(x, i, 1)
-  UNION ALL SELECT 'given_name_postal', given_name__kana_fold || CHR(31) || postal_code, id FROM remade
-  UNION ALL SELECT 'address_phone', address__address || CHR(31) || phone, id FROM remade
-  UNION ALL SELECT 'address_code_phone', address_code || CHR(31) || phone, id FROM remade
-  UNION ALL SELECT 'address_name_initial', address__address || CHR(31) || any_name__initial, id FROM remade
-  UNION ALL SELECT 'address_code_name_initial', address_code || CHR(31) || any_name__initial, id FROM remade
-  UNION ALL SELECT 'given_name_address_code', given_name__kana_fold || CHR(31) || address_code, id FROM remade
+  UNION ALL SELECT 'given_name_postal', given_name__kana_fold || CHR(31) || postal_code, id FROM changed_records
+  UNION ALL SELECT 'address_phone', address__address || CHR(31) || phone, id FROM changed_records
+  UNION ALL SELECT 'address_code_phone', address_code || CHR(31) || phone, id FROM changed_records
+  UNION ALL SELECT 'address_name_initial', address__address || CHR(31) || any_name__initial, id FROM changed_records
+  UNION ALL SELECT 'address_code_name_initial', address_code || CHR(31) || any_name__initial, id FROM changed_records
+  UNION ALL SELECT 'given_name_address_code', given_name__kana_fold || CHR(31) || address_code, id FROM changed_records
   UNION ALL SELECT 'cif_deletions', SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1), id
-    FROM (SELECT customer_id AS x, id FROM remade WHERE customer_id IS NOT NULL),
+    FROM (SELECT customer_id AS x, id FROM changed_records WHERE customer_id IS NOT NULL),
       UNNEST(GENERATE_ARRAY(1, LENGTH(x) + 1)) AS i
     WHERE i = 1 OR i > LENGTH(x) OR SUBSTR(x, i - 1, 1) <> SUBSTR(x, i, 1)
-  UNION ALL SELECT 'birth_date', birth_date, id FROM remade
-  UNION ALL SELECT 'given_name_phone', given_name__kana_fold || CHR(31) || phone, id FROM remade
-  UNION ALL SELECT 'birth_date_deletions_prefecture', w || CHR(31) || SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1), id
-    FROM (SELECT birth_date AS x, prefecture AS w, id FROM remade WHERE birth_date IS NOT NULL),
+  UNION ALL SELECT 'birth_date', birth_date, id FROM changed_records
+  UNION ALL SELECT 'given_name_phone', given_name__kana_fold || CHR(31) || phone, id FROM changed_records
+  UNION ALL SELECT 'birth_date_deletions_prefecture', rest || CHR(31) || SUBSTR(x, 1, i - 1) || SUBSTR(x, i + 1), id
+    FROM (SELECT birth_date AS x, prefecture AS rest, id FROM changed_records WHERE birth_date IS NOT NULL),
       UNNEST(GENERATE_ARRAY(1, LENGTH(x) + 1)) AS i
     WHERE i = 1 OR i > LENGTH(x) OR SUBSTR(x, i - 1, 1) <> SUBSTR(x, i, 1)
-  UNION ALL SELECT 'name_reading', person_name__kana_fold_long_vowel, id FROM remade
-  UNION ALL SELECT 'phone_given_tail', phone || CHR(31) || person_name__kana_fold_long_vowel_last3, id FROM remade
-  UNION ALL SELECT 'postal_given_tail', postal_code || CHR(31) || person_name__kana_fold_long_vowel_last3, id FROM remade
+  UNION ALL SELECT 'name_reading', person_name__kana_fold_long_vowel, id FROM changed_records
+  UNION ALL SELECT 'phone_given_tail', phone || CHR(31) || person_name__kana_fold_long_vowel_last3, id FROM changed_records
+  UNION ALL SELECT 'postal_given_tail', postal_code || CHR(31) || person_name__kana_fold_long_vowel_last3, id FROM changed_records
   UNION ALL SELECT 'postal_area_given_tail', postal_code__first3 || CHR(31) || person_name__kana_fold_long_vowel_last3, id
-    FROM remade
+    FROM changed_records
 ) JOIN generators USING (name)
 WHERE k IS NOT NULL AND generators.used;
 
@@ -164,8 +168,8 @@ WHERE k IS NOT NULL AND generators.used;
 -- and the changed records' keys join it.
 CREATE TABLE IF NOT EXISTS every_key CLUSTER BY k AS SELECT g, k, id FROM made_keys WHERE FALSE;
 
--- when: EXISTS (SELECT 1 FROM changed WHERE again)
-DELETE FROM every_key WHERE id IN (SELECT id FROM changed WHERE again);
+-- when: EXISTS (SELECT 1 FROM changed WHERE redone)
+DELETE FROM every_key WHERE id IN (SELECT id FROM changed WHERE redone);
 
 INSERT INTO every_key SELECT g, k, id FROM made_keys;
 
@@ -179,7 +183,7 @@ CREATE TEMP TABLE IF NOT EXISTS block_size (g INT64, k STRING, n INT64);
 -- In the run's first batch every record is the batch's, so every block is.
 -- when: NOT @lookup AND (SELECT batch FROM this_batch) = 0
 CREATE OR REPLACE TEMP TABLE key_blocks AS
-SELECT g, k, id, TRUE AS new, n FROM (SELECT g, k, id, COUNT(*) OVER (PARTITION BY g, k) AS n FROM every_key)
+SELECT g, k, id, TRUE AS in_batch, n FROM (SELECT g, k, id, COUNT(*) OVER (PARTITION BY g, k) AS n FROM every_key)
 WHERE n > 1;
 
 -- when: @lookup OR (SELECT batch FROM this_batch) > 0
@@ -188,21 +192,22 @@ CREATE OR REPLACE TEMP TABLE key_blocks AS
 -- holds in the block.
 WITH touched AS (
   SELECT e.g, e.k, e.id, COUNT(*) OVER (PARTITION BY e.g, e.k) AS held
-  FROM every_key AS e JOIN (SELECT DISTINCT g, k FROM made_keys WHERE id IN (SELECT id FROM fresh)) USING (g, k)
+  FROM every_key AS e JOIN (SELECT DISTINCT g, k FROM made_keys WHERE id IN (SELECT id FROM batch_records)) USING (g, k)
 )
-SELECT t.g, t.k, t.id, t.id IN (SELECT id FROM fresh) AS new, COALESCE(u.n, t.held) AS n
+SELECT t.g, t.k, t.id, t.id IN (SELECT id FROM batch_records) AS in_batch, COALESCE(u.n, t.held) AS n
 FROM touched AS t LEFT JOIN block_size AS u USING (g, k)
 WHERE (t.held > 1 OR @lookup)  -- records holds two of the block's records or more, or the job is a lookup
   -- and the block at its whole size (block_size) holds two records or more, or the record is the batch's. So a lookup
   -- keeps a block of one only for the record it looks up.
-  AND (COALESCE(u.n, t.held) > 1 OR t.id IN (SELECT id FROM fresh));
+  AND (COALESCE(u.n, t.held) > 1 OR t.id IN (SELECT id FROM batch_records));
 
--- listed holds every pair that touches the batch and shares a block of fewer than @oversized records. bits has one
+-- listed holds every pair that touches the batch and shares a block of fewer than @oversized records. mask has one
 -- bit set for each generator whose keys list the pair.
 CREATE OR REPLACE TEMP TABLE listed AS
-SELECT LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r, BIT_OR(1 << a.g) AS bits
-FROM key_blocks AS a JOIN key_blocks AS b ON a.g = b.g AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
-WHERE a.new AND a.n < @oversized
+SELECT LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r, BIT_OR(1 << a.g) AS mask
+FROM key_blocks AS a
+JOIN key_blocks AS b ON a.g = b.g AND a.k = b.k AND a.id <> b.id AND (NOT b.in_batch OR a.id < b.id)
+WHERE a.in_batch AND a.n < @oversized
 GROUP BY l, r;
 
 
@@ -210,13 +215,14 @@ GROUP BY l, r;
 --    levels' bits. Level γ's bits are at OFFSET(γ + 1), so the missing level, -1, is at OFFSET(0) and weighs 0.
 --    weight_of gives a pair's points, the prior plus its levels' bits, added in the model's order. bound_of gives an
 --    upper bound of a pair's points from cheap tests alone.
+-- lambda_cap is the most the rescaled λ can be, a hair under 1, so that its log-odds stay finite (em.py's LAMBDA_CAP).
+CREATE OR REPLACE TEMP FUNCTION lambda_cap() AS (1 - CAST(0.000000001 AS FLOAT64));
+
 CREATE OR REPLACE TEMP TABLE weights AS
 -- run_records counts the run's records. @outside counts those a lookup didn't read.
 WITH size AS (SELECT COUNT(*) + @outside AS run_records FROM records),
 rate AS (  -- λ is a per-pair rate, so it is rescaled to the run's size, as em.fitted rescales it
-  -- It is capped a hair under 1, so that its log-odds below stay finite.
-  SELECT LEAST(f.probability * (f.fit_rows - 1) / GREATEST(size.run_records - 1, 1), 1 - CAST(0.000000001 AS FLOAT64))
-           AS rate
+  SELECT LEAST(f.probability * (f.fit_rows - 1) / GREATEST(size.run_records - 1, 1), lambda_cap()) AS rate
   FROM fit AS f, size
 ),
 prior_bits AS (  -- the prior is fit's own if the run has as many records as when fit ran, else the rescaled λ's bits
@@ -240,12 +246,12 @@ SELECT
 -- parameter's argument twice, and these arguments are whole comparisons.
 CREATE OR REPLACE TEMP FUNCTION bits_at(levels ANY TYPE, gamma ANY TYPE) AS (levels[OFFSET(gamma + 1)]);
 
--- weight_of's level parameters are g_name, g_company and so on, not the names of w's fields, because DuckDB would
--- substitute a parameter into a field of the same name too.
-CREATE OR REPLACE TEMP FUNCTION weight_of(g_name INT64, g_company INT64, g_address INT64, g_phone INT64, g_cif INT64,
-                                          g_birth INT64, w ANY TYPE) AS (
-  w.prior_bits + bits_at(w.name, g_name) + bits_at(w.company, g_company) + bits_at(w.address, g_address)
-  + bits_at(w.phone, g_phone) + bits_at(w.cif, g_cif) + bits_at(w.birth, g_birth)
+-- weight_of's level parameters are gamma_name, gamma_company and so on, not the names of w's fields (name,
+-- company…), because DuckDB would substitute a parameter into a field of the same name too.
+CREATE OR REPLACE TEMP FUNCTION weight_of(gamma_name INT64, gamma_company INT64, gamma_address INT64, gamma_phone INT64,
+                                          gamma_cif INT64, gamma_birth INT64, w ANY TYPE) AS (
+  w.prior_bits + bits_at(w.name, gamma_name) + bits_at(w.company, gamma_company) + bits_at(w.address, gamma_address)
+  + bits_at(w.phone, gamma_phone) + bits_at(w.cif, gamma_cif) + bits_at(w.birth, gamma_birth)
 );
 
 -- probability_of turns a pair's points (its log2 odds) into its match probability, 1 / (1 + 2^-points). It takes two
@@ -264,17 +270,17 @@ CREATE OR REPLACE TEMP FUNCTION probability_of(points FLOAT64) AS (
 -- comparisons run only on the pairs it keeps.
 -- name_bound takes the given name's level if the given names are equal (else the else level), or the best
 -- Jaro–Winkler level that the names' letters still allow, whichever is higher.
-CREATE OR REPLACE TEMP FUNCTION name_bound(l ANY TYPE, r ANY TYPE, w ANY TYPE) AS (
-  CASE WHEN l.person_name IS NULL OR r.person_name IS NULL THEN bits_at(w.name, -1)
-       WHEN l.person_name = r.person_name THEN bits_at(w.name, 6)                                     -- exact
-       WHEN l.person_name__kana_fold = r.person_name__kana_fold THEN bits_at(w.name, 5)               -- fold exact
-       WHEN l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel
+CREATE OR REPLACE TEMP FUNCTION name_bound(x ANY TYPE, y ANY TYPE, w ANY TYPE) AS (
+  CASE WHEN x.person_name IS NULL OR y.person_name IS NULL THEN bits_at(w.name, -1)
+       WHEN x.person_name = y.person_name THEN bits_at(w.name, 6)                                     -- exact
+       WHEN x.person_name__kana_fold = y.person_name__kana_fold THEN bits_at(w.name, 5)               -- fold exact
+       WHEN x.person_name__kana_fold_long_vowel = y.person_name__kana_fold_long_vowel
          THEN bits_at(w.name, 4)                                                                      -- same reading
-       WHEN l.person_name__kana_fold IS NULL OR r.person_name__kana_fold IS NULL THEN w.name_after
-       ELSE GREATEST(IF(l.given_name__kana_fold = r.given_name__kana_fold, bits_at(w.name, 2), bits_at(w.name, 0)),
-                     CASE WHEN name_jw_most(l, r) < cut_from(CAST(0.75 AS FLOAT64))
+       WHEN x.person_name__kana_fold IS NULL OR y.person_name__kana_fold IS NULL THEN w.name_after
+       ELSE GREATEST(IF(x.given_name__kana_fold = y.given_name__kana_fold, bits_at(w.name, 2), bits_at(w.name, 0)),
+                     CASE WHEN name_jw_most(x, y) < cut_from(CAST(0.75 AS FLOAT64))
                             THEN bits_at(w.name, 0)  -- most pairs stop here, so name_jw_most runs once for them
-                          WHEN name_jw_most(l, r) < cut_from(CAST(0.95 AS FLOAT64))
+                          WHEN name_jw_most(x, y) < cut_from(CAST(0.95 AS FLOAT64))
                             THEN GREATEST(bits_at(w.name, 0), bits_at(w.name, 1))  -- else, fold JW low
                           ELSE GREATEST(bits_at(w.name, 0), bits_at(w.name, 1), bits_at(w.name, 3))  -- and JW high
                      END)
@@ -282,15 +288,15 @@ CREATE OR REPLACE TEMP FUNCTION name_bound(l ANY TYPE, r ANY TYPE, w ANY TYPE) A
 );
 
 -- company_bound takes the company's JW low level only if jaro_winkler_most allows it.
-CREATE OR REPLACE TEMP FUNCTION company_bound(l ANY TYPE, r ANY TYPE, w ANY TYPE) AS (
-  CASE WHEN l.company_name IS NULL OR r.company_name IS NULL THEN bits_at(w.company, -1)
-       WHEN l.company_name__nfkc_strip_legal_form_kana_fold = r.company_name__nfkc_strip_legal_form_kana_fold
+CREATE OR REPLACE TEMP FUNCTION company_bound(x ANY TYPE, y ANY TYPE, w ANY TYPE) AS (
+  CASE WHEN x.company_name IS NULL OR y.company_name IS NULL THEN bits_at(w.company, -1)
+       WHEN x.company_name__nfkc_strip_legal_form_kana_fold = y.company_name__nfkc_strip_legal_form_kana_fold
          THEN bits_at(w.company, 2)                                                                   -- exact
-       WHEN l.company_name__nfkc_strip_legal_form_kana_fold IS NULL
-            OR r.company_name__nfkc_strip_legal_form_kana_fold IS NULL
+       WHEN x.company_name__nfkc_strip_legal_form_kana_fold IS NULL
+            OR y.company_name__nfkc_strip_legal_form_kana_fold IS NULL
          THEN w.company_after
-       WHEN jaro_winkler_most(l.company_name__nfkc_strip_legal_form_kana_fold,
-                              r.company_name__nfkc_strip_legal_form_kana_fold)
+       WHEN jaro_winkler_most(x.company_name__nfkc_strip_legal_form_kana_fold,
+                              y.company_name__nfkc_strip_legal_form_kana_fold)
             >= cut_from(CAST(0.8 AS FLOAT64)) THEN w.company_after
        ELSE bits_at(w.company, 0)                                                                     -- else
   END
@@ -298,31 +304,33 @@ CREATE OR REPLACE TEMP FUNCTION company_bound(l ANY TYPE, r ANY TYPE, w ANY TYPE
 
 -- address_bound takes "address close" only if the two addresses' lengths differ by two characters or less, and "same
 -- postal" only if the postal codes are equal.
-CREATE OR REPLACE TEMP FUNCTION address_bound(l ANY TYPE, r ANY TYPE, w ANY TYPE) AS (
-  CASE WHEN (l.address_code IS NULL OR r.address_code IS NULL) AND (l.address IS NULL OR r.address IS NULL)
-            AND (l.postal_code IS NULL OR r.postal_code IS NULL) THEN bits_at(w.address, -1)
-       WHEN l.address_code = r.address_code OR l.address__address = r.address__address
+CREATE OR REPLACE TEMP FUNCTION address_bound(x ANY TYPE, y ANY TYPE, w ANY TYPE) AS (
+  CASE WHEN (x.address_code IS NULL OR y.address_code IS NULL) AND (x.address IS NULL OR y.address IS NULL)
+            AND (x.postal_code IS NULL OR y.postal_code IS NULL) THEN bits_at(w.address, -1)
+       WHEN x.address_code = y.address_code OR x.address__address = y.address__address
          THEN bits_at(w.address, 3)                                                                   -- same address
        ELSE GREATEST(bits_at(w.address, 0),                                                           -- else
-                     IF(l.address__address IS NOT NULL AND r.address__address IS NOT NULL
-                        AND ABS(LENGTH(l.address__address) - LENGTH(r.address__address)) <= 2,
+                     IF(x.address__address IS NOT NULL AND y.address__address IS NOT NULL
+                        AND ABS(LENGTH(x.address__address) - LENGTH(y.address__address)) <= 2,
                         bits_at(w.address, 2), bits_at(w.address, 0)),                                -- address close
-                     IF(l.postal_code = r.postal_code, bits_at(w.address, 1), bits_at(w.address, 0)))  -- same postal
+                     IF(x.postal_code = y.postal_code, bits_at(w.address, 1), bits_at(w.address, 0)))  -- same postal
   END
 );
 
 -- bound_of adds the prior and each comparison's bound in the model's order, as weight_of adds a pair's points. The
 -- cheap comparisons (phone, cif and birth) take their own level.
-CREATE OR REPLACE TEMP FUNCTION bound_of(l ANY TYPE, r ANY TYPE, w ANY TYPE) AS (
-  w.prior_bits + name_bound(l, r, w) + company_bound(l, r, w) + address_bound(l, r, w)
-  + bits_at(w.phone, gamma_phone(l, r)) + bits_at(w.cif, gamma_cif(l, r)) + bits_at(w.birth, gamma_birth(l, r))
+CREATE OR REPLACE TEMP FUNCTION bound_of(x ANY TYPE, y ANY TYPE, w ANY TYPE) AS (
+  w.prior_bits + name_bound(x, y, w) + company_bound(x, y, w) + address_bound(x, y, w)
+  + bits_at(w.phone, gamma_phone(x, y)) + bits_at(w.cif, gamma_cif(x, y)) + bits_at(w.birth, gamma_birth(x, y))
 );
 
 -- could_reach is TRUE if a pair whose points are at most bound could reach floor. bound_of adds its bits in
 -- weight_of's order, each at least the pair's own level's, so rounding never leaves a pair's bound under its points.
--- The margin of 1e-9 under the floor keeps the test safe should the two orders ever part.
+-- rounding_margin, under the floor, keeps the test safe should the two orders ever part.
+CREATE OR REPLACE TEMP FUNCTION rounding_margin() AS (CAST(0.000000001 AS FLOAT64));
+
 CREATE OR REPLACE TEMP FUNCTION could_reach(bound ANY TYPE, floor ANY TYPE) AS (
-  bound >= floor - CAST(0.000000001 AS FLOAT64)
+  bound >= floor - rounding_margin()
 );
 
 
@@ -332,9 +340,9 @@ CREATE OR REPLACE TEMP FUNCTION could_reach(bound ANY TYPE, floor ANY TYPE) AS (
 --    scores. A big block holds few true matches, and a placeholder's block (a dummy phone, say) holds none.
 CREATE OR REPLACE TEMP TABLE gate_pairs AS
 WITH ranked AS (  -- nth_in_block is a record's place in its block by hash, and nth_in_batch its place among the batch's
-  SELECT g, k, id, new,
+  SELECT g, k, id, in_batch,
          ROW_NUMBER() OVER (PARTITION BY g, k ORDER BY er_hash(id)) AS nth_in_block,
-         IF(new, ROW_NUMBER() OVER (PARTITION BY g, k, new ORDER BY er_hash(id)), NULL) AS nth_in_batch
+         IF(in_batch, ROW_NUMBER() OVER (PARTITION BY g, k, in_batch ORDER BY er_hash(id)), NULL) AS nth_in_batch
   FROM key_blocks WHERE n >= @oversized
 )
 SELECT DISTINCT a.g, a.k, LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r
@@ -343,13 +351,13 @@ WHERE a.nth_in_batch <= @oversized AND b.nth_in_block <= @oversized
   AND NOT EXISTS (SELECT 1 FROM listed AS seen WHERE seen.l = LEAST(a.id, b.id) AND seen.r = GREATEST(a.id, b.id));
 
 CREATE OR REPLACE TEMP TABLE gated AS
--- scored_sample holds each sampled pair that the bound keeps, with its points. name_score is name_level's argument,
+-- gate_scored holds each sampled pair that the bound keeps, with its points. name_score is name_level's argument,
 -- so BigQuery computes it once a pair, as a function's arguments are computed before its body. A subquery that
 -- computed it first, as batch_scored does, would carry x and y whole, and read compared's full_name too.
-WITH scored_sample AS (
+WITH gate_scored AS (
   SELECT p.l, p.r,
          weight_of(name_level(x, y, name_score(x, y)), gamma_company(x, y), gamma_address(x, y), gamma_phone(x, y),
-                   gamma_cif(x, y), gamma_birth(x, y), w) AS w
+                   gamma_cif(x, y), gamma_birth(x, y), w) AS points
   FROM (SELECT DISTINCT l, r FROM gate_pairs) AS p JOIN compared AS x ON x.id = p.l JOIN compared AS y ON y.id = p.r
   CROSS JOIN weights AS w
   WHERE could_reach(bound_of(x, y, w), @search_floor)
@@ -357,8 +365,9 @@ WITH scored_sample AS (
 -- sampled counts every sampled pair of a block, those the bound dropped among them. best and hits read only the pairs
 -- scored.
 stats AS (
-  SELECT p.g, p.k, COUNT(*) AS sampled, MAX(s.w) AS best, COUNT(CASE WHEN s.w >= @search_floor THEN 1 END) AS hits
-  FROM gate_pairs AS p LEFT JOIN scored_sample AS s USING (l, r) GROUP BY p.g, p.k
+  SELECT p.g, p.k, COUNT(*) AS sampled, MAX(s.points) AS best,
+         COUNT(CASE WHEN s.points >= @search_floor THEN 1 END) AS hits
+  FROM gate_pairs AS p LEFT JOIN gate_scored AS s USING (l, r) GROUP BY p.g, p.k
 )
 SELECT z.g, z.k AS value, z.n AS records, pairs_of(z.n) AS pairs,
        COALESCE(s.sampled, 0) AS sampled, s.best, COALESCE(s.hits, 0) AS hits,
@@ -371,20 +380,21 @@ LEFT JOIN stats AS s ON s.g = z.g AND s.k = z.k;
 -- 5. The candidates. They are the pairs in listed, and every pair of a kept block that touches the batch. Each comes
 --    with the keys that listed it, as sources.
 CREATE OR REPLACE TABLE cands AS
-WITH every AS (
-  SELECT l, r, bits FROM listed
+WITH listed_or_gated AS (
+  SELECT l, r, mask FROM listed
   UNION ALL
   SELECT LEAST(a.id, b.id), GREATEST(a.id, b.id), 1 << a.g
-  FROM key_blocks AS a JOIN key_blocks AS b ON a.g = b.g AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
+  FROM key_blocks AS a
+  JOIN key_blocks AS b ON a.g = b.g AND a.k = b.k AND a.id <> b.id AND (NOT b.in_batch OR a.id < b.id)
   JOIN gated AS z ON z.g = a.g AND z.value = a.k
-  WHERE a.new AND z.decision = 'kept'
+  WHERE a.in_batch AND z.decision = 'kept'
 ),
-pairs AS (SELECT l, r, BIT_OR(bits) AS bits FROM every GROUP BY l, r),
-named AS (  -- each set of bits becomes the generators' names, in their order, joined by +
-  SELECT bits, ARRAY_TO_STRING(ARRAY(SELECT name FROM generators WHERE (bits >> g) & 1 = 1 ORDER BY g), '+') AS sources
-  FROM (SELECT DISTINCT bits FROM pairs)
+pairs AS (SELECT l, r, BIT_OR(mask) AS mask FROM listed_or_gated GROUP BY l, r),
+source_names AS (  -- each mask becomes the generators' names, in their order, joined by +
+  SELECT mask, ARRAY_TO_STRING(ARRAY(SELECT name FROM generators WHERE (mask >> g) & 1 = 1 ORDER BY g), '+') AS sources
+  FROM (SELECT DISTINCT mask FROM pairs)
 )
-SELECT pairs.l, pairs.r, named.sources FROM pairs JOIN named USING (bits);
+SELECT pairs.l, pairs.r, source_names.sources FROM pairs JOIN source_names USING (mask);
 
 
 -- 6. The scores. Each candidate that the bound keeps, and every rule pair, gets its levels and its points. The pairs
@@ -392,14 +402,15 @@ SELECT pairs.l, pairs.r, named.sources FROM pairs JOIN named USING (bits);
 --    person's or the company's. The batch's pairs are added to the run's scored. Each pair is scored once, in the
 --    batch that brings its later record.
 CREATE OR REPLACE TEMP TABLE batch_pairs AS  -- each of the batch's candidates and rule pairs appears once
-WITH found AS (
-  SELECT a.i, rules.rule, LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r
-  FROM rule_blocks AS a JOIN rule_blocks AS b ON a.i = b.i AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
+WITH rule_hits AS (
+  SELECT a.i AS rule_rank, rules.rule, LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r
+  FROM rule_blocks AS a
+  JOIN rule_blocks AS b ON a.i = b.i AND a.k = b.k AND a.id <> b.id AND (NOT b.in_batch OR a.id < b.id)
   -- A function given a row reads all of its columns, so x and y are rows of compared, which holds only the columns
   -- the comparisons read.
   JOIN compared AS x ON x.id = a.id JOIN compared AS y ON y.id = b.id
   JOIN rules ON rules.i = a.i
-  WHERE a.new AND a.n < @oversized
+  WHERE a.in_batch AND a.n < @oversized
     AND CASE rules.rule  -- These are the fuzzy rules' tests. The exact rules (X1-X5) and F7 test their keys alone.
           WHEN 'F1_NAME~_ADDRCD_PHONE' THEN near_name(x, y)
           WHEN 'F2_NAME~_ADDRESS~_PHONE' THEN near_name(x, y) AND near_address(x, y)
@@ -409,13 +420,13 @@ WITH found AS (
           WHEN 'F6_COMPANY~_ADDRCD_PHONE' THEN near_company(x, y)
           ELSE TRUE END
 ),
-rule_pairs AS (  -- each pair a rule finds, with the first rule in order that finds it (the least i)
-  SELECT l, r, MIN_BY(rule, i) AS rule FROM found GROUP BY l, r
+rule_pairs AS (  -- each pair a rule finds, with the first rule in order that finds it (the least rule_rank)
+  SELECT l, r, MIN_BY(rule, rule_rank) AS rule FROM rule_hits GROUP BY l, r
 )
 SELECT l, r, c.sources, p.rule FROM cands AS c FULL JOIN rule_pairs AS p USING (l, r);
 
 CREATE OR REPLACE TEMP TABLE batch_scored AS
-WITH kept AS (  -- kept computes the names' Jaro–Winkler (s_name) once for each pair the bound keeps
+WITH in_bound AS (  -- in_bound computes the names' Jaro–Winkler (s_name) once for each pair the bound keeps
   SELECT p.l, p.r, p.sources, p.rule, x, y, name_score(x, y) AS s_name
   FROM batch_pairs AS p JOIN compared AS x ON x.id = p.l JOIN compared AS y ON y.id = p.r CROSS JOIN weights AS w
   WHERE p.rule IS NOT NULL OR could_reach(bound_of(x, y, w), @keep_from)
@@ -424,12 +435,12 @@ levelled AS (
   SELECT l, r, sources, rule, name_level(x, y, s_name) AS gamma_name, gamma_company(x, y) AS gamma_company,
          gamma_address(x, y) AS gamma_address, gamma_phone(x, y) AS gamma_phone, gamma_cif(x, y) AS gamma_cif,
          gamma_birth(x, y) AS gamma_birth
-  FROM kept
+  FROM in_bound
 ),
 weighed AS (
-  SELECT x.*,
+  SELECT lv.*,
          weight_of(gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth, w) AS match_weight
-  FROM levelled AS x CROSS JOIN weights AS w
+  FROM levelled AS lv CROSS JOIN weights AS w
 )
 SELECT
   l AS id_l, r AS id_r, match_weight,

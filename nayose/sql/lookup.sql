@@ -6,7 +6,7 @@
 -- listed it. It also gives what was looked up, key by key.
 -- O(G·b + C·K·L²) for the record's C candidates.
 --
--- Reads: fresh (the record asked about), batch_scored (score.sql, which scores every candidate
+-- Reads: batch_records (the record asked about), batch_scored (score.sql, which scores every candidate
 -- of a lookup whatever keep_from says), gold (each stored record's entity), records, model (each level's label),
 -- generators, rules, key_blocks, gated, rule_blocks.
 -- Values:
@@ -20,22 +20,22 @@
 CREATE OR REPLACE TEMP TABLE candidates AS
 WITH paired AS (
   SELECT s.*, IF(s.id_l = a.id, s.id_r, s.id_l) AS other
-  FROM batch_scored AS s JOIN fresh AS a ON a.id = s.id_l OR a.id = s.id_r
+  FROM batch_scored AS s JOIN batch_records AS a ON a.id = s.id_l OR a.id = s.id_r
 ),
 shown AS (  -- this is match.sql's shown without the bits, so a missing side's level reads 'missing'
   SELECT comparison, gamma, label FROM model UNION ALL SELECT DISTINCT comparison, -1, 'missing' FROM model
 )
 SELECT
-  p.other AS id, g.cluster_id AS entity, p.match_weight AS points, p.rule, r.i AS rule_rank, p.sources,
+  p.other AS id, gd.cluster_id AS entity, p.match_weight AS points, p.rule, ru.i AS rule_rank, p.sources,
   p.match_weight >= @likely_from AND (p.gamma_name >= 0 OR p.gamma_company >= 0) AS likely,
-  n.label AS level_name, c.label AS level_company, d.label AS level_address, h.label AS level_phone,
+  nm.label AS level_name, c.label AS level_company, d.label AS level_address, h.label AS level_phone,
   i.label AS level_cif, b.label AS level_birth,
   x.full_name, x.person_name, x.company_name, x.address, x.postal_code, x.phone, x.birth_date, x.customer_id
 FROM paired AS p
-JOIN gold AS g ON g.id = p.other
+JOIN gold AS gd ON gd.id = p.other
 JOIN records AS x ON x.id = p.other
-LEFT JOIN rules AS r ON r.rule = p.rule
-JOIN shown AS n ON n.comparison = 'name' AND n.gamma = p.gamma_name
+LEFT JOIN rules AS ru ON ru.rule = p.rule
+JOIN shown AS nm ON nm.comparison = 'name' AND nm.gamma = p.gamma_name
 JOIN shown AS c ON c.comparison = 'company' AND c.gamma = p.gamma_company
 JOIN shown AS d ON d.comparison = 'address' AND d.gamma = p.gamma_address
 JOIN shown AS h ON h.comparison = 'phone' AND h.gamma = p.gamma_phone
@@ -47,19 +47,19 @@ JOIN shown AS b ON b.comparison = 'birth' AND b.gamma = p.gamma_birth;
 -- @at_least points or more, or if a rule joins it.
 CREATE OR REPLACE TEMP TABLE entities AS
 WITH ranked AS (
-  SELECT *, ROW_NUMBER() OVER (PARTITION BY entity ORDER BY points DESC, id) AS k,
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY entity ORDER BY points DESC, id) AS nth,
          COUNT(*) OVER (PARTITION BY entity) AS records
   FROM candidates
 ),
 joined AS (
   SELECT entity, rule FROM (
-    SELECT entity, rule, ROW_NUMBER() OVER (PARTITION BY entity ORDER BY rule_rank) AS k
+    SELECT entity, rule, ROW_NUMBER() OVER (PARTITION BY entity ORDER BY rule_rank) AS nth
     FROM candidates WHERE rule IS NOT NULL
-  ) WHERE k = 1
+  ) WHERE nth = 1
 )
-SELECT r.* EXCEPT (k, rule, rule_rank, likely), j.rule, r.likely OR j.rule IS NOT NULL AS likely
-FROM ranked AS r LEFT JOIN joined AS j USING (entity)
-WHERE r.k = 1 AND (r.points >= @at_least OR j.rule IS NOT NULL);
+SELECT rk.* EXCEPT (nth, rule, rule_rank, likely), j.rule, rk.likely OR j.rule IS NOT NULL AS likely
+FROM ranked AS rk LEFT JOIN joined AS j USING (entity)
+WHERE rk.nth = 1 AND (rk.points >= @at_least OR j.rule IS NOT NULL);
 
 -- checked reports what was looked up. For each key the run uses, it gives how many records the record's blocks of
 -- normal size hold (found), whether the record lacks the key (lacks), and the record's oversized blocks with the
@@ -67,7 +67,7 @@ WHERE r.k = 1 AND (r.points >= @at_least OR j.rule IS NOT NULL);
 -- key value is held by @oversized records or more, untrusted gives how many records hold it.
 CREATE OR REPLACE TEMP TABLE checked AS
 WITH mine AS (
-  SELECT g, k, n FROM key_blocks WHERE id IN (SELECT id FROM fresh)
+  SELECT g, k, n FROM key_blocks WHERE id IN (SELECT id FROM batch_records)
 ),
 normal AS (
   SELECT m.g, COUNT(DISTINCT b.id) - IF(@stored, 0, 1) AS found
@@ -82,6 +82,6 @@ SELECT g AS position, name AS key, COALESCE(normal.found, 0) AS found, g NOT IN 
 FROM generators LEFT JOIN normal USING (g) LEFT JOIN big USING (g)
 WHERE used
 UNION ALL
-SELECT 100 + r.i, CONCAT('rule ', r.rule), 0, FALSE, k.n, NULL
-FROM rules AS r JOIN rule_blocks AS k ON k.i = r.i
-WHERE r.used AND k.id IN (SELECT id FROM fresh) AND k.n >= @oversized;
+SELECT 100 + ru.i, CONCAT('rule ', ru.rule), 0, FALSE, rb.n, NULL
+FROM rules AS ru JOIN rule_blocks AS rb ON rb.i = ru.i
+WHERE ru.used AND rb.id IN (SELECT id FROM batch_records) AND rb.n >= @oversized;

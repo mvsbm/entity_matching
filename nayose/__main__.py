@@ -44,10 +44,10 @@ class Busy(InputError):
 
 
 class NothingNew(Exception):
-    """The batch holds nothing new: the run stays as it was, and the job says so (`said`)."""
+    """The batch holds nothing new: the run stays as it was, and the job says so (`result`)."""
 
-    def __init__(self, said: dict) -> None:
-        self.said = said
+    def __init__(self, result: dict) -> None:
+        self.result = result
 
 
 def files(given: str) -> list[Path]:
@@ -146,16 +146,16 @@ def build(a: argparse.Namespace) -> dict:
                          fix="choose another folder, or replace the run: "
                              f"python -m nayose build {a.given} --out {out} --overwrite")
     with writing(out, make=True, compute=limits(a)) as engine:
-        if (out / RUN).is_file() and (said := kept(out)):  # people's decisions stay with the run that replaces it
-            engine.con.execute(f"CREATE TABLE decisions AS SELECT * FROM read_parquet('{said}')")
-            Path(said).unlink()
+        if (out / RUN).is_file() and (decisions_file := saved_decisions(out)):  # they stay with the run replacing it
+            engine.con.execute(f"CREATE TABLE decisions AS SELECT * FROM read_parquet('{decisions_file}')")
+            Path(decisions_file).unlink()
         nayose.build(engine, given, timed=functools.partial(timed, steps))
         n = engine.value("SELECT COUNT(*) FROM records")
         report(engine, out, steps, "build")
     return dict(records=n, seconds=round(sum(steps.values()), 1), steps=steps)
 
 
-def kept(out: Path) -> str | None:
+def saved_decisions(out: Path) -> str | None:
     """Write the run's decisions to a Parquet file beside it, for the run that replaces it, and return its path."""
     con = duckdb.connect(str(out / RUN), read_only=True)
     try:
@@ -223,13 +223,14 @@ def lookup(a: argparse.Namespace) -> dict:
     with reading(a.out, copy=False) as engine:
         if not a.file:
             return nayose.lookup(engine, record=a.record, values=values or None, at_least=a.at_least, most=a.count)
-        given = nayose.config()["input"]
-        id_column, columns, out = given["id"], set(given["columns"]), []
+        inputs = nayose.config()["input"]
+        id_column, columns, out = inputs["id"], set(inputs["columns"]), []
         for rec in pq.read_table(files(a.file)[0]).to_pylist():
             asked = {k: str(v) for k, v in rec.items() if k in columns and k != id_column and v is not None}
-            found = nayose.lookup(engine, values=asked, at_least=a.at_least, most=a.count)["entities"] if asked else []
+            entities = (nayose.lookup(engine, values=asked, at_least=a.at_least, most=a.count)["entities"]
+                        if asked else [])
             rows = [dict(asked=rec.get(id_column), entity=e["entity"], record=e["record"], points=e["points"],
-                         rule=e["rule"], keys=e["keys"]) for e in found]
+                         rule=e["rule"], keys=e["keys"]) for e in entities]
             out += rows or [dict(asked=rec.get(id_column), entity=None, record=None, points=None, rule=None, keys=[])]
         return dict(records=out)
 
@@ -300,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = dict(build=build, update=update, match=match, decide=decide, lookup=lookup)[a.job](a)
     except NothingNew as e:
-        result = e.said
+        result = e.result
     except InputError as e:
         print(json.dumps(dict(severity="WARNING" if isinstance(e, Busy) else "ERROR", error=str(e), fix=e.fix),
                          ensure_ascii=False))
@@ -325,9 +326,9 @@ def refusal(e: duckdb.InvalidInputException) -> tuple[str, str]:
 
     Its words are "<what is wrong>; <the fix>"; without a "; ", each is the whole of them.
     """
-    message = str(e)
-    said = message.split("ValueError: ", 1)[-1] if "ValueError: " in message else message.split("Error: ", 1)[-1]
-    return said.split("; ", 1)[0], said.split("; ", 1)[-1]
+    raised = str(e)
+    message = raised.split("ValueError: ", 1)[-1] if "ValueError: " in raised else raised.split("Error: ", 1)[-1]
+    return message.split("; ", 1)[0], message.split("; ", 1)[-1]
 
 
 if __name__ == "__main__":

@@ -74,7 +74,7 @@ WHERE nayose_id IS NULL
 --    kana_fold writes voiced kana as unvoiced, small kana as large, and ー as ウ (@kana_fold_from to @kana_fold_to).
 
 CREATE OR REPLACE TEMP TABLE standardized AS
-WITH kept AS (  -- Each record that isn't set aside is kept once.
+WITH admitted AS (  -- Each record that isn't set aside is admitted once.
   SELECT DISTINCT m.*
   FROM mapped AS m
   WHERE m.id IS NOT NULL
@@ -102,7 +102,7 @@ SELECT
   NULLIF(birth_date, '') AS birth_date,
   NULLIF(kind_flag, '') AS kind_flag,
   any_name AS kind_name  -- Section 3 looks for a legal form in this name as written.
-FROM kept;
+FROM admitted;
 
 
 -- sided holds each record once, with its kind (section 3) and its names in the fields of its side (section 4).
@@ -119,15 +119,15 @@ CREATE OR REPLACE TEMP TABLE sided AS
 -- model's training, each n-gram counts once however often the name holds it, and an n-gram the model doesn't know
 -- adds nothing.
 WITH name_sums AS (
-  SELECT g.t, SUM(w.w) AS s
+  SELECT grams.t, SUM(nw.coef) AS s
   FROM (
     SELECT DISTINCT t, SUBSTR(t, i, n) AS term
     FROM (SELECT DISTINCT LOWER(any_name) AS t FROM standardized WHERE any_name IS NOT NULL),
       UNNEST(GENERATE_ARRAY(1, @ngram)) AS n,
       UNNEST(GENERATE_ARRAY(1, LENGTH(t) - n + 1)) AS i
-  ) AS g
-  JOIN name_weights AS w ON w.term = g.term
-  GROUP BY g.t
+  ) AS grams
+  JOIN name_weights AS nw ON nw.term = grams.term
+  GROUP BY grams.t
 ),
 -- judged and each CTE after it hold one row per record. written is TRUE if the name as written holds a legal form.
 -- logit is the name model's log-odds that the name is a company's. flag is the file's flag as a kind: 2 company,
@@ -137,13 +137,13 @@ judged AS (
     s.*,
     COALESCE(REGEXP_CONTAINS(NULLIF(TRANSLATE(REGEXP_REPLACE(nfkc(kind_name), r'[\s\x{3000}]+', ''), @hiragana, @katakana), ''),
                              @legal_pattern), FALSE) AS written,
-    IF(s.any_name IS NULL, NULL, @intercept + COALESCE(n.s, CAST(0 AS FLOAT64))) AS logit,
+    IF(s.any_name IS NULL, NULL, @intercept + COALESCE(sums.s, CAST(0 AS FLOAT64))) AS logit,
     CASE WHEN s.kind_flag IS NULL THEN NULL
          WHEN trimmed(nfkc(s.kind_flag))
               IN UNNEST(@flag_company) THEN 2
          ELSE 1 END AS flag
   FROM standardized AS s
-  LEFT JOIN name_sums AS n ON n.t = LOWER(s.any_name)
+  LEFT JOIN name_sums AS sums ON sums.t = LOWER(s.any_name)
 ),
 name_chance AS (  -- name_p is the chance that the name is a company's, or NULL if the model can read no name.
   -- The logistic takes two forms so that EXP never gets a large argument, which BigQuery refuses as an overflow.
@@ -227,7 +227,7 @@ FROM same;
 -- known keeps the run's placeholders from before this batch, since placeholders is replaced below.
 CREATE OR REPLACE TEMP TABLE known AS SELECT * FROM placeholders;
 
-CREATE OR REPLACE TEMP TABLE found AS
+CREATE OR REPLACE TEMP TABLE new_placeholders AS
 -- counted holds the run's records and the batch's. The run's records were written with the run's placeholders
 -- already blanked, and the batch's values are read here with them as missing.
 WITH counted AS (
@@ -276,7 +276,7 @@ SELECT c.field, c.value, c.n FROM crowded AS c JOIN field_bars AS b USING (field
 WHERE NOT @lookup AND (c.field = 'customer_id' OR pairs_of(c.n) > b.all_pairs - p.pairs);
 
 CREATE OR REPLACE TABLE placeholders AS
-SELECT * FROM known UNION ALL SELECT * FROM found;
+SELECT * FROM known UNION ALL SELECT * FROM new_placeholders;
 
 -- 6. The records are written with the copies of their fields that the keys and comparisons read. Each copy is a chain
 --    of steps from a field, and is named field__steps, as person_name__kana_fold is. The batch's records are
@@ -293,22 +293,22 @@ SELECT * FROM known UNION ALL SELECT * FROM found;
 
 -- redone holds the run's records that hold a placeholder this batch found: their fields, without their copies. The
 -- INSERT below makes their copies again, with the batch's.
--- when: EXISTS (SELECT 1 FROM found)
+-- when: EXISTS (SELECT 1 FROM new_placeholders)
 CREATE OR REPLACE TEMP TABLE redone AS
 SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
        birth_date, kind, kind_p, kind_by, kind_flagged, full_name, person_name,
        company_name, batch
 FROM records
-WHERE person_name IN (SELECT value FROM found WHERE field = 'person_name')
-   OR company_name IN (SELECT value FROM found WHERE field = 'company_name')
-   OR address_code IN (SELECT value FROM found WHERE field = 'address_code')
-   OR address IN (SELECT value FROM found WHERE field = 'address')
-   OR phone IN (SELECT value FROM found WHERE field = 'phone')
-   OR birth_date IN (SELECT value FROM found WHERE field = 'birth_date')
-   OR customer_id IN (SELECT value FROM found WHERE field = 'customer_id');
+WHERE person_name IN (SELECT value FROM new_placeholders WHERE field = 'person_name')
+   OR company_name IN (SELECT value FROM new_placeholders WHERE field = 'company_name')
+   OR address_code IN (SELECT value FROM new_placeholders WHERE field = 'address_code')
+   OR address IN (SELECT value FROM new_placeholders WHERE field = 'address')
+   OR phone IN (SELECT value FROM new_placeholders WHERE field = 'phone')
+   OR birth_date IN (SELECT value FROM new_placeholders WHERE field = 'birth_date')
+   OR customer_id IN (SELECT value FROM new_placeholders WHERE field = 'customer_id');
 
 -- If the batch found no placeholder, redone is empty, with the same columns, and no record is made again.
--- when: NOT EXISTS (SELECT 1 FROM found)
+-- when: NOT EXISTS (SELECT 1 FROM new_placeholders)
 CREATE OR REPLACE TEMP TABLE redone AS
 SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
        birth_date, kind, kind_p, kind_by, kind_flagged, full_name, person_name,

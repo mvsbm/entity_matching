@@ -41,7 +41,8 @@ def report_text(engine: Engine, steps: dict[str, float], job: str) -> str:
     notes = json.loads(engine.value("SELECT notes FROM fit"))
     sections = [report_header(engine, steps, added), report_summary(engine, c, counts, added, fill),
                 report_fields(engine, fill), report_unmapped(engine, c, json.loads(values["patterns"])),
-                report_scores(engine, values["edges"]), report_patterns(engine, values["floor"]),
+                report_scores(engine, values["edges"]),
+                report_patterns(engine, values["floor"], values["patterns_shown"]),
                 report_clusters(engine), report_steps(counts, notes, steps, job), report_keys(keys),
                 report_model(engine, c, notes), report_blocks(keys, counts)]
     return "\n".join(line for section in sections for line in section) + "\n"
@@ -137,7 +138,8 @@ def report_fields(engine: Engine, fill: dict) -> list[str]:
                          top_value=percent(shape.at[f, "top_value"]), no_letters=percent(shape.at[f, "no_letters"]),
                          length="" if pd.isna(length) else f"{length:.0f}",
                          longest="" if pd.isna(longest) else number(longest)))
-    return ["FIELDS  (looks right, top value, no letters, length: on a sample of 10,000 records)",
+    sample = int(nayose.config()["report"]["sample_records"])
+    return [f"FIELDS  (looks right, top value, no letters, length: on a sample of {sample:,} records)",
             *text_table(pd.DataFrame(rows)), ""]
 
 
@@ -152,7 +154,7 @@ def report_unmapped(engine: Engine, c: dict, patterns: dict[str, str]) -> list[s
                               distinct=shown["distinct"].map(percent), looks_like=shown["looks_like"], share=share))
     more = [f"  and {len(columns) - len(shown):,} more"] if len(columns) > len(shown) else []
     return ["COLUMNS NOT MAPPED  (no field reads them; filled, distinct and the field their values look most like: "
-            "on the first 10,000 records)", *text_table(table), *more, ""]
+            f"on the first {int(c['report']['sample_records']):,} records)", *text_table(table), *more, ""]
 
 
 def report_scores(engine: Engine, edges: list[float]) -> list[str]:
@@ -172,27 +174,29 @@ def report_scores(engine: Engine, edges: list[float]) -> list[str]:
     return ["SCORES  (the candidates scored, by bits)", *text_table(pd.DataFrame(rows)), ""]
 
 
-def report_patterns(engine: Engine, floor: float) -> list[str]:
-    """Return the PATTERNS BY SCORE section: each band's 12 commonest patterns of levels, below and from `floor`."""
-    label_of = {(x, g): label for x, g, label in engine.rows("SELECT comparison, gamma, label FROM model")}
-    patterns = engine.frame("SELECT * FROM report_patterns ORDER BY up DESC, k")
+def report_patterns(engine: Engine, floor: float, shown: int) -> list[str]:
+    """Return the PATTERNS BY SCORE section: each band's `shown` most common patterns of levels, below and from
+    `floor`."""
+    label_of = {(comparison, gamma): label
+                for comparison, gamma, label in engine.rows("SELECT comparison, gamma, label FROM model")}
+    patterns = engine.frame("SELECT * FROM report_patterns ORDER BY up DESC, nth")
 
     def band(up: bool) -> str:
         return f"{floor:g} and up" if up else f"0 to {floor:g}"
 
     def level(x, k: str) -> str:
-        g = x[f"gamma_{k}"]
-        return "missing" if pd.isna(g) or g < 0 else label_of[k, int(g)]
+        gamma = x[f"gamma_{k}"]
+        return "missing" if pd.isna(gamma) or gamma < 0 else label_of[k, int(gamma)]
 
-    rows = [dict(band=band(x["up"]), pairs=number(x["n"]), bits=f"{x['w']:.1f}",
+    rows = [dict(band=band(x["up"]), pairs=number(x["n"]), bits=f"{x['mean_points']:.1f}",
                  **{k: level(x, k) for k in COMPARISONS}) for _, x in patterns.iterrows()]
-    more = []  # a band with more than the 12 patterns shown: how many more, and their pairs
-    for up, g in patterns.groupby("up", sort=False):
-        if g["kinds"].iloc[0] > 12:
-            pairs = int(g["total"].iloc[0]) - int(g["n"].sum())
-            more.append(f"  {band(up)}: {int(g['kinds'].iloc[0]) - 12:,} patterns more, {pairs:,} pairs")
+    more = []  # a band with more than the patterns shown: how many more, and their pairs
+    for up, band_rows in patterns.groupby("up", sort=False):
+        if band_rows["kinds"].iloc[0] > shown:
+            pairs = int(band_rows["total"].iloc[0]) - int(band_rows["n"].sum())
+            more.append(f"  {band(up)}: {int(band_rows['kinds'].iloc[0]) - shown:,} patterns more, {pairs:,} pairs")
     return ["PATTERNS BY SCORE  (the keys' pairs at 0 bits and up, below and from the review floor: "
-            "each band's 12 most common levels)", *text_table(pd.DataFrame(rows)), *more, ""]
+            f"each band's {shown} most common levels)", *text_table(pd.DataFrame(rows)), *more, ""]
 
 
 def report_clusters(engine: Engine) -> list[str]:
@@ -262,7 +266,7 @@ def report_blocks(keys: pd.DataFrame, counts) -> list[str]:
 
 
 def unmapped(engine: Engine, c: dict, patterns: dict[str, str]) -> pd.DataFrame | None:
-    """Return the input's columns that no field reads (config.toml's [input] columns), on its first 10,000 rows.
+    """Return the input's columns that no field reads (config.toml's [input] columns), on its first rows.
 
     For each column: the share filled, the share of filled values held once, and the field whose look ([report]
     patterns) its values have most, with that share; best fit first. DuckDB only: it reads the file's own columns by
@@ -278,7 +282,8 @@ def unmapped(engine: Engine, c: dict, patterns: dict[str, str]) -> pd.DataFrame 
 
     con = engine.con
     cast = ", ".join(f"CAST({quote(x)} AS VARCHAR) AS {quote(x)}" for x in columns)
-    con.execute(f"CREATE OR REPLACE TEMP TABLE nayose_sample AS SELECT {cast} FROM input LIMIT 10000")
+    sample = int(c["report"]["sample_records"])
+    con.execute(f"CREATE OR REPLACE TEMP TABLE nayose_sample AS SELECT {cast} FROM input LIMIT {sample}")
     n = max(1, con.execute("SELECT COUNT(*) FROM nayose_sample").fetchall()[0][0])
     filled = "SELECT * FROM (UNPIVOT nayose_sample ON COLUMNS(*) INTO NAME c VALUE v) WHERE trim(v, ?) <> ''"
     counted = con.execute(f"SELECT c, COUNT(*), COUNT(DISTINCT v) FROM ({filled}) GROUP BY c", [BLANK]).fetchall()

@@ -27,6 +27,7 @@ UNSEEN_M = 1e-6  # the m Splink gives a level that no pair of the session reache
 MAX_ROUNDS = 25  # Splink's max_iterations
 CONVERGED = 1e-4  # Splink's em_convergence: stop once no m and no λ moves by more than this
 ELSE = "else"  # the label of each comparison's last level: none of the others
+LAMBDA_CAP = 1 - 1e-9  # the most the rescaled λ can be, a hair under 1, so that its log-odds stay finite (score.sql's)
 PRIOR_RULES = {  # fit_prior's columns, named as the report names the rules
     "cif_name": "customer_id + full_name",
     "cif_company": "customer_id + company_name",
@@ -34,13 +35,13 @@ PRIOR_RULES = {  # fit_prior's columns, named as the report names the rules
 }
 
 
-def fit(counts: str, settings: str, stored: str | None = None) -> str:
+def fit(counts: str, settings: str, given_fit: str | None = None) -> str:
     """Fit the model and return it as JSON.
 
-    `counts` holds fit.sql's tables, each a list of rows; `settings` is config.toml's [fit]. Without `stored` (a build),
-    the model is learned on the sample (learn) and its u measured on the file (assemble). With `stored`, what fit
-    returned for another file (as scripts/benchmark.py fits one on a train split), the model is kept and its u
-    measured on this file whole.
+    `counts` holds fit.sql's tables, each a list of rows; `settings` is config.toml's [fit]. Without `given_fit` (a
+    build), the model is learned on the sample (learn) and its u measured on the file (assemble). With `given_fit`,
+    what fit returned for another file (as scripts/benchmark.py fits one on a train split), that model is used and its
+    u measured on this file whole.
 
     The result holds each level with m and u as fitted and as measured on the file (file_m, file_u, and bits: what a
     score adds), λ and its bits at the file's size (prior_bits), the sample's size, the notes the report reads, and the
@@ -50,7 +51,7 @@ def fit(counts: str, settings: str, stored: str | None = None) -> str:
     # by comparison, then the strongest level first
     levels = sorted(tables["levels"], key=lambda lv: (lv["position"], -lv["gamma"]))
     measures = measured(tables, config)
-    model = (json.loads(stored)["model"] if stored is not None
+    model = (json.loads(given_fit)["model"] if given_fit is not None
              else learn(levels, measures["sample"], tables["prior"][0], tables["patterns"] or [], config))
     file = measures["file"]
     exact = exact_u(levels, file)
@@ -61,7 +62,7 @@ def fit(counts: str, settings: str, stored: str | None = None) -> str:
 def fitted(model: dict, scoring: dict, n: int) -> str:
     """Return what fit gives back, as JSON: the model as scored on a file of `n` records."""
     # λ is a per-pair rate, so it is rescaled to the file's size (score.sql's weights rescale it the same way)
-    lam = min(model["probability"] * (model["fit_rows"] - 1) / max(n - 1, 1), 1 - 1e-9)
+    lam = min(model["probability"] * (model["fit_rows"] - 1) / max(n - 1, 1), LAMBDA_CAP)
     levels = [dict(lv, file_m=f["m"], file_u=f["u"], bits=bits(f["m"], f["u"]))
               for lv, f in zip(model["levels"], scoring["levels"])]
     notes = dict(model["notes"], file_adjusted=scoring["notes"]["adjusted"])
@@ -99,27 +100,27 @@ def exact_u(levels: list[dict], counts: dict) -> dict[str, dict[str, float]]:
     """
     out: dict[str, dict[str, float]] = {}
     for name in comparisons(levels):
-        named = [lv for lv in levels if lv["comparison"] == name and lv["kind"] != ELSE]
-        if u_of := counted_u(name, named, counts):
+        counted_levels = [lv for lv in levels if lv["comparison"] == name and lv["kind"] != ELSE]
+        if u_of := counted_u(name, counted_levels, counts):
             out[name] = u_of
     return out
 
 
-def counted_u(name: str, named: list[dict], counts: dict) -> dict[str, float]:
-    """Return the u of the levels `named`, one comparison's but its else level, that fit.sql counted, in their order.
+def counted_u(name: str, counted_levels: list[dict], counts: dict) -> dict[str, float]:
+    """Return the u of `counted_levels`, one comparison's levels but its else level, that fit.sql counted, in order.
 
     A level counted with no pair has no u. When some level has a u and every one does, the else level's u is the rest.
     """
     outside = float(counts["outside"][name])
     u_of: dict[str, float] = {}
-    for lv in named:
+    for lv in counted_levels:
         pairs = counts["counted"].get((name, lv["label"]), counts["near"].get((name, lv["label"])))
         if pairs is None:
             break  # a level not counted: neither is any after it
         u = float(pairs) / outside if outside else 0.0
         if u > 0:
             u_of[lv["label"]] = u
-    if not u_of or any(lv["label"] not in u_of for lv in named):
+    if not u_of or any(lv["label"] not in u_of for lv in counted_levels):
         return u_of  # no rest unless some level has a u, and every one does: the else level is sampled
     counted = 0.0
     for u in u_of.values():  # added in turn: Python 3.12+'s sum() rounds otherwise, and BigQuery runs 3.11
@@ -174,13 +175,13 @@ def learn(levels: list[dict], counts: dict, prior_counts: dict, patterns: list[d
     """
     names = comparisons(levels)
     model, filled_u = sample_u(levels, counts, names)
-    records, found = prior_counts["records"], prior_counts["found"]
+    records, prior_pairs = prior_counts["records"], prior_counts["prior_pairs"]
     rules_found = [rule for rule in PRIOR_RULES if prior_counts[rule]]
     sessions = [s["key"] for s in settings["sessions"]]
     patterns_of = {s: [tuple(p[n] for n in names) + (p["pairs"],) for p in patterns if p["session"] == s]
                    for s in sessions}
     em_pairs = {s: sum(p[-1] for p in patterns_of[s]) for s in sessions if patterns_of[s]}
-    lam = prior_rate(records, found, rules_found, sessions, em_pairs, settings["prior_recall"])
+    lam = prior_rate(records, prior_pairs, rules_found, sessions, em_pairs, settings["prior_recall"])
     with_pairs = [s for s in settings["sessions"] if s["key"] in em_pairs]
     learned, filled_m = learn_m(model, with_pairs, patterns_of, names, lam)
     adjusted = sensible_m(model, {tuple(x) for x in filled_m})
@@ -203,7 +204,7 @@ def sample_u(levels: list[dict], counts: dict, names: list[str]) -> tuple[dict, 
     return model, filled_u
 
 
-def prior_rate(records: int, found: int, rules_found: list[str], sessions: list[str], em_pairs: dict,
+def prior_rate(records: int, prior_pairs: int, rules_found: list[str], sessions: list[str], em_pairs: dict,
                recall: float) -> float:
     """Return λ: the pairs the near-certain rules find, over their recall, over every pair of the sample.
 
@@ -217,12 +218,12 @@ def prior_rate(records: int, found: int, rules_found: list[str], sessions: list[
     if not em_pairs:
         raise ValueError(f"no two records of the {records:,} the fit samples share {' or '.join(sessions)}, "
                          "the pairs it learns from: map those fields to filled columns")
-    every = int(records * (records - 1) / 2)
-    if found > every * recall:
-        raise ValueError(f"the near-certain rules find {found:,} of the {every:,} pairs, more than a recall of "
-                         f"{recall} allows (at least {found / every:,.2f}): "
+    all_pairs = int(records * (records - 1) / 2)
+    if prior_pairs > all_pairs * recall:
+        raise ValueError(f"the near-certain rules find {prior_pairs:,} of the {all_pairs:,} pairs, more than a recall "
+                         f"of {recall} allows (at least {prior_pairs / all_pairs:,.2f}): "
                          "raise [fit] prior_recall, or make the prior rules stricter")
-    return found / recall / every
+    return prior_pairs / recall / all_pairs
 
 
 def learn_m(model: dict, with_pairs: list[dict], patterns_of: dict[str, list[tuple]], names: list[str],
@@ -315,13 +316,13 @@ def expect(rows: list[tuple], order: list[str], points_at: dict, prior_points: f
     matches, pairs = 0.0, 0
     for gammas, count in rows:  # loops, not sum(): Python 3.12+'s sum() rounds otherwise, and BigQuery runs 3.11
         total = prior_points
-        for name, g in zip(order, gammas):
-            total = total + points_at[name, g]
+        for name, gamma in zip(order, gammas):
+            total = total + points_at[name, gamma]
         p = probability(total)
         matches += p * count
         pairs += count
-        for name, g in zip(order, gammas):
-            expected[name, g] = expected.get((name, g), 0.0) + p * count
+        for name, gamma in zip(order, gammas):
+            expected[name, gamma] = expected.get((name, gamma), 0.0) + p * count
     return matches, pairs, expected
 
 
