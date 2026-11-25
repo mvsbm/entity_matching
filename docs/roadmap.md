@@ -28,5 +28,6 @@ Each of these is kept only where the sandbox shows the bill falling, every table
   procedure sets, where the batch is small enough to. It adds a column to both indexes and a step to the deploy, so it
   is kept only where the scale rehearsal shows the bill falling.
 - **Search indexes** on `records.id`, `gold.id` and the key index's `key`, for the lookups.
-- **Storage.** Physical (compressed) storage billing, with two days of time travel: each update adds to the key index
-  and rewrites the fit's tables, and time travel keeps every version it replaces.
+- **Storage.** The run's dataset is billed by its compressed bytes, with two days of time travel
+  (`deploy/terraform/main.tf`): a sandbox's run compressed about 5 times. To confirm at scale, with time travel's
+  share: each update adds to the key index and replaces gold and cands, and time travel keeps every version replaced.
