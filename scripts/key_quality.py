@@ -25,6 +25,7 @@ from nayose.engines import DuckDB  # noqa: E402
 
 def measure(run: Path, truth: Path | None, points: float) -> dict:
     engine = DuckDB(run / "run.duckdb", read_only=True)
+    nayose.unchanged(engine, nayose.build_again("count it", run))  # its tables are this method's
     con = engine.con
     if con.execute("SELECT MAX(batch) FROM records").fetchone()[0]:
         raise SystemExit(f"{run}: updated since its build, and cands holds its last batch's pairs alone: count a build's run")
@@ -89,7 +90,10 @@ def main(argv: list[str] | None = None) -> int:
         nayose.check_threshold(a.points)
     except nayose.InputError as e:
         p.error(f"--points: {e}")
-    print(report(measure(a.run, a.truth, a.points), a.truth is not None))
+    try:
+        print(report(measure(a.run, a.truth, a.points), a.truth is not None))
+    except nayose.InputError as e:
+        p.error(f"{e}: {e.fix}")
     return 0
 
 

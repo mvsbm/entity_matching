@@ -3,6 +3,7 @@ SQL files a run here reads, each job a procedure of its stages' statements with 
 config.toml, the method's functions the dataset's and named so by every call; the scripts against a client that
 records what it is sent."""
 import importlib.util
+import json
 import math
 import re
 import subprocess
@@ -61,6 +62,8 @@ def test_each_job_is_a_procedure_of_its_stages_with_every_value_it_reads_declare
     views = re.findall(r"CREATE OR REPLACE VIEW [^;]*", jobs["build"])  # a view's tables named with their dataset: BigQuery reads no default there
     assert len(views) == 1 and all(re.search(r"\bFROM p\.run\.\w+", v) and not re.search(r"\bFROM (?!p\.run\.)\w+\b", v) for v in views), views
     assert "DROP TABLE" not in jobs["update"] and "fit_model(" not in jobs["update"]  # an update scores with the build's model
+    unchanged = nayose.UNCHANGED.split("@fingerprint")[0]  # every job after a build refuses a run another method built
+    assert unchanged not in jobs["build"] and all(unchanged in jobs[j] for j in ("update", "decide", "match"))
 
 
 def test_the_deploy_sends_the_functions_bodies_as_written():  # qualified names the calls of the SQL alone
@@ -73,6 +76,13 @@ def test_a_procedure_reads_each_value_as_its_variable_outside_strings_alone():  
     sql = "-- when: @a  -- the run's @b\nSELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, @x AS v FROM t"
     assert in_procedure(sql, "p.run") == ("IF v_a THEN\n-- when: v_a  -- the run's v_b\n"
                                           "SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, v_x AS v FROM t;\nEND IF")
+
+
+def test_report_txt_names_the_method_the_run_was_built_by_and_its_engine():  # on BigQuery, the deploy's mapping's
+    from nayose.reporting import report_header
+    engine = SimpleNamespace(name="bigquery", value=lambda sql: "f" * 64 if sql == "SELECT fingerprint FROM method" else None)
+    head = report_header(engine, {"build": 1.0}, None)
+    assert head[1].endswith(" · method ffffffffffff") and " · bigquery · " in head[2] and "duckdb" not in head[2]
 
 
 def test_a_value_is_declared_as_bigquery_reads_it():
@@ -122,9 +132,10 @@ def test_a_job_loads_its_input_into_the_dataset_and_calls_its_procedure(monkeypa
 
 
 class Tables(Recorded):  # a dataset's tables, each a version and a type, as BigQuery lists them: what a job's statements leave
-    def __init__(self, tables: dict, job: dict | None = None, fail: str | None = None):
+    def __init__(self, tables: dict, job: dict | None = None, fail: tuple = ()):
         super().__init__()
-        self.tables, self.job, self.fail = dict(tables), job or {}, fail  # job: the procedure's tables (None: dropped)
+        self.tables, self.job = dict(tables), job or {}  # job: the procedure's tables (None: dropped)
+        self.fails = list(fail)  # each in turn: a statement holding it fails, or the procedure ("procedure", "interrupted")
         self.kind = dict.fromkeys(tables, "BASE TABLE")
         self.mark, self.sessions, self.running, self.checked_in = {}, 0, set(), []
 
@@ -141,8 +152,8 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
             name = [x.split(".")[-1] for x in re.findall(r"`p\.run`\.(\w+)", s)]
             if not name and "INFORMATION_SCHEMA" not in s:  # on the default dataset alone (a lookup's looked_up): recorded, no more
                 continue
-            if self.fail and self.fail != "procedure" and self.fail in s:
-                self.fail = None
+            if self.fails and self.fails[0] not in ("procedure", "interrupted") and self.fails[0] in s:
+                self.fails.pop(0)
                 raise RuntimeError(f"failed: {s[:60]}")
             if "INFORMATION_SCHEMA.TABLES" in s:
                 kinds = re.findall(r"'([A-Z ]+)'", s)
@@ -168,9 +179,11 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                         self.tables.pop(x, None), self.kind.pop(x, None)
                     else:
                         self.tables[x], self.kind[x] = v, "BASE TABLE"
-                if self.fail == "procedure":
+                if self.fails[:1] == ["procedure"]:
+                    self.fails.pop(0)
                     raise RuntimeError("the procedure failed partway")
-                if self.fail == "interrupted":  # the client stopped waiting: the procedure carries on in BigQuery
+                if self.fails[:1] == ["interrupted"]:  # the client stopped waiting: the procedure carries on in BigQuery
+                    self.fails.pop(0)
                     self.running.add(session)
                     raise KeyboardInterrupt
         return SimpleNamespace(result=lambda rows=rows: rows, session_info=SimpleNamespace(session_id=session))
@@ -183,41 +196,66 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
         return SimpleNamespace(location="asia-northeast1")
 
 
-def test_a_job_on_bigquery_is_all_or_nothing(monkeypatch):
+def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monkeypatch, capsys):
     run = script("run")
     monkeypatch.setattr(run.nayose, "report_text", lambda engine, steps, job: "")
     build = ["p.run", "build", "gs://b/x.parquet"]
     before = {"records": 1, "scored": 1, "decisions": 1, "name_weights": 1}
     made = {"records": 2, "scored": None, "report_steps": 2}  # what the procedure leaves: one replaced, one dropped, one new
     after = {"records": 2, "decisions": 1, "name_weights": 1, "report_steps": 2, "input": "loaded"}
+
+    def ends(client, argv=build) -> tuple[int, dict]:  # the exit code, and the JSON line said last
+        code = run.main(argv, client=client, bigquery=MODULE)
+        return code, json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+
     done = Tables(before, made)
-    assert run.main(build, client=done, bigquery=MODULE) == 0 and done.tables == after  # no mark, no clone left
-    assert run.main(build, client=done, bigquery=MODULE) == 0 and done.tables == after  # and the next job runs as well
-    failed = Tables(before, made, fail="procedure")
-    assert run.main(build, client=failed, bigquery=MODULE) == 1  # a JSON line says it failed, and how to go on
+    code, said = ends(done)
+    assert code == 0 and said["severity"] == "INFO" and "seconds" in said and done.tables == after  # no mark, no clone left
+    assert ends(done)[0] == 0 and done.tables == after  # and the next job runs as well
+    failed = Tables(before, made, fail=["procedure"])
+    code, said = ends(failed)
+    assert code == 1 and said == {"severity": "ERROR", "job": "build", "dataset": "p.run", "error": "the procedure failed partway", "fix": "run this job again"}
     assert failed.tables == before  # each table from its clone, the one dropped too; the input and the new table dropped
-    left = Tables(before, made, fail="DROP TABLE `p.run`.before__records")  # a job done, its mark gone, a clone left behind
-    assert run.main(build, client=left, bigquery=MODULE) == 1
-    left.job, left.fail = {"records": 3}, "CREATE TABLE `p.run`.before__records"  # the next job fails cloning
-    assert run.main(build, client=left, bigquery=MODULE) == 1
+    stuck = Tables(before, made, fail=["procedure", "CREATE OR REPLACE TABLE `p.run`.records CLONE"])  # and its undo fails
+    code, said = ends(stuck)
+    assert code == 1 and said["error"] == "the procedure failed partway" and said["undo_error"].startswith("failed: CREATE OR REPLACE TABLE")
+    assert said["fix"] == "undo it (python deploy/run.py p.run undo), then run this job again" and "job_running" in stuck.tables
+    assert ends(stuck, ["p.run", "undo"])[0] == 0 and stuck.tables == before
+    left = Tables(before, made, fail=["DROP TABLE `p.run`.before__records"])  # a job done, its mark gone, a clone left behind
+    code, said = ends(left)
+    assert code == 1 and said["finished"] and said["failed"].startswith("ending it") and said["error"].startswith("failed: DROP TABLE")
+    assert said["fix"] == "run nothing again: the next job drops the clones left" and "job_running" not in left.tables
+    left.job, left.fails = {"records": 3}, ["CREATE TABLE `p.run`.before__records"]  # the next job fails cloning
+    code, said = ends(left)
+    assert code == 1 and said["error"].startswith("failed: CREATE TABLE") and said["fix"] == "run this job again"
     assert left.tables == after  # the left clone was dropped first, so nothing older came back
-    cut = Tables(before, made, fail="interrupted")  # stopped waiting mid-call: no undo while its procedure runs on
-    assert run.main(build, client=cut, bigquery=MODULE) == 75 and cut.tables["records"] == 2 and "job_running" in cut.tables
+    marked = Tables(before, made, fail=["DROP TABLE `p.run`.job_running"])  # a job done, its mark left: an undo would take it back
+    code, said = ends(marked)
+    assert code == 1 and said["finished"] and "drop the mark alone" in said["fix"] and "never undo" in said["fix"]
+    monkeypatch.setattr(run.nayose, "report_text", lambda engine, steps, job: 1 / 0)
+    unreported = Tables(before, made)
+    code, said = ends(unreported)
+    assert code == 1 and said["finished"] and said["failed"] == "report.txt" and said["error"] == "division by zero"
+    assert unreported.tables == after and "run nothing again" in said["fix"]
+    cut = Tables(before, made, fail=["interrupted"])  # stopped waiting mid-call: no undo while its procedure runs on
+    code, said = ends(cut)
+    assert code == 75 and said["cause"] == "KeyboardInterrupt" and said["fix"] == "undo once it ends: python deploy/run.py p.run undo"
+    assert cut.tables["records"] == 2 and "job_running" in cut.tables
     cut.running = set()  # it ended: the undo it was told to run puts every table back
-    assert run.main(["p.run", "undo"], client=cut, bigquery=MODULE) == 0 and cut.tables == before
+    assert ends(cut, ["p.run", "undo"]) == (0, {"severity": "INFO", "job": "undo", "dataset": "p.run", "undone": True}) and cut.tables == before
     assert cut.checked_in and not any(cut.checked_in)  # each check outside every session, so it never counts itself
 
     died = Tables(before, made)  # a job whose process died, its procedure run: the next job refuses; undo waits for it, then undoes
     assert run.begin(run.BigQuery("p.run", client=died, bigquery=MODULE), "p.run", "build")
     died.query("CALL `p.run`.build()")
     died.running, died.tables["name_weights"] = {"s1"}, 2  # its procedure still running; a deploy since, with a new name model
-    assert run.main(["p.run", "match", "8"], client=died, bigquery=MODULE) == 75 and not [s for s in died.sent if s.startswith("CALL `p.run`.match")]
-    assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 75 and died.tables["records"] == 2
-    died.running, died.fail = set(), "DROP TABLE `p.run`.report_steps"  # it ended; an undo stopped partway runs again
+    assert ends(died, ["p.run", "match", "8"])[0] == 75 and not [s for s in died.sent if s.startswith("CALL `p.run`.match")]
+    assert ends(died, ["p.run", "undo"])[0] == 75 and died.tables["records"] == 2
+    died.running, died.fails = set(), ["DROP TABLE `p.run`.report_steps"]  # it ended; an undo stopped partway runs again
     with pytest.raises(RuntimeError, match="failed"):
         run.main(["p.run", "undo"], client=died, bigquery=MODULE)
-    assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 0 and died.tables == {**before, "name_weights": 2}
-    assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 0 and died.tables == {**before, "name_weights": 2}  # nothing marked
+    assert ends(died, ["p.run", "undo"])[0] == 0 and died.tables == {**before, "name_weights": 2}
+    assert ends(died, ["p.run", "undo"])[1]["undone"] is False and died.tables == {**before, "name_weights": 2}  # nothing marked
 
 
 def test_python_s_statements_on_bigquery_call_the_deploy_s_functions_and_make_none():

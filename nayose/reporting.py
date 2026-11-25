@@ -77,16 +77,19 @@ def text_table(df: pd.DataFrame) -> list[str]:
 
 
 def report_header(engine: Engine, steps: dict[str, float], added: int | None) -> list[str]:
-    """Return the report's first lines: when, what ran, the code, the machine and the time taken."""
+    """Return the report's first lines: when, what ran, the code, the method the run was built by, the engine, the
+    machine and the time taken."""
     if engine.name == "duckdb":
         threads, memory = engine.rows("SELECT current_setting('threads'), current_setting('memory_limit')")[0]
+        engine_line = f"duckdb {duckdb.__version__}"
     else:
-        threads, memory = "—", "—"
+        threads, memory, engine_line = "—", "—", engine.name
     run = "build" if added is None else f"update of {added:,} new records"
     machine = f"{platform.system()} {platform.machine()}"
+    built_by = engine.value("SELECT fingerprint FROM method")  # the build's, as the deploy hashed its mapping
     return [f"RUN REPORT · {datetime.now():%Y-%m-%d %H:%M} · {run} · no record's value in it",
-            f"code {code_version()} · method {nayose.fingerprint()[:12]}",
-            f"python {platform.python_version()} · duckdb {duckdb.__version__} · {machine}",
+            f"code {code_version()} · method {built_by[:12]}",
+            f"python {platform.python_version()} · {engine_line} · {machine}",
             f"{threads} threads · memory limit {memory} · took {sum(steps.values()):,.1f} s", ""]
 
 

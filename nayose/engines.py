@@ -422,7 +422,7 @@ def procedures(dataset: str, mapping: Path | None = None) -> list[str]:
     order, with the values they read (@name, from nayose.values_of) declared at its top as v_name. `mapping` is the
     deployment's mapping.sql. Every call of the method's functions names the dataset, where the deploy made them.
     """
-    fingerprint = bigquery_literal(nayose.fingerprint(mapping_file=mapping))  # what an update needs unchanged
+    fingerprint = bigquery_literal(nayose.fingerprint(mapping_file=mapping))  # what each job after a build checks
     out = sql_functions(dataset, mapping)
     for job, stages in JOBS.items():
         body, declared, written = job_statements(job, stages, dataset, mapping)
@@ -500,8 +500,8 @@ def procedure(job: str, body: list[str], declared: dict, written: list[str], dat
     """Return the CREATE PROCEDURE statement of one job, from its statements (job_statements).
 
     The procedure declares its values, then sets the dataset as the default. A build first drops every table it
-    writes, so it starts as an empty run, and last stores the method's fingerprint; an update first refuses a run
-    whose fingerprint differs.
+    writes, so it starts as an empty run, and last stores the method's fingerprint; every other job first refuses a
+    run whose fingerprint differs.
     """
     project, name = dataset.split(".")
     arguments = ", ".join(f"v_{k} {kind}" for k, kind in ARGUMENTS.get(job, {}).items())
@@ -510,7 +510,7 @@ def procedure(job: str, body: list[str], declared: dict, written: list[str], dat
     if job == "build":
         head += [f"DROP TABLE IF EXISTS {x}" for x in written]
         body = [*body, nayose.METHOD.replace("@fingerprint", fingerprint)]
-    if job == "update":
+    else:
         head.append(nayose.UNCHANGED.replace("@fingerprint", fingerprint))
     statements = ";\n".join([*head, *(qualified(sql, dataset) for sql in body)])
     return f"CREATE OR REPLACE PROCEDURE `{dataset}`.{job}({arguments})\nBEGIN\n{statements};\nEND"

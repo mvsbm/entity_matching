@@ -47,6 +47,12 @@ def test_a_run_is_built_updated_matched_decided_and_looked_up_in_its_folder(tmp_
     code, said = job("lookup", "--out", run, "--record", g.df["CONT_ID"].iloc[0])
     assert code == 0 and said["record"]["id"] == g.df["CONT_ID"].iloc[0] and "entities" in said
     assert job("lookup", "--out", run, "NOPE=1")[0] == 2 and job("lookup", "--out", tmp_path / "none", "--record", "1")[0] == 2
+    other = DuckDB(run / "run.duckdb")  # a run another method built: every job after a build refuses it
+    other.run("UPDATE method SET fingerprint = 'another'")
+    other.close()
+    for words in (["decide", tmp_path / "decided.parquet"], ["match", "--threshold", 6]):
+        code, said = job(*words, "--out", run)
+        assert code == 2 and "changed since the run was built" in said["error"] and "--overwrite" in said["fix"], words
     g.df.head(30).to_parquet(tmp_path / "few.parquet", index=False)
     code, said = job("build", tmp_path / "few.parquet", "--out", tmp_path / "few")
     assert code == 2 and "near-certain rule" in said["error"] and not (tmp_path / "few" / "run.duckdb").exists()  # a fit refused: no run made

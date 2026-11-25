@@ -78,6 +78,23 @@ def test_the_fingerprint_follows_every_stage_file_and_the_values(tmp_path):
     assert len({first, second, nayose.fingerprint(tmp_path)}) == 3
 
 
+@pytest.mark.parametrize("now, was, said", [
+    ("\ngenerators = ", "\nkeys = ", r"\[score\] keys is named \[score\] generators"),
+    ("\nplaceholder_min = ", "\nmin_block = ", r"\[records\] min_block is named \[records\] placeholder_min"),
+    ("\nfit_records = ", "\nfit_rows = ", r"\[fit\] fit_rows is named \[fit\] fit_records"),
+    ("\nem_sessions = ", "\nsessions = ", r"\[fit\] sessions is named \[fit\] em_sessions"),
+    ("[report.looks]", "[report.patterns]", r"\[report.patterns\] is named \[report.looks\]"),
+    ("\nsample_records = ", "\n# sample_records = ", r"\[report\] lacks sample_records"),
+    ("\npatterns_shown = ", "\n# patterns_shown = ", r"\[report\] lacks patterns_shown")])
+def test_a_config_written_with_an_older_key_is_refused_with_its_name_now(tmp_path, monkeypatch, now, was, said):
+    text = (nayose.HERE / "config.toml").read_text(encoding="utf-8")
+    assert text.count(now) == 1
+    (tmp_path / "config.toml").write_text(text.replace(now, was), encoding="utf-8")
+    monkeypatch.setenv("NAYOSE_CONFIG", str(tmp_path / "config.toml"))
+    with pytest.raises(nayose.InputError, match=f"^config.toml: {said}"):
+        nayose.config()
+
+
 def test_the_fingerprint_follows_the_functions_the_deploy_makes(monkeypatch):  # em.py, strings.js, the hash
     import nayose.engines
     before = nayose.fingerprint()
