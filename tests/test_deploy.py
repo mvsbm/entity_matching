@@ -1,4 +1,4 @@
-"""The deploy (deploy/deploy.py, deploy/run.py; nayose.engines.procedures): nayose made in a BigQuery dataset from the
+"""The deploy (deploy/deploy.py, deploy/run.py; nayose.procedures): nayose made in a BigQuery dataset from the
 SQL files a run here reads, each job a procedure of its stages' statements with every value they read declared from
 config.toml, the method's functions the dataset's and named so by every call; the scripts against a client that
 records what it is sent."""
@@ -15,12 +15,13 @@ import sqlglot
 
 import nayose
 
-from nayose.engines import bigquery_literal, functions, in_dataset, procedures
+from nayose.engines import bigquery_literal
+from nayose.procedures import functions, in_dataset, procedures
 from test_sql import reserved
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 CODE = nayose.NOT_CODE  # comments and strings: what isn't code
-FILE_BUDGET = 80  # the most tracked files the repository holds: CONTRIBUTING.md, rule 10
+FILE_BUDGET = 81  # the most tracked files the repository holds: CONTRIBUTING.md, rule 10
 
 
 def test_the_repository_holds_no_more_files_than_its_budget():
@@ -75,7 +76,7 @@ def test_each_job_is_a_procedure_of_its_stages_with_every_value_it_reads_declare
 
 
 def test_a_procedure_names_every_table_with_its_dataset_but_the_job_s_temporary_tables():  # BigQuery reads no default there
-    from nayose.engines import JOBS, job_statements
+    from nayose.procedures import JOBS, job_statements
     made = re.compile(r"\bCREATE (?:OR REPLACE )?TEMP TABLE (?:IF NOT EXISTS )?(\w+)")  # each form the SQL writes
     for job, stages in JOBS.items():
         body = job_statements(job, stages, "p.run", None)[0]
@@ -99,7 +100,7 @@ def test_the_deploy_sends_the_functions_bodies_as_written():  # qualified names 
 
 
 def test_a_condition_on_a_value_the_procedure_declares_is_decided_when_the_deploy_makes_it():
-    from nayose.engines import folded, in_procedure
+    from nayose.procedures import folded, in_procedure
     known = {"v_lookup": False, "v_given": True}
     assert folded("NOT v_lookup", known) is True and folded("v_lookup", known) is False and folded("v_given", known) is True
     assert folded("NOT v_lookup AND (SELECT batch FROM this_batch) = 0", known) == "(SELECT batch FROM this_batch) = 0"
@@ -110,7 +111,7 @@ def test_a_condition_on_a_value_the_procedure_declares_is_decided_when_the_deplo
 
 
 def test_a_condition_a_procedure_asks_again_is_asked_once_where_nothing_between_writes_what_it_reads():
-    from nayose.engines import procedures, queried_once
+    from nayose.procedures import procedures, queried_once
     ask = ["IF EXISTS (SELECT 1 FROM t) THEN\nDELETE FROM a WHERE TRUE;\nEND IF", "SELECT 1",
            "IF EXISTS (SELECT 1 FROM t) THEN\nDELETE FROM b WHERE TRUE;\nEND IF"]
     body, names = queried_once(list(ask))
@@ -128,13 +129,13 @@ def test_a_condition_a_procedure_asks_again_is_asked_once_where_nothing_between_
 
 
 def test_a_when_condition_names_the_run_s_tables_with_the_dataset_as_its_statement_does():
-    from nayose.engines import in_procedure
+    from nayose.procedures import in_procedure
     sql = in_procedure("-- when: EXISTS (SELECT 1 FROM scored) AND EXISTS (SELECT 1 FROM t)\nSELECT 1", "p.run", {"t"})
     assert sql.startswith("IF EXISTS (SELECT 1 FROM `p.run`.scored) AND EXISTS (SELECT 1 FROM t) THEN\n")
 
 
 def test_a_procedure_reads_each_value_as_its_variable_outside_strings_alone():  # as run_file reads them
-    from nayose.engines import in_procedure
+    from nayose.procedures import in_procedure
     sql = "-- when: @a  -- the run's @b\n/* the customer's @c */ SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, @x AS v FROM t"
     assert in_procedure(sql, "p.run", set()) == ("IF v_a THEN\n-- when: v_a  -- the run's v_b\n/* the customer's @c */ "
                                                  "SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, v_x AS v FROM `p.run`.t;\nEND IF")

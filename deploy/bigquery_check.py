@@ -33,7 +33,7 @@ sys.path.insert(0, str(ROOT))  # this checkout's nayose and design
 
 import nayose  # noqa: E402
 from nayose.engines import FUNCTIONS, BigQuery, DuckDB  # noqa: E402
-from nayose.engines import TEMP_TABLE as TEMP  # noqa: E402
+from nayose.procedures import TEMP_TABLE as TEMP  # noqa: E402
 
 SCOPE = ["https://www.googleapis.com/auth/bigquery"]
 # US list prices (cloud.google.com/bigquery/pricing; asia-northeast1's are higher, in about the same ratio): on demand

@@ -52,8 +52,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # this checkout's 
 
 import nayose  # noqa: E402
 from nayose.engines import BigQuery, bigquery_literal  # noqa: E402
+from nayose.procedures import JOBS as PROCEDURES  # noqa: E402
 
-JOBS = tuple(nayose.engines.JOBS)  # the jobs with a procedure: build, update, decide, match
+JOBS = tuple(PROCEDURES)  # the jobs with a procedure: build, update, decide, match
 MARK, BEFORE = "job_running", "before__"  # the running job's table, and the prefix of its clones
 DEPLOYED = ("name_weights",)  # the deploy's tables, no job's: an undo never brings back one a deploy has since replaced
 # One of the SQL's own refusals (ERROR), as BigQuery says it: each names what it refuses first, given or config.toml,

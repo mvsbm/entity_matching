@@ -8,7 +8,8 @@ tables: a BigQuery dataset in prod, and a DuckDB database file here. Python does
 
 - **the jobs** (`nayose/__main__.py`, `nayose/__init__.py`, `nayose/reporting.py`), which run each stage file's
   statements in order and write report.txt;
-- **the engines** (`nayose/engines.py`), which translate the SQL for DuckDB and make the deploy's statements;
+- **the engines** (`nayose/engines.py`), which run the SQL: on BigQuery as written, on DuckDB translated;
+- **the deploy's statements** (`nayose/procedures.py`): the functions, and one procedure a job, made from the SQL;
 - **EM** (`nayose/em.py`), which learns the model from the counts the SQL leaves;
 - **connected components** (`nayose/entities.py`), which make entities from people's decisions.
 
@@ -75,14 +76,16 @@ flowchart TB
   tools["Design time: scripts/, design/<br/>synthetic data, the benchmark, the cost estimate,<br/>generator quality, the name model's training"]
   stages["Stages and jobs: nayose/__init__.py<br/>records, fit, score, decide, match, lookup, build, update:<br/>each stage file run with its values"]
   reporting["report.txt: nayose/reporting.py<br/>report.sql run, then its tables on a page:<br/>no record's value in it"]
-  engines["Engines: nayose/engines.py<br/>DuckDB: the SQL translated, the function twins<br/>BigQuery: the SQL as written, a session a job<br/>functions(), procedures(): the deploy's statements"]
+  engines["Engines: nayose/engines.py<br/>DuckDB: the SQL translated, the function twins<br/>BigQuery: the SQL as written, a session a job"]
+  procedures["Deploy: nayose/procedures.py<br/>functions(), procedures(): the SQL as BigQuery's procedures,<br/>each condition decided or asked once"]
   udfs["Python UDFs: nayose/em.py, nayose/entities.py<br/>fit_model: EM · entities_of: connected components<br/>standard library only, BigQuery's python-3.11"]
   sql[("The method: nayose/sql/*.sql, mapping.sql<br/>functions, records, fit, score, decide, match, lookup, report")]
   values[("The values: nayose/config.toml, config/kind_names.npz<br/>a section a stage; the name model")]
   js[("The comparisons in JavaScript: nayose/strings.js")]
   cli -->|"calls"| stages
   cli -->|"report"| reporting
-  deploy -->|"BigQuery, functions(), procedures()"| engines
+  deploy -->|"BigQuery"| engines
+  deploy -->|"functions(), procedures()"| procedures
   deploy -->|"values"| stages
   deploy -->|"report_text"| reporting
   reporting -->|"stage, values_of"| stages
@@ -90,22 +93,24 @@ flowchart TB
   stages -->|"reads"| sql
   stages -->|"reads"| values
   stages -->|"runs each statement on"| engines
-  engines -->|"registers, embeds"| udfs
-  engines -->|"embeds"| js
-  engines -->|"procedures(): every job's statements"| sql
+  engines -->|"registers"| udfs
+  procedures -->|"embeds"| udfs
+  procedures -->|"embeds"| js
+  procedures -->|"every job's statements"| sql
 ```
 
 *python -m nayose calls the stages and jobs in nayose/__init__.py, which read the SQL files and config.toml and run
 each statement on an engine, and report.txt's code in nayose/reporting.py, which runs report.sql as a stage; the
-engines register the Python UDFs and embed the JavaScript comparisons; deploy/ makes the BigQuery functions and
-procedures from the same files.*
+DuckDB engine registers the Python UDFs' twins. deploy/ makes the BigQuery functions and procedures from the same
+files (nayose/procedures.py), embedding the Python UDFs and the JavaScript comparisons.*
 
 | File | Holds |
 |---|---|
 | `nayose/__main__.py` | the jobs as a machine runs them here: the arguments, the run's folder, its lock, the JSON printed, the exit code |
 | `nayose/__init__.py` | one function per stage and job (`records`, `fit`, `score`, `decide`, `match`, `lookup`, `build`, `update`), `values_of` (what each stage reads from `config.toml`), `stage` (a file's statements in order) and `Engine` (the verbs an engine answers) |
 | `nayose/reporting.py` | `report` and `report_text`: report.txt from report.sql's tables, with no record's value in it (the package names both too) |
-| `nayose/engines.py` | `DuckDB` and `BigQuery`, which answer the same verbs (`run`, `rows`, `value`, `frame`, `put`, `read_parquet`); the translation (`duckdb_sql`, `AVOID`); the deploy's statements (`functions`, `procedures`) |
+| `nayose/engines.py` | `DuckDB` and `BigQuery`, which answer the same verbs (`run`, `rows`, `value`, `frame`, `put`, `read_parquet`); the translation (`duckdb_sql`, `AVOID`) |
+| `nayose/procedures.py` | the deploy's statements: `functions` (the comparisons, the hash, the Python UDFs) and `procedures` (each job's stages as one procedure: `in_dataset`, `folded`, `queried_once`) |
 | `nayose/sql/*.sql` | the method. Each header says what the stage does, its cost, and the tables it reads and writes |
 | `nayose/em.py`, `nayose/entities.py` | `fit_model` and `entities_of`: pure functions, JSON in and JSON out |
 | `nayose/strings.js` | the character-level comparisons as BigQuery runs them |
@@ -312,7 +317,7 @@ The cost is `O(G)` for its keys, plus `O(b + C·K·L²)`.
 **BigQuery** runs the SQL as written, in one session per job, so the temporary tables die with the job. A statement
 Python sends (a lookup's, the report's) names tables alone: the run's dataset is the session's default. A procedure
 has no default dataset (BigQuery reads no `SET @@dataset_id` there), so the deploy names each of the run's tables in it
-with its dataset (`engines.in_dataset`), the job's temporary tables aside, and writes a `LIMIT`'s value as its
+with its dataset (`procedures.in_dataset`), the job's temporary tables aside, and writes a `LIMIT`'s value as its
 number, as BigQuery takes no variable there. Calls to the deploy's functions are qualified with
 the dataset (`engines.CALLS`), and so are the method's own SQL functions, which the deploy made in the dataset
 (`engines.OWN`): a statement that would make one again, Python's (a lookup's, the report's), isn't sent.
@@ -326,9 +331,9 @@ comment's text). `run_file` asks the engine and skips the statement where it is 
 procedure's `IF <condition> THEN … END IF`, and each `@name` the procedure's variable `v_name`, in the code and its
 `--` comments but never in a string. A condition on a value the procedure declares TRUE or FALSE (`@given`, FALSE for
 a build's and an update's decide stage; `@lookup`, FALSE in every procedure) is decided as the deploy makes it
-(`engines.folded`): the statement is there without its `IF`, or not there at all, as BigQuery runs every other
+(`procedures.folded`): the statement is there without its `IF`, or not there at all, as BigQuery runs every other
 condition as a query of its own. So a condition that `IF`s ask again, or ask as `NOT` it, is asked once into a
-variable where nothing between its first `IF` and its last writes a table it reads (`engines.queried_once`). BigQuery bills a statement's scans whatever its result, so a
+variable where nothing between its first `IF` and its last writes a table it reads (`procedures.queried_once`). BigQuery bills a statement's scans whatever its result, so a
 statement that isn't run is the only one that bills nothing.
 
 **DuckDB** runs the SQL after `duckdb_sql` translates it (sqlglot, BigQuery to DuckDB, cached per statement). Some
@@ -392,9 +397,9 @@ threads=4` sets DuckDB's limits for one build or update.
 
 In prod, the run is the dataset `nayose` in each project, and nothing changes it by hand.
 
-- **`deploy/deploy.py PROJECT.DATASET [--mapping FILE]`** makes the dataset's functions (`engines.functions`). Then
+- **`deploy/deploy.py PROJECT.DATASET [--mapping FILE]`** makes the dataset's functions (`procedures.functions`). Then
   it makes the method's own SQL functions (each file's `CREATE TEMP FUNCTION`, made persistent) and one procedure per
-  job (`engines.procedures`): `build`, `update`, `decide` and `match`. A procedure holds its stages' statements in
+  job (`procedures.procedures`): `build`, `update`, `decide` and `match`. A procedure holds its stages' statements in
   order, with the deployment's mapping. Each value they read is `DECLARE`d at its top from `config.toml`, so a change
   of values reaches prod only by a deploy. `build` drops the run's tables first and keeps `decisions`. `match` takes
   its threshold as an argument. Last, the deploy loads `name_weights`. Every statement is `CREATE OR REPLACE`, so a

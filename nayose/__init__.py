@@ -285,7 +285,7 @@ def name_weights() -> pd.DataFrame:
 def values_of(name: str, refit: bool = True, lookup: bool = False, given: bool = True) -> dict:
     """Return the values stage `name` reads as @name, from config.toml.
 
-    A run here passes them as query parameters; a BigQuery procedure declares them (engines.procedures). `refit` is
+    A run here passes them as query parameters; a BigQuery procedure declares them (nayose.procedures). `refit` is
     True for a build, False for a build given a model, which keeps it. With `lookup`, the batch is a record asked about.
     `given` is False for the decide stage of a build or an update, which is given no decisions. match's @threshold and
     lookup.sql's values come from their jobs.
@@ -705,7 +705,7 @@ def run_file(engine: Engine, path: Path, temp: set | None = None, until: str | N
 
     Each statement is given the values it names as @name, and only those: BigQuery refuses a parameter a statement
     doesn't read. A statement whose leading comments say `-- when: <condition>` runs only where the condition holds;
-    in a deployed procedure, the condition becomes an IF (engines.procedures). With `temp`, a lookup's temporary
+    in a deployed procedure, the condition becomes an IF (nayose.procedures). With `temp`, a lookup's temporary
     tables, each statement first goes through for_lookup, so that it writes temporary tables alone. With `until`, the
     file stops after the statement that makes that table, whether or not it ran.
     """
@@ -796,7 +796,7 @@ def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
     """Return the hash of what every job after a build needs unchanged since it.
 
     It covers every stage file, the values (config.toml), the input's mapping and the name model, each by name and
-    content, every function the deploy makes outside the SQL files (engines.functions: the comparisons, the hash,
+    content, every function the deploy makes outside the SQL files (procedures.functions: the comparisons, the hash,
     nfkc and the Python UDFs, em.py's and entities.py's whole source), and every value the stages read as the Python
     makes it from config.toml (values_of: the regexes, the kana maps, the name model's terms). Any byte counts, a
     comment's too: a run built before an edit is built again. DuckDB's twins of the comparisons are held to them by
@@ -816,7 +816,7 @@ def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
     digest = hashlib.sha256()
     for f in sorted(hashed, key=lambda p: p.name):
         digest.update(f.name.encode() + b"\0" + f.read_bytes() + b"\0")
-    from nayose.engines import functions  # engines imports this module, so not at its top
+    from nayose.procedures import functions  # it imports this module, so not at its top
     digest.update("\0".join(functions("dataset.d")).encode() + b"\0")  # as the deploy makes them, any dataset alike
     made = {stage: values_of(stage) for stage in ("mapping", "records", "fit", "score", "decide", "report")}
     digest.update(json.dumps(made, sort_keys=True, ensure_ascii=False, default=str).encode())  # the Python's part

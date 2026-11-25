@@ -2,7 +2,7 @@
 
 An entity is named by its smallest ID, in a string's order, so A–B and B–C make one entity even if A–C was never
 decided. of() is a pure function, JSON in and JSON out, using the standard library only. decide.sql calls it as
-entities_of, on BigQuery as a Python UDF (engines.functions) and on DuckDB alike. O(D log D) for D pairs.
+entities_of, on BigQuery as a Python UDF (nayose.procedures.functions) and on DuckDB alike. O(D log D) for D pairs.
 """
 import json
 

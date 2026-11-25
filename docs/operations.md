@@ -117,7 +117,7 @@ python deploy/bigquery_check.py PROJECT [--entities 400] [--plans plans.json] [-
 - **How it differs from prod:** a sandbox refuses DML, so the check's client sends each INSERT, DELETE and UPDATE as the DDL that leaves its table the same rows (a table clustered as the SQL first made it), and holds `records`' columns to `records.sql`'s types, as an INSERT would. It loads the jobs' files from this machine, as a sandbox has no Cloud Storage. So DML as BigQuery runs it, Cloud Storage and a billed project's costs are left to staging's smoke test (`deploy/smoke.py`).
 - **`--plans`:** each procedure's statements with what BigQuery measured (wall clock, slot time, bytes processed and billed) and each one's query plan, as JSON; the costliest are printed a job.
 
-Run it after a change to `nayose/sql/`, to the procedures (`engines.py`) or to `deploy/`.
+Run it after a change to `nayose/sql/`, to the procedures (`nayose/procedures.py`) or to `deploy/`.
 
 ## What isn't there yet
 

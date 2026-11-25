@@ -80,7 +80,7 @@ def test_the_mapping_parses_as_bigquery_and_translates(path):
                                  "SELECT 1 AS x;\n# the end",
                                  "/* a note;\n*/\nSELECT 1 AS x;"])  # its ';' ends the statement inside the comment
 def test_a_mapping_that_makes_more_than_temporary_tables_of_its_own_is_refused_by_the_deploy_and_by_a_job(tmp_path, monkeypatch, bad):
-    from nayose.engines import procedures
+    from nayose.procedures import procedures
     given = tmp_path / "mapping.sql"
     given.write_text((nayose.HERE / "mapping.sql").read_text(encoding="utf-8") + "\n" + bad + "\n", encoding="utf-8")
     with pytest.raises(nayose.InputError, match="^mapping.sql: "):
@@ -93,7 +93,7 @@ def test_a_mapping_that_makes_more_than_temporary_tables_of_its_own_is_refused_b
 
 
 def test_a_mapping_in_the_documented_form_is_accepted(tmp_path):
-    from nayose.engines import procedures
+    from nayose.procedures import procedures
     text = (nayose.HERE / "mapping.sql").read_text(encoding="utf-8").replace("TEMP TABLE mapped", "TEMPORARY TABLE mapped")
     given = tmp_path / "mapping.sql"
     given.write_text(text + "\nSELECT IF(COUNT(*) = 0, ERROR('no records'), 0) FROM mapped;  -- a check of its own\n"

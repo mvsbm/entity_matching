@@ -72,7 +72,8 @@ procedures of the run's dataset, and Jenkins calls them ([operations](docs/opera
 | `nayose/config.toml` | the values the SQL reads, a section a stage, and the generators and rules a run uses |
 | `nayose/mapping.sql` | the input's columns as fields (each deployment has its own) |
 | `nayose/__main__.py`, `__init__.py`, `reporting.py` | the jobs and the run's folder; each stage run with its values; report.txt |
-| `nayose/engines.py` | DuckDB and BigQuery: the translation, the function twins, the deploy's statements |
+| `nayose/engines.py` | DuckDB and BigQuery: the translation, the function twins |
+| `nayose/procedures.py` | the deploy's statements: the functions, and one procedure a job |
 | `nayose/em.py`, `entities.py`, `strings.js` | EM and connected components (Python UDFs); the comparisons in JavaScript |
 | `config/` | `kind_names.npz` (the person-or-company name model), `generator.toml` (the synthetic data) |
 | `deploy/` | the deploy to BigQuery, the Jenkinsfile, the Terraform |

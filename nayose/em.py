@@ -14,7 +14,7 @@ agrees by chance less often. An update scores with the model as the build left i
 building again measures u on the run as it has grown.
 
 fit() is a pure function, JSON in and JSON out, using the standard library only. fit.sql calls it as fit_model, on
-BigQuery as a Python UDF (engines.functions) and on DuckDB alike. Cost:
+BigQuery as a Python UDF (nayose.procedures.functions) and on DuckDB alike. Cost:
 O(iterations · patterns · K) for K comparisons.
 """
 import copy
