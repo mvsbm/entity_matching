@@ -816,9 +816,9 @@ def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
     digest = hashlib.sha256()
     for f in sorted(hashed, key=lambda p: p.name):
         digest.update(f.name.encode() + b"\0" + f.read_bytes() + b"\0")
-    from nayose.procedures import functions  # it imports this module, so not at its top
+    from nayose.procedures import JOBS, functions  # it imports this module, so not at its top
     digest.update("\0".join(functions("dataset.d")).encode() + b"\0")  # as the deploy makes them, any dataset alike
-    made = {stage: values_of(stage) for stage in ("mapping", "records", "fit", "score", "decide", "report")}
+    made = {stage: values_of(stage) for stage in sorted({stage for job in JOBS.values() for stage, _ in job})}
     digest.update(json.dumps(made, sort_keys=True, ensure_ascii=False, default=str).encode())  # the Python's part
     return digest.hexdigest()
 

@@ -107,7 +107,7 @@ def test_a_condition_on_a_value_the_procedure_declares_is_decided_when_the_deplo
     assert folded("v_lookup OR EXISTS (SELECT 1 FROM t)", known) == "EXISTS(SELECT 1 FROM t)"
     assert folded("EXISTS (SELECT 1 FROM changed WHERE redone)", known) == "EXISTS (SELECT 1 FROM changed WHERE redone)"
     assert in_procedure("-- when: @lookup\nSELECT 1", "p.run", set(), known) is None  # never runs: left out
-    assert in_procedure("-- when: NOT @lookup\nSELECT 1", "p.run", set(), known) == "-- when: NOT v_lookup\nSELECT 1"
+    assert in_procedure("-- when: NOT @lookup\nSELECT 1", "p.run", set(), known) == "SELECT 1"  # decided: no IF, no line
 
 
 def test_a_condition_a_procedure_asks_again_is_asked_once_where_nothing_between_writes_what_it_reads():
@@ -136,8 +136,8 @@ def test_a_when_condition_names_the_run_s_tables_with_the_dataset_as_its_stateme
 
 def test_a_procedure_reads_each_value_as_its_variable_outside_strings_alone():  # as run_file reads them
     from nayose.procedures import in_procedure
-    sql = "-- when: @a  -- the run's @b\n/* the customer's @c */ SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, @x AS v FROM t"
-    assert in_procedure(sql, "p.run", set()) == ("IF v_a THEN\n-- when: v_a  -- the run's v_b\n/* the customer's @c */ "
+    sql = "-- when: @a\n-- the run's @b\n/* the customer's @c */ SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, @x AS v FROM t"
+    assert in_procedure(sql, "p.run", set()) == ("IF v_a THEN\n-- the run's v_b\n/* the customer's @c */ "
                                                  "SELECT '@x' AS s, \"@x\" AS d, r'@x' AS r, `@x`.y, v_x AS v FROM `p.run`.t;\nEND IF")
 
 
