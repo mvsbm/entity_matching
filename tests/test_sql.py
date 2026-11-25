@@ -116,9 +116,10 @@ def test_a_condition_is_a_line_of_the_leading_comments_outside_any_block_comment
     assert nayose.when("/* a note */\n-- when: @b\nSELECT 1") == "@b" and nayose.when("/* a */ -- when: @c\nSELECT 1") == "@c"
     assert nayose.when("/* a note\n-- when: @a\n*/\nSELECT 1") is None  # a block comment's text
     assert nayose.when("/* a */ SELECT 1 /*\n-- when: @a\n*/") is None
-    for sql in ("-- when: @a\n-- when: @b\nSELECT 1", "SELECT 1\n-- when: @a\nFROM t",
-                "-- when: @a\nCREATE TEMP FUNCTION f(x INT64) AS (x)"):
-        with pytest.raises(ValueError, match="one condition"):
+    for sql, refused in (("-- when: @a\n-- when: @b\nSELECT 1", "one condition at most"),
+                         ("SELECT 1\n-- when: @a\nFROM t", "stands in its leading comments"),
+                         ("-- when: @a\nCREATE TEMP FUNCTION f(x INT64) AS (x)", "a function holds no condition")):
+        with pytest.raises(ValueError, match=refused):
             nayose.when(sql)
 
 

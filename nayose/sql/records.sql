@@ -114,10 +114,19 @@ CREATE OR REPLACE TEMP TABLE sided AS
 --    overrides a flag that says company.
 --    Otherwise the file's flag (kind_flag) decides. A flag in flag_company says company, and any other says person.
 --    With trust_flag, the flag decides every record.
+--    So, with p the name model's chance that the name is a company's (name_p) and line @name_line:
+--      the name                                    the flag           kind                kind_by
+--      a written legal form, or p ≥ line           any                2                   engine
+--      p ≤ 1 − line                                company            2                   flag
+--      p ≤ 1 − line                                person, or none    1                   engine
+--      between, or no name to read                 company or person  the flag's, 2 or 1  flag
+--      between, or no name to read                 none               0                   engine
+--      any, with trust_flag                        company or person  the flag's, 2 or 1  flag
+--      any, with trust_flag                        none               0                   engine
 --    A record's side is its kind, or, if its kind is 0, the kind it leans to (kind_p).
--- name_sums scores each distinct name once, since many records share a name: one row per distinct name. As in the
--- model's training, each n-gram counts once however often the name holds it, and an n-gram the model doesn't know
--- adds nothing.
+-- name_sums scores each distinct name once, since many records share a name: one row per distinct name that holds an
+-- n-gram the model knows. As in the model's training, each n-gram counts once however often the name holds it, and an
+-- n-gram the model doesn't know adds nothing, so a name with none has no row here, and judged reads its sum as 0.
 WITH name_sums AS (
   SELECT grams.t, SUM(nw.coef) AS s
   FROM (
@@ -164,7 +173,8 @@ sure AS (  -- sure_kind is the engine's kind if the engine is sure (2 company, 1
   FROM name_chance
 ),
 -- The kind is the engine's if the engine is sure, and the file's flag if it isn't. kind_p is how far the record
--- leans to company, from 0 to 1, or NULL if the record has no name to judge.
+-- leans to company, from 0 to 1: name_p, or with @trust_flag the flag's 1 or 0. It is NULL if the record has no name
+-- to judge, or, with @trust_flag, no flag.
 decided AS (
   SELECT *,
     CAST(IF(sure_kind <> 0, sure_kind, COALESCE(flag, 0)) AS INT64) AS kind,
@@ -217,8 +227,12 @@ FROM same;
 --    For person_name, company_name, address_code, address, phone and birth_date, a value is crowded if it reaches
 --    the field's bar and at least @crowd customers hold it. The bar is @placeholder_min records, or @spread times the
 --    field's records per value if that is more. A crowded value is a placeholder if its own pairs outnumber the pairs
---    that all the field's uncrowded values make together.
---    A customer ID is a placeholder if it reaches its field's bar. Its customers and pairs aren't tested.
+--    that all the field's uncrowded values make together. With n a value's records, C(n, 2) = n(n − 1)/2 its pairs,
+--    and records / values the field's filled records over its distinct values:
+--      placeholder ⇔ n ≥ max(@placeholder_min, ⌈@spread · records / values⌉) ∧ customers ≥ @crowd
+--                    ∧ C(n, 2) > Σ C(m, 2) over the field's uncrowded values, m each one's records
+--    A customer ID is a placeholder if it reaches its field's bar, n ≥ max(…) alone. Its customers and pairs aren't
+--    tested.
 --    Blanking one field's placeholder changes no other field's record counts. A person_name placeholder also blanks
 --    full_name, given_name and any_name, but those fields aren't counted. Blanking a customer ID would change the
 --    customer counts, as a record without one is its own customer. So customers are counted by the customer ID as

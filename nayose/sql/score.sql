@@ -8,8 +8,12 @@
 -- rule pair. These are the pairs a match run can offer people. Nothing merges here.
 -- A pair's two records are x and y. l and r are the pair's IDs, and they can't name its records too, because a
 -- WHERE clause reads a name l differently on the two engines: DuckDB as the SELECT's column l, BigQuery as the table l.
--- O(Δ·b) for the batch's pairs, plus O(Δ·L) to make the changed records' keys (Δ counts the records made again
--- too), and a scan of the index for the blocks the batch's keys name.
+-- It costs O(Δ·b) for the batch's pairs, with Δ the batch's records and b the pairs one record's keys list, plus
+-- O(Δ·L) to make the changed records' keys, L a value's length (Δ counts the records made again too), and a scan of
+-- the index for the blocks the batch's keys name. The scores cost O(C·K·L²) for C candidates and K comparisons (6).
+--
+-- A statement that follows a `-- when: <condition>` line runs only if the condition holds: run_file checks it locally,
+-- and the deployed procedure wraps the statement in IF … END IF.
 --
 -- Reads: records, this_batch and redone (records.sql), compared (fit.sql), model (each level's bits) and fit (the
 -- prior's bits at the file's size); block_size, a lookup's blocks read in part (nayose.lookup).
@@ -33,7 +37,8 @@ CREATE OR REPLACE TEMP TABLE batch_records AS SELECT id FROM records WHERE batch
 
 -- changed holds the records whose keys this job makes: the batch's, and the run's records that records.sql made again
 -- (redone), with redone TRUE. Every other record's keys are as the last job left them, since a record's keys change
--- only when the record does.
+-- only when the record does. A record made again gets its keys made again, and the scored pairs it already had stay
+-- as they were scored: only the batch's pairs are scored.
 -- when: NOT @lookup
 CREATE OR REPLACE TEMP TABLE changed AS
 SELECT id, FALSE AS redone FROM batch_records UNION ALL SELECT id, TRUE FROM redone;
@@ -47,6 +52,22 @@ CREATE OR REPLACE TEMP TABLE changed AS SELECT id, FALSE AS redone FROM records;
 -- position from these lists. A generator's position (g) is its bit in a pair's mask, which cands turns into its
 -- generators' names. A rule's position (i) is its rank: if several rules find a pair, the first one names it.
 -- config.toml says which ones this run uses, and a name it gives that isn't listed here is refused.
+-- The rules, in rank order. An X rule is exact: its key alone finds its pairs. An F rule is fuzzy: its key finds the
+-- pairs, and its test then keeps those whose ~ fields are close. In a rule's name, ~ marks a field tested fuzzily,
+-- outside the key (section 6's tests, functions.sql's near_*).
+--   rule                           its key's fields                          its test
+--   X1_CIF_FULL_NAME               customer_id, full_name                    none
+--   X2_CIF_COMPANY_NAME            customer_id, company_name                 none
+--   X3_CIF_PHONE                   customer_id, phone                        none
+--   X4_FULL_NAME_ADDRCD_PHONE      full_name, address_code, phone            none
+--   X5_COMPANY_NAME_ADDRCD_PHONE   company_name, address_code, phone         none
+--   F1_NAME~_ADDRCD_PHONE          address_code, phone                       near_name
+--   F2_NAME~_ADDRESS~_PHONE        phone, address__address_first3            near_name and near_address
+--   F3_NAME~_CIF                   customer_id                               near_name
+--   F4_NAME_ADDRCD_PHONE~          person_name, address_code                 near_phone
+--   F5_COMPANY~_PHONE_POSTAL       phone, postal_code                        near_company
+--   F6_COMPANY~_ADDRCD_PHONE       address_code, phone                       near_company
+--   X6_GIVEN_ADDRCD_PHONE          given_name, address_code, phone           none
 CREATE OR REPLACE TEMP TABLE generators AS
 SELECT g, name, name IN UNNEST(@generators) AS used FROM UNNEST([
   'customer_id', 'phone_prefecture', 'phone_postal_area', 'phone_name_initial', 'person_name', 'company_name', 'company_name_deletions',
@@ -118,10 +139,9 @@ JOIN (SELECT DISTINCT i, key FROM made_rule_keys WHERE id IN (SELECT id FROM bat
 
 
 -- 2. The keys. Each generator makes a key for each record from one or more of its fields, joined by CHR(31) as a
---    rule's are. The
---    records with the same key form a block. A deletion generator makes several keys for a record. They are its value
---    with each character deleted in turn, and the value whole, each joined to the generator's other fields. Deleting
---    any character of a run of equal characters gives the same value, so a run gives its key once.
+--    rule's are. The records with the same key form a block. A deletion generator makes several keys for a record.
+--    They are its value with each character deleted in turn, and the value whole, each joined to the generator's other
+--    fields. Deleting any character of a run of equal characters gives the same value, so a run gives its key once.
 CREATE OR REPLACE TEMP TABLE made_keys AS  -- the keys of the records in changed
 WITH changed_records AS (SELECT * FROM records WHERE id IN (SELECT id FROM changed))
 SELECT generators.g, key, id FROM (
@@ -217,6 +237,9 @@ GROUP BY l, r;
 --    its levels' bits. Level γ's bits are at OFFSET(γ + 1), so the missing level, -1, is at OFFSET(0) and weighs 0.
 --    points_of gives a pair's points, the prior plus its levels' bits, added in the model's order. bound_of gives an
 --    upper bound of a pair's points from cheap tests alone.
+--    Each array lists the model's levels in order of gamma, so OFFSET(γ + 1) is level γ only if model holds every
+--    gamma of the comparison from 0 up, without a gap. It does: fit.sql writes a row for each of functions.sql's
+--    levels.
 -- lambda_cap is the most the rescaled λ can be, a hair under 1, so that its log-odds stay finite (em.py's LAMBDA_CAP).
 CREATE OR REPLACE TEMP FUNCTION lambda_cap() AS (1 - CAST(0.000000001 AS FLOAT64));
 
@@ -339,7 +362,10 @@ CREATE OR REPLACE TEMP FUNCTION could_reach(bound ANY TYPE, floor ANY TYPE) AS (
 -- 4. The gate. A block of @oversized records or more is listed only if a sample of its pairs holds a pair with
 --    @search_floor points or more. The sample pairs the block's first @oversized batch records, by hash, with its
 --    first @oversized records. It leaves out the pairs another block already listed, and it is scored as the run
---    scores. A big block holds few true matches, and a placeholder's block (a dummy phone, say) holds none.
+--    scores. So a block of 200 records whose batch holds 10 gives at most 10 × 64 sampled pairs, where its pairs
+--    touching the batch number about 10 × 200.
+--    A big block holds few true matches. A placeholder makes no key, as records.sql blanks it first, so a big block
+--    is a crowded value that records.sql's test let through: a dummy phone held by too few customers, say.
 CREATE OR REPLACE TEMP TABLE gate_pairs AS
 WITH ranked AS (  -- nth_in_block is a record's place in its block by hash, and nth_in_batch its place among the batch's
   SELECT g, key, id, in_batch,
@@ -353,9 +379,9 @@ WHERE a.nth_in_batch <= @oversized AND b.nth_in_block <= @oversized
   AND NOT EXISTS (SELECT 1 FROM listed AS seen WHERE seen.l = LEAST(a.id, b.id) AND seen.r = GREATEST(a.id, b.id));
 
 CREATE OR REPLACE TEMP TABLE gated AS
--- gate_scored holds each sampled pair that the bound keeps, with its points. name_score is name_level's argument,
--- so BigQuery computes it once a pair, as a function's arguments are computed before its body. A subquery that
--- computed it first, as batch_scored does, would carry x and y whole, and read compared's full_name too.
+-- gate_scored holds each sampled pair that the bound keeps, with its points. name_score is name_level's argument.
+-- BigQuery has been seen to compute a SQL function's arguments once, before its body, so name_score runs once a pair
+-- here; this is observed behaviour, not documented.
 WITH gate_scored AS (
   SELECT p.l, p.r,
          points_of(name_level(x, y, name_score(x, y)), gamma_company(x, y), gamma_address(x, y), gamma_phone(x, y),

@@ -51,6 +51,7 @@ JOBS = tuple(nayose.engines.JOBS)  # the jobs with a procedure: build, update, d
 MARK, BEFORE = "job_running", "before__"  # the running job's table, and the prefix of its clones
 DEPLOYED = ("name_weights",)  # the deploy's tables, no job's: an undo never brings back one a deploy has since replaced
 SEVERITY = {0: "INFO", 75: "WARNING"}  # what an exit code says, as a log reads it: any other is an ERROR
+NO_TABLE = ""  # what the mark's tables hold for an empty dataset, never an empty array: an undo reads past it
 
 
 class Running(Exception):
@@ -96,10 +97,9 @@ def begin(engine: BigQuery, dataset: str, job: str) -> bool:
     # a finished job's clones, left behind: dropped before the mark, so no undo reads them
     script(engine, [f"DROP TABLE `{dataset}`.{t}" for t in now if t.startswith(BEFORE)])
     held = [t for t in now if not t.startswith(BEFORE)]
-    # fails where another job made the mark first, which is then never undone here; an empty dataset's tables are
-    # written [''], never an empty array, and undo reads past the ''
+    # fails where another job made the mark first, which is then never undone here
     engine.run(f"CREATE TABLE `{dataset}`.{MARK} AS SELECT '{job}' AS job, CURRENT_TIMESTAMP() AS started, "
-               f"{bigquery_literal(engine.session)} AS session, {bigquery_literal(held or [''])} AS tables")
+               f"{bigquery_literal(engine.session)} AS session, {bigquery_literal(held or [NO_TABLE])} AS tables")
     try:
         script(engine, [f"CREATE TABLE `{dataset}`.{BEFORE}{t} CLONE `{dataset}`.{t}" for t in held])
     except BaseException as stopped:
@@ -135,12 +135,14 @@ def undo(engine: BigQuery, dataset: str) -> bool:
     BigQuery carries on a procedure whose caller left, whether the caller's process died or only stopped waiting
     (an interrupt, a client's timeout).
     """
-    engine.session = None  # a session of its own: the marked job's may still be busy, and a session runs one query
+    # A session of its own: the marked job's may still be busy, and a session runs one query at a time. The old
+    # session is left to expire, not aborted: aborting it would stop a procedure that still runs in it.
+    engine.session = None
     now = tables(engine, dataset)
     if MARK not in now:
         return False
     session, held = engine.rows(f"SELECT session, tables FROM `{dataset}`.{MARK}")[0]
-    held = [t for t in held if t]
+    held = [t for t in held if t != NO_TABLE]
     if still_running(engine, dataset, session):
         raise Running(session)
     back = [t for t in held if BEFORE + t in now]  # a table without its clone was never touched: the job stopped first

@@ -199,7 +199,9 @@ because in a bigger file a field agrees by chance less often. The `model` table 
 3. The model's bits (`level_bits`), and an exact upper bound on each pair's points from its equalities and lengths
    alone (`bound_of`). The costly fuzzy comparisons run only on the pairs that could reach `keep_from`.
 4. The gate handles blocks of `oversized` records or more. Such a block is listed only if a sample of its pairs holds
-   one at `search_floor` points or more (`gated`), because a placeholder's block holds no true match.
+   one at `search_floor` points or more (`gated`), because a block that big holds few true matches: a placeholder is
+   read as missing and makes no key, so such a block is a crowded value its test let through (a dummy phone held by
+   too few customers, say).
 5. The candidates: the pairs the keys list, and every pair of a listed oversized block that touches the batch (`cands`).
 6. The scores: each kept pair gets its level of each comparison and its points (`points_of`). `scored` keeps every
    pair from `keep_from` points up, and every rule pair.
@@ -302,7 +304,7 @@ temporary one, and refuses a
 statement that would change a run's table, so a lookup writes nothing. `lookup.sql` gives each entity from `[lookup] at_least` points up, or joined by a rule, with its best
 record, its points, each comparison's level and the generators whose keys listed it. With no such entity, it gives
 the closest record. It also reports, generator by generator, what was looked up and the gate's verdict on big blocks.
-The cost is `O(G)` for its keys, plus `O(G·b + C·K·L²)`.
+The cost is `O(G)` for its keys, plus `O(b + C·K·L²)`.
 
 ## 8 · Two engines
 

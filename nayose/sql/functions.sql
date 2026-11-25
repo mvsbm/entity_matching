@@ -146,9 +146,9 @@ CREATE OR REPLACE TEMP FUNCTION read_value(v STRING, numeric BOOL, null_regex ST
 CREATE OR REPLACE TEMP FUNCTION cut_from(t FLOAT64) AS (t - CAST(0.000001 AS FLOAT64));
 
 -- jaro_winkler_of returns the Jaro–Winkler score of a and b, exact at the threshold or above: below it, the score may
--- be returned as 0 instead. It scores their one-byte copies (records.sql) if both have
--- one. The score is the same, because Jaro–Winkler tests characters only for equality, and a copy keeps different
--- characters different. On the copies, DuckDB computes the score with its own function.
+-- be returned as 0 instead. It scores their one-byte copies (records.sql) if both have one. The score is the same,
+-- because Jaro–Winkler tests characters only for equality, and a copy keeps different characters different. On the
+-- copies, DuckDB computes the score with its own function.
 CREATE OR REPLACE TEMP FUNCTION jaro_winkler_of(a STRING, b STRING, one_byte_a STRING, one_byte_b STRING,
                                                 threshold FLOAT64) RETURNS FLOAT64 AS (
   IF(one_byte_a IS NOT NULL AND one_byte_b IS NOT NULL, cl_jaro_winkler_cut(one_byte_a, one_byte_b, threshold),

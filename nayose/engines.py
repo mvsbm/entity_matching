@@ -501,7 +501,17 @@ def procedure(job: str, body: list[str], declared: dict, written: list[str], dat
 
     The procedure declares its values, then sets the dataset as the default. A build first drops every table it
     writes, so it starts as an empty run, and last stores the method's fingerprint; every other job first refuses a
-    run whose fingerprint differs.
+    run whose fingerprint differs. So a procedure reads:
+
+        CREATE OR REPLACE PROCEDURE `project.dataset`.job(its arguments)
+        BEGIN
+        DECLARE v_name TYPE DEFAULT value;            each value its stages read
+        SET @@dataset_project_id = ...; SET @@dataset_id = ...;
+        DROP TABLE IF EXISTS table; ...               a build: each run's table it writes
+          or SELECT IF(... UNCHANGED ...);            every other job: the fingerprint checked
+        the stages' statements, each as in_procedure gives it;
+        CREATE OR REPLACE TABLE method AS ...;        a build: the fingerprint stored (METHOD)
+        END
     """
     project, name = dataset.split(".")
     arguments = ", ".join(f"v_{k} {kind}" for k, kind in ARGUMENTS.get(job, {}).items())
