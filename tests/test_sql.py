@@ -184,3 +184,10 @@ def test_every_line_of_the_sql_is_at_most_120_characters_its_strings_aside(path)
     measured = [line if line.lstrip().startswith("--") else STRING.sub("''", line) for line in lines]  # a comment whole
     wide = [n for n, line in enumerate(measured, 1) if len(line) > 120]
     assert not wide, f"{path.name}: lines {wide} are over 120 characters"
+
+
+def test_a_regexp_extract_within_another_is_translated_too():  # NULL where nothing matches, as BigQuery's, at any depth
+    import duckdb
+    from nayose.engines import duckdb_sql
+    sql = "SELECT REGEXP_EXTRACT(COALESCE(REGEXP_EXTRACT('abc', r'[0-9]+'), 'z9'), r'[0-9]') AS x"
+    assert duckdb.sql(duckdb_sql(sql)).fetchall() == [("9",)]  # untranslated, the inner gives '' and COALESCE keeps it

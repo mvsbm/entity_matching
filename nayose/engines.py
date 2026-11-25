@@ -138,6 +138,8 @@ def regexp_as_bigquery(node: exp.RegexpExtract | exp.RegexpExtractAll) -> exp.Ex
     pattern = node.expression
     if (pattern.is_string or isinstance(pattern, exp.RawString)) and groups(pattern.name) == 1:
         node.set("group", exp.Literal.number(1))
+    # transform goes on into no node it replaced, so the calls this one holds are translated here
+    node.set("this", node.this.transform(as_bigquery))
     if isinstance(node, exp.RegexpExtract):
         return exp.If(this=exp.RegexpLike(this=node.this.copy(), expression=pattern.copy()), true=node)
     return node
