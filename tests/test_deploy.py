@@ -153,6 +153,9 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                         self.tables[x], self.kind[x] = v, "BASE TABLE"
                 if self.fail == "procedure":
                     raise RuntimeError("the procedure failed partway")
+                if self.fail == "interrupted":  # the client stopped waiting: the procedure carries on in BigQuery
+                    self.running.add(session)
+                    raise KeyboardInterrupt
         return SimpleNamespace(result=lambda rows=rows: rows, session_info=SimpleNamespace(session_id=session))
 
     def load_table_from_uri(self, uris, table, job_config=None):
@@ -184,6 +187,10 @@ def test_a_job_on_bigquery_is_all_or_nothing(monkeypatch):
     with pytest.raises(RuntimeError, match="failed"):
         run.main(build, client=left, bigquery=MODULE)
     assert left.tables == after  # the left clone was dropped first, so nothing older came back
+    cut = Tables(before, made, fail="interrupted")  # stopped waiting mid-call: no undo while its procedure runs on
+    assert run.main(build, client=cut, bigquery=MODULE) == 75 and cut.tables["records"] == 2 and "job_running" in cut.tables
+    cut.running = set()  # it ended: the undo it was told to run puts every table back
+    assert run.main(["p.run", "undo"], client=cut, bigquery=MODULE) == 0 and cut.tables == before
 
     died = Tables(before, made)  # a job whose process died, its procedure run: the next job refuses; undo waits for it, then undoes
     assert run.begin(run.BigQuery("p.run", client=died, bigquery=MODULE), "p.run", "build")
