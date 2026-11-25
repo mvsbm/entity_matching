@@ -1,6 +1,7 @@
 """nayose's SQL contract: BigQuery's dialect, run as written on BigQuery and translated for DuckDB. A form whose
 translation would answer otherwise is refused by name; values reach a statement as named parameters; every stage
 file parses as BigQuery and translates."""
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -155,3 +156,12 @@ def test_a_row_a_function_reads_is_of_a_narrow_table():  # BigQuery may bill a r
             wide = {t.alias for t in tree.find_all(exp.Table) if t.alias and t.name == "records"}  # records: every column of a record
             passed = {a.name for c in tree.find_all(exp.Func) for a in c.iter_expressions() if isinstance(a, exp.Column) and not a.table}
             assert not wide & passed, (f.name, s.strip()[:80], wide & passed)
+
+
+STRING = re.compile(r"r?'(?:[^'\\]|\\.)*'")  # a string literal: a regex in one can't be split
+
+
+@pytest.mark.parametrize("path", sorted([*nayose.SQL.glob("*.sql"), nayose.HERE / "mapping.sql"]), ids=lambda p: p.name)
+def test_every_line_of_the_sql_is_at_most_120_characters_its_strings_aside(path):  # CONTRIBUTING.md, rule 9
+    wide = [n for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1) if len(STRING.sub("''", line)) > 120]
+    assert not wide, f"{path.name}: lines {wide} are over 120 characters"
