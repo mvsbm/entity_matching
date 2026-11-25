@@ -114,7 +114,7 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
         super().__init__()
         self.tables, self.job, self.fail = dict(tables), job or {}, fail  # job: the procedure's tables (None: dropped)
         self.kind = dict.fromkeys(tables, "BASE TABLE")
-        self.mark, self.sessions, self.running = {}, 0, set()
+        self.mark, self.sessions, self.running, self.checked_in = {}, 0, set(), []
 
     def query(self, sql, job_config=None):
         self.sent.append(sql)
@@ -133,6 +133,7 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                 rows = [{"table_name": x} for x in sorted(self.tables) if self.kind[x] in kinds]
             elif "INFORMATION_SCHEMA.JOBS_BY_USER" in s:
                 rows = [{"n": int(given["session"] in self.running)}]
+                self.checked_in.append(getattr(job_config, "connection_properties", None))  # the session it ran in
             elif s.startswith("SELECT session, tables FROM"):
                 rows = [self.mark]
             elif s.startswith("CREATE TABLE") and name[0] in self.tables:
@@ -191,6 +192,7 @@ def test_a_job_on_bigquery_is_all_or_nothing(monkeypatch):
     assert run.main(build, client=cut, bigquery=MODULE) == 75 and cut.tables["records"] == 2 and "job_running" in cut.tables
     cut.running = set()  # it ended: the undo it was told to run puts every table back
     assert run.main(["p.run", "undo"], client=cut, bigquery=MODULE) == 0 and cut.tables == before
+    assert cut.checked_in and not any(cut.checked_in)  # each check outside every session, so it never counts itself
 
     died = Tables(before, made)  # a job whose process died, its procedure run: the next job refuses; undo waits for it, then undoes
     assert run.begin(run.BigQuery("p.run", client=died, bigquery=MODULE), "p.run", "build")
