@@ -31,6 +31,7 @@ import sqlglot
 from rapidfuzz import process
 from rapidfuzz.distance import DamerauLevenshtein, Hamming, JaroWinkler, Levenshtein
 from sqlglot import exp
+from sqlglot.optimizer.simplify import simplify
 
 import nayose
 from nayose import TEMP_FUNCTION, WRITE, em, entities
@@ -384,10 +385,10 @@ def functions(dataset: str) -> list[str]:
 # (BigQuery.scratch), writing temporary tables alone.
 JOBS = {
     "build": [("functions", {}), ("mapping", {}), ("records", {}), ("fit", {"refit": True}), ("score", {}),
-              ("decide", {}), ("report", {})],
+              ("decide", {"given": False}), ("report", {})],
     "update": [("functions", {}), ("mapping", {}), ("records", {}), ("score", {}),
-               ("decide", {}), ("report", {})],
-    "decide": [("functions", {}), ("decide", {})],
+               ("decide", {"given": False}), ("report", {})],
+    "decide": [("functions", {}), ("decide", {"given": True})],
     "match": [("functions", {}), ("match", {})],
 }
 ARGUMENTS = {"match": {"threshold": "FLOAT64"}}  # a procedure's own values: given when it is called, not declared
@@ -447,18 +448,20 @@ def sql_functions(dataset: str, mapping: Path | None) -> list[str]:
 def job_statements(job: str, stages: list, dataset: str, mapping: Path | None) -> tuple[list[str], dict, list[str]]:
     """Return one job's statements for its procedure, the values they read, and the run's tables they write.
 
-    Each statement is as the procedure runs it (in_procedure). A CREATE TEMP FUNCTION is left out: sql_functions makes
-    it a function of the dataset. The tables written are the run's (run_table_written), in the order first written.
+    Each statement is as the procedure runs it (in_procedure), or left out where its `-- when:` condition is false
+    whatever the run holds. A CREATE TEMP FUNCTION is left out: sql_functions makes it a function of the dataset. The
+    tables written are the run's (run_table_written), in the order first written.
     """
     declared, written = {}, {}
     plain = []
     for stage, told in stages:
         declared |= nayose.values_of(stage, **told)
-        if stage == "decide" and job != "decide":  # nothing given: a build's or an update's entities
-            plain.append(nayose.NOTHING_GIVEN)
         plain += [sql for sql in stage_statements(stage, mapping) if not TEMP_FUNCTION.match(sql)]
     temp = {t for sql in plain for t in TEMP_TABLE.findall(nayose.NOT_CODE.sub(" ", sql))}
-    body = [in_procedure(sql, dataset, temp) for sql in plain]
+    known = {f"v_{k}": v for k, v in declared.items() if isinstance(v, bool) and k not in ARGUMENTS.get(job, {})}
+    body = [x for x in (in_procedure(sql, dataset, temp, known) for sql in plain) if x is not None]
+    body, conditions = queried_once(body)
+    declared |= {name: False for name in conditions}
     for sql in plain:
         if table := run_table_written(sql):
             written.setdefault(table)
@@ -467,18 +470,77 @@ def job_statements(job: str, stages: list, dataset: str, mapping: Path | None) -
     return body, {k: v for k, v in declared.items() if k not in arguments}, list(written)
 
 
-def in_procedure(sql: str, dataset: str, temp: set) -> str:
-    """Return a stage's statement as its procedure runs it.
+def in_procedure(sql: str, dataset: str, temp: set, known: dict | None = None) -> str | None:
+    """Return a stage's statement as its procedure runs it, or None where it never runs there.
 
     Each @name becomes v_name, in the code and in its -- comments, where a `-- when:` condition is read from, but never
     in a string, a quoted name or a /* */ comment, which run_file leaves as written too. Each of the run's tables is
     named with its dataset (in_dataset); the job's temporary tables (`temp`) aren't. A statement with a `-- when:`
-    condition is wrapped in IF ... END IF.
+    condition is wrapped in IF ... END IF, its condition first given each value the procedure declares as TRUE or
+    FALSE (`known`, v_name: value), as folded() does: a condition then always true needs no IF, and a statement whose
+    condition is always false is left out. BigQuery runs each other condition as a query of its own, about a second.
     """
     sql = in_dataset(VALUE_OR_NOT_CODE.sub(as_variable, sql), dataset, temp)
     guard = nayose.when(sql)  # a comment, which in_dataset leaves: its tables are named here
-    guard = guard and in_dataset(f"SELECT {guard}", dataset, temp).removeprefix("SELECT ")
-    return f"IF {guard} THEN\n{sql};\nEND IF" if guard else sql
+    if guard:
+        guard = folded(guard, known or {})
+        if guard is False:
+            return None
+        if guard is not True:
+            return f"IF {in_dataset(f'SELECT {guard}', dataset, temp).removeprefix('SELECT ')} THEN\n{sql};\nEND IF"
+    return sql
+
+
+IF_BLOCK = re.compile(r"IF ([\s\S]*?) THEN\n([\s\S]*);\nEND IF")  # a statement under its condition (in_procedure)
+
+
+def queried_once(body: list[str]) -> tuple[list[str], list[str]]:
+    """Return a procedure's statements with each condition its IFs ask more than once asked once, and the names of the
+    variables (condition_1, ...) that hold the answers, which the procedure declares.
+
+    BigQuery runs each IF's condition as a query of its own, about a second. A condition is asked once only where no
+    statement between its first IF and its last writes a table it reads: the variable then holds what each query would
+    have found. Its first IF becomes SET v_condition_n = (condition), and each IF reads the variable.
+    """
+    places: dict[str, list[int]] = {}
+    for i, sql in enumerate(body):
+        if m := IF_BLOCK.fullmatch(sql):
+            places.setdefault(m[1], []).append(i)
+    names = []
+    for condition, at in places.items():
+        reads = {t.name for t in sqlglot.parse_one(f"SELECT {condition}", read="bigquery").find_all(exp.Table)}
+        if len(at) < 2 or any(written(sql) & reads for sql in body[at[0] + 1:at[-1]]):
+            continue
+        names.append(f"condition_{len(names) + 1}")
+        for k, i in enumerate(at):
+            first = f"SET v_{names[-1]} = ({condition});\n" if k == 0 else ""
+            body[i] = f"{first}IF v_{names[-1]} THEN\n{IF_BLOCK.fullmatch(body[i])[2]};\nEND IF"
+    return body, names
+
+
+def written(sql: str) -> set[str]:
+    """Return the names of the tables a procedure's statement writes (made, inserted into, deleted from or updated)."""
+    m = IF_BLOCK.fullmatch(sql)
+    tree = sqlglot.parse_one(m[2] if m else sql, read="bigquery")
+    kinds = (exp.Create, exp.Insert, exp.Delete, exp.Update, exp.Merge, exp.Drop, exp.Alter)
+    return {t.name for t in [tree.this if isinstance(tree.this, exp.Table) else tree.this.find(exp.Table)]
+            if t is not None} if isinstance(tree, kinds) and tree.this is not None else set()
+
+
+def folded(condition: str, known: dict) -> str | bool:
+    """Return a condition with each of `known`'s values (v_name: TRUE or FALSE) put in, as far as they decide it.
+
+    True or False where they decide it alone, the rest of the condition where they decide a part (NOT v_lookup AND x
+    is x where v_lookup is FALSE), and the condition as written where it names none of them.
+    """
+    def value(node: exp.Expression) -> exp.Expression:
+        return exp.Boolean(this=known[node.name]) if isinstance(node, exp.Column) and not node.table \
+            and node.name in known else node
+    tree = sqlglot.parse_one(condition, read="bigquery")
+    if not any(value(c) is not c for c in tree.find_all(exp.Column)):
+        return condition
+    tree = simplify(tree.transform(value))
+    return tree.this if isinstance(tree, exp.Boolean) else tree.sql(dialect="bigquery")
 
 
 VALUE_OR_NOT_CODE = re.compile(nayose.NOT_CODE.pattern + r"|@(\w+)", re.S)  # what isn't code, or a value it reads

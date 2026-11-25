@@ -139,11 +139,11 @@ INSERT INTO rule_keys SELECT i, key, id FROM made_rule_keys;
 -- the number of records that hold the key.
 -- In the run's first batch (batch 0) every record is the batch's, so every rule key is. A lookup takes the second
 -- form whatever its batch, so that only the record it looks up is in_batch.
--- when: NOT @lookup AND (SELECT batch FROM this_batch) = 0
+-- when: NOT @lookup AND EXISTS (SELECT 1 FROM this_batch WHERE batch = 0)
 CREATE OR REPLACE TEMP TABLE rule_blocks AS
 SELECT i, key, id, TRUE AS in_batch, COUNT(*) OVER (PARTITION BY i, key) AS n FROM rule_keys;
 
--- when: @lookup OR (SELECT batch FROM this_batch) > 0
+-- when: @lookup OR EXISTS (SELECT 1 FROM this_batch WHERE batch > 0)
 CREATE OR REPLACE TEMP TABLE rule_blocks AS
 SELECT i, key, id, id IN (SELECT id FROM batch_records) AS in_batch, COUNT(*) OVER (PARTITION BY i, key) AS n
 FROM rule_keys
@@ -214,12 +214,12 @@ CREATE TEMP TABLE IF NOT EXISTS block_size (g INT64, key STRING, n INT64);
 -- batch and hold two records or more, since only those can make a pair. A lookup also keeps its record's blocks of
 -- one, so that lookup.sql can report every key.
 -- In the run's first batch every record is the batch's, so every block is.
--- when: NOT @lookup AND (SELECT batch FROM this_batch) = 0
+-- when: NOT @lookup AND EXISTS (SELECT 1 FROM this_batch WHERE batch = 0)
 CREATE OR REPLACE TEMP TABLE key_blocks AS
 SELECT g, key, id, TRUE AS in_batch, n FROM (SELECT g, key, id, COUNT(*) OVER (PARTITION BY g, key) AS n FROM every_key)
 WHERE n > 1;
 
--- when: @lookup OR (SELECT batch FROM this_batch) > 0
+-- when: @lookup OR EXISTS (SELECT 1 FROM this_batch WHERE batch > 0)
 CREATE OR REPLACE TEMP TABLE key_blocks AS
 -- touched holds every record of each block that a key of the batch names. held is the number of records the run
 -- holds in the block.
