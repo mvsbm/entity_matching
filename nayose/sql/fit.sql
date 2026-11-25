@@ -51,24 +51,27 @@ JOIN (SELECT id FROM records WHERE @refit ORDER BY er_hash(postal_code__first3),
 -- 2. λ is how likely two random records are one customer. fit_model estimates it from found, the pairs that any of
 --    the near-certain rules find in the sample, each pair counted once. Each rule's own count is kept too, because a
 --    rule that finds no pair in the sample is skipped, and the report names it.
+--    The near-certain rules are score.sql's X1, X2 and X4. X3 (customer ID and phone) and X5 (company name, address
+--    code and phone) are left out, because [fit] prior_recall is the share of all matches that X1, X2 and X4 find,
+--    as measured on labelled data, and λ divides found by it.
 CREATE OR REPLACE TEMP TABLE fit_prior AS
 SELECT
   (SELECT COUNT(*) FROM fit_sample) AS records,
   (SELECT COUNT(*) FROM (
-     SELECT l.id AS l, r.id AS r FROM fit_sample AS l JOIN fit_sample AS r
+     SELECT l.id AS l, r.id AS r FROM fit_sample AS l JOIN fit_sample AS r  -- X1, customer ID and full name
        ON l.customer_id = r.customer_id AND l.full_name = r.full_name AND l.id < r.id
      UNION DISTINCT
-     SELECT l.id, r.id FROM fit_sample AS l JOIN fit_sample AS r
+     SELECT l.id, r.id FROM fit_sample AS l JOIN fit_sample AS r  -- X2, customer ID and company name
        ON l.customer_id = r.customer_id AND l.company_name = r.company_name AND l.id < r.id
      UNION DISTINCT
-     SELECT l.id, r.id FROM fit_sample AS l JOIN fit_sample AS r
+     SELECT l.id, r.id FROM fit_sample AS l JOIN fit_sample AS r  -- X4, full name, address code and phone
        ON l.full_name = r.full_name AND l.address_code = r.address_code AND l.phone = r.phone AND l.id < r.id
   )) AS found,
-  (SELECT COALESCE(SUM(DIV(n * (n - 1), 2)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample
+  (SELECT COALESCE(SUM(pairs_of(n)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample  -- X1's pairs
      WHERE customer_id IS NOT NULL AND full_name IS NOT NULL GROUP BY customer_id, full_name)) AS cif_name,
-  (SELECT COALESCE(SUM(DIV(n * (n - 1), 2)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample
+  (SELECT COALESCE(SUM(pairs_of(n)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample  -- X2's pairs
      WHERE customer_id IS NOT NULL AND company_name IS NOT NULL GROUP BY customer_id, company_name)) AS cif_company,
-  (SELECT COALESCE(SUM(DIV(n * (n - 1), 2)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample
+  (SELECT COALESCE(SUM(pairs_of(n)), 0) FROM (SELECT COUNT(*) AS n FROM fit_sample  -- X4's pairs
      WHERE full_name IS NOT NULL AND address_code IS NOT NULL AND phone IS NOT NULL
      GROUP BY full_name, address_code, phone)) AS name_code_phone;
 
@@ -93,7 +96,7 @@ FROM (
          gamma_birth(l, r) AS birth
   FROM paired
 )
-GROUP BY 1, 2, 3, 4, 5, 6, 7;
+GROUP BY session, name, company, address, phone, cif, birth;
 
 
 -- 4. u is how often two different customers land in a level. It is counted on the sample, which the model is
@@ -112,21 +115,22 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7;
 CREATE OR REPLACE TEMP TABLE u_masks AS
 WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared)
 SELECT scope, 'name' AS comparison, IF(person_name IS NOT NULL, 1, 0) AS mask, COUNT(*) AS n
-FROM u_records GROUP BY 1, 2, 3
-UNION ALL SELECT scope, 'company', IF(company_name IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3
+FROM u_records GROUP BY scope, mask
+UNION ALL SELECT scope, 'company', IF(company_name IS NOT NULL, 1, 0) AS mask, COUNT(*) FROM u_records GROUP BY scope, mask
 UNION ALL SELECT scope, 'address',
-                 IF(address_code IS NOT NULL, 1, 0) + IF(address IS NOT NULL, 2, 0) + IF(postal_code IS NOT NULL, 4, 0),
+                 IF(address_code IS NOT NULL, 1, 0) + IF(address IS NOT NULL, 2, 0) + IF(postal_code IS NOT NULL, 4, 0)
+                   AS mask,
                  COUNT(*)
-          FROM u_records GROUP BY 1, 2, 3
-UNION ALL SELECT scope, 'phone', IF(phone IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3
-UNION ALL SELECT scope, 'cif', IF(customer_id IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3
-UNION ALL SELECT scope, 'birth', IF(birth_date IS NOT NULL, 1, 0), COUNT(*) FROM u_records GROUP BY 1, 2, 3;
+          FROM u_records GROUP BY scope, mask
+UNION ALL SELECT scope, 'phone', IF(phone IS NOT NULL, 1, 0) AS mask, COUNT(*) FROM u_records GROUP BY scope, mask
+UNION ALL SELECT scope, 'cif', IF(customer_id IS NOT NULL, 1, 0) AS mask, COUNT(*) FROM u_records GROUP BY scope, mask
+UNION ALL SELECT scope, 'birth', IF(birth_date IS NOT NULL, 1, 0) AS mask, COUNT(*) FROM u_records GROUP BY scope, mask;
 
 CREATE OR REPLACE TEMP TABLE u_outside AS
 WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared),
-every AS (SELECT scope, DIV(COUNT(*) * (COUNT(*) - 1), 2) AS pairs FROM u_records GROUP BY scope),
+every AS (SELECT scope, pairs_of(COUNT(*)) AS pairs FROM u_records GROUP BY scope),
 missing AS (
-  SELECT a.scope, a.comparison, SUM(IF(a.mask = b.mask, DIV(a.n * (a.n - 1), 2), a.n * b.n)) AS pairs
+  SELECT a.scope, a.comparison, SUM(IF(a.mask = b.mask, pairs_of(a.n), a.n * b.n)) AS pairs
   FROM u_masks AS a JOIN u_masks AS b
     ON a.scope = b.scope AND a.comparison = b.comparison AND a.mask <= b.mask AND (a.mask & b.mask) = 0
   GROUP BY a.scope, a.comparison
@@ -142,7 +146,7 @@ JOIN every USING (scope) LEFT JOIN missing USING (scope, comparison);
 --     adds or takes away each term.
 CREATE OR REPLACE TEMP TABLE u_counted AS
 WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared)
-SELECT scope, comparison, label, SUM(sign * DIV(n * (n - 1), 2)) AS pairs
+SELECT scope, comparison, label, SUM(sign * pairs_of(n)) AS pairs
 FROM (
   SELECT scope, 'name' AS comparison, 'exact' AS label, 1 AS sign, COUNT(*) AS n
   FROM u_records WHERE person_name IS NOT NULL GROUP BY scope, person_name
@@ -259,28 +263,34 @@ FROM u_records GROUP BY scope;
 --     phone, cif and birth keeps its row, and its other comparisons' pairs are still sampled.
 CREATE OR REPLACE TEMP TABLE u_plan AS
 SELECT
-  o.scope,
-  COALESCE(LOGICAL_OR(IF(o.comparison = 'phone', NOT (c.pairs > 0 AND n.pairs > 0 AND c.pairs + n.pairs < o.pairs),
-                         NULL)), TRUE) AS phone,
-  COALESCE(LOGICAL_OR(IF(o.comparison = 'cif', NOT (c.pairs > 0 AND n.pairs > 0 AND c.pairs + n.pairs < o.pairs),
-                         NULL)), TRUE) AS cif,
-  COALESCE(LOGICAL_OR(IF(o.comparison = 'birth', NOT (c.pairs > 0 AND n.pairs > 0 AND c.pairs + n.pairs < o.pairs),
-                         NULL)), TRUE) AS birth
-FROM u_outside AS o
-LEFT JOIN u_counted AS c ON c.scope = o.scope AND c.comparison = o.comparison AND c.label = 'exact'
-LEFT JOIN u_near AS n ON n.scope = o.scope AND n.comparison = o.comparison
-GROUP BY o.scope;
+  scope,
+  NOT LOGICAL_OR(comparison = 'phone' AND counted_whole) AS phone,
+  NOT LOGICAL_OR(comparison = 'cif' AND counted_whole) AS cif,
+  NOT LOGICAL_OR(comparison = 'birth' AND counted_whole) AS birth
+FROM (  -- one row per scope and comparison. counted_whole is TRUE if all its levels are counted exactly.
+  SELECT o.scope, o.comparison,
+         COALESCE(c.pairs > 0 AND n.pairs > 0 AND c.pairs + n.pairs < o.pairs, FALSE) AS counted_whole
+  FROM u_outside AS o
+  LEFT JOIN u_counted AS c ON c.scope = o.scope AND c.comparison = o.comparison AND c.label = 'exact'
+  LEFT JOIN u_near AS n ON n.scope = o.scope AND n.comparison = o.comparison
+)
+GROUP BY scope;
 
--- k records make k(k−1)/2 pairs, so about max_pairs pairs take k = (√(8·max_pairs + 1) + 1) / 2 of a scope's n
--- records. Each scope draws the share k / n, as Splink does, and all its records if the share is 1 or more.
+-- records_for_pairs returns how many records make about max_pairs pairs. k records make k(k−1)/2 pairs, so about
+-- max_pairs pairs take k = (√(8·max_pairs + 1) + 1) / 2 records.
+CREATE OR REPLACE TEMP FUNCTION records_for_pairs(max_pairs FLOAT64) AS (
+  CAST(0.5 AS FLOAT64) * (SQRT(8 * max_pairs + 1) + 1)
+);
+
+-- Each scope draws the share k / n of its n records, as Splink does, and all its records if the share is 1 or more.
+-- A record is drawn if its hash, read in billionths (MOD 1,000,000,000), falls under the share, so a share is drawn
+-- to the nearest billionth, and at least one billionth.
 CREATE OR REPLACE TEMP TABLE u_drawn AS
 WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared),
 share AS (
-  SELECT 'sample' AS scope,
-         CAST(0.5 AS FLOAT64) * (SQRT(8 * @fit_u_max_pairs + 1) + 1) / GREATEST((SELECT COUNT(*) FROM fit_sample), 1)
-           AS share
+  SELECT 'sample' AS scope, records_for_pairs(@fit_u_max_pairs) / GREATEST((SELECT COUNT(*) FROM fit_sample), 1) AS share
   UNION ALL
-  SELECT 'file', CAST(0.5 AS FLOAT64) * (SQRT(8 * @u_max_pairs + 1) + 1) / GREATEST((SELECT COUNT(*) FROM records), 1)
+  SELECT 'file', records_for_pairs(@u_max_pairs) / GREATEST((SELECT COUNT(*) FROM records), 1)
 )
 SELECT u_records.* FROM u_records JOIN share USING (scope)
 WHERE share >= 1 OR MOD(er_hash(id || '_' || @seed), 1000000000) < GREATEST(1, ROUND(share * 1000000000));
@@ -292,13 +302,15 @@ WITH paired AS (  -- a pair keeps its two records whole, and name_score runs onc
   SELECT l.scope, l, r, name_score(l, r) AS s_name
   FROM u_drawn AS l JOIN u_drawn AS r ON l.scope = r.scope AND l.id < r.id
 )
-SELECT
-  p.scope, name_level(p.l, p.r, p.s_name) AS name, gamma_company(p.l, p.r) AS company,
-  gamma_address(p.l, p.r) AS address, IF(plan.phone, gamma_phone(p.l, p.r), NULL) AS phone,
-  IF(plan.cif, gamma_cif(p.l, p.r), NULL) AS cif, IF(plan.birth, gamma_birth(p.l, p.r), NULL) AS birth,
-  COUNT(*) AS pairs
-FROM paired AS p JOIN u_plan AS plan ON plan.scope = p.scope
-GROUP BY 1, 2, 3, 4, 5, 6, 7;
+SELECT scope, name, company, address, phone, cif, birth, COUNT(*) AS pairs
+FROM (  -- a subquery, so that the GROUP BY's phone, cif and birth name the levels, not u_plan's columns of those names
+  SELECT
+    p.scope, name_level(p.l, p.r, p.s_name) AS name, gamma_company(p.l, p.r) AS company,
+    gamma_address(p.l, p.r) AS address, IF(plan.phone, gamma_phone(p.l, p.r), NULL) AS phone,
+    IF(plan.cif, gamma_cif(p.l, p.r), NULL) AS cif, IF(plan.birth, gamma_birth(p.l, p.r), NULL) AS birth
+  FROM paired AS p JOIN u_plan AS plan ON plan.scope = p.scope
+)
+GROUP BY scope, name, company, address, phone, cif, birth;
 
 CREATE OR REPLACE TEMP TABLE u_sampled AS
 SELECT scope, 'name' AS comparison, name AS gamma, SUM(pairs) AS pairs FROM u_patterns GROUP BY scope, name

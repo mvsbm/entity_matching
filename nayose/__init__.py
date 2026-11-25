@@ -243,8 +243,6 @@ def values_of(name: str, refit: bool = True, lookup: bool = False) -> dict:
         return dict(keys=list(s["keys"]), rules=list(s["rules"]),
                     keep_from=-math.inf if lookup else float(s["keep_from"]), search_floor=float(s["search_floor"]),
                     oversized=int(s["oversized"]), lookup=lookup, outside=0)
-    if name == "decide":
-        return dict(blank=BLANK)
     if name == "report":
         floor, likely = float(c["lookup"]["at_least"]), float(c["lookup"]["likely_from"])
         patterns = {**c["report"]["patterns"], "company_name": legal_pattern(c["records"])}
