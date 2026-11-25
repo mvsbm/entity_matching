@@ -91,9 +91,7 @@ def undo(engine: BigQuery, dataset: str) -> bool:
         return False
     session, held = engine.rows(f"SELECT session, tables FROM `{dataset}`.{MARK}")[0]
     held = [t for t in held if t]
-    region = engine.client.get_dataset(dataset).location.lower()  # its jobs are listed there (bigquery.jobs.list)
-    if engine.value(f"SELECT COUNT(*) FROM `region-{region}`.INFORMATION_SCHEMA.JOBS_BY_USER "
-                    "WHERE session_info.session_id = @session AND state <> 'DONE'", {"session": session}):
+    if still_running(engine, dataset, session):
         raise Running(session)
     back = [t for t in held if BEFORE + t in now]  # a table without its clone was never touched: the job stopped first
     made = [t for t in now if t not in held and t != MARK and not t.startswith(BEFORE)]
@@ -101,6 +99,20 @@ def undo(engine: BigQuery, dataset: str) -> bool:
                     *(f"DROP TABLE `{dataset}`.{t}" for t in made), f"DROP TABLE `{dataset}`.{MARK}",
                     *(f"DROP TABLE `{dataset}`.{BEFORE}{t}" for t in back)])
     return True
+
+
+def still_running(engine: BigQuery, dataset: str, session: str) -> bool:
+    """Return whether a query of the marked job's session still runs.
+
+    The check runs outside every session: run in the marked one, as a job's own undo would, it would count itself.
+    The session's jobs are listed in the dataset's region (bigquery.jobs.list, iam.tf).
+    """
+    bq = engine.bigquery
+    region = engine.client.get_dataset(dataset).location.lower()
+    config = bq.QueryJobConfig(query_parameters=[bq.ScalarQueryParameter("session", "STRING", session)])
+    done = engine.client.query(f"SELECT COUNT(*) FROM `region-{region}`.INFORMATION_SCHEMA.JOBS_BY_USER "
+                               "WHERE session_info.session_id = @session AND state <> 'DONE'", job_config=config)
+    return bool([tuple(r.values()) for r in done.result()][0][0])
 
 
 def main(argv: list[str] | None = None, client: object = None, bigquery: object = None) -> int:
