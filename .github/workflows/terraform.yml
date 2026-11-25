@@ -1,5 +1,5 @@
 # The Terraform the DevOps team applies, formatted and valid (the procedures deploy/deploy.py makes are the tests':
-# tests/test_deploy.py). On a pull request that touches the deploy, and on main.
+# tests/test_deploy.py). On a pull request that touches the Terraform, and on main.
 name: terraform
 on:
   push:

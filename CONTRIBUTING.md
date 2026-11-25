@@ -3,7 +3,7 @@
 # Contributing
 
 A change reaches `main` through a pull request, rebased onto it, whose checks pass. `.github/workflows/tests.yml` runs
-the lint and the tests on Python 3.12 and 3.14. `deploy.yml` checks the Terraform when a change touches it, and
+the lint and the tests on Python 3.12 and 3.14. `terraform.yml` checks the Terraform when a change touches it, and
 `checklist.yml` checks the pull request's checklist. After a merge, `main` runs the tests on Windows too, and so does a
 run started by hand on a branch (`gh workflow run tests.yml --ref BRANCH`). Each rule below says why it holds and what
 checks it: a test, the pipeline, or the review that every pull request gets. Where code can check a rule, it does.

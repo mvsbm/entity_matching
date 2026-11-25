@@ -126,7 +126,7 @@ flowchart TB
   t_report[("report_counts · report_fields · report_scores<br/>report_patterns · report_keys · report_clusters")]
   t_matched[("matched")]
   f_report[/"report.txt"/]
-  f_matched[/"matched/points-t.parquet (on BigQuery: the table matched)"/]
+  f_matched[/"matched/points-#lt;t#gt;.parquet (on BigQuery: the table matched)"/]
   people(["people"])
   given[/"given: the match table, its decision filled in"/]
   input --> mapping
@@ -158,8 +158,7 @@ flowchart TB
 
 *A box is a stage file, what it does and its cost; a cylinder, the run's tables it writes; a slanted box, a file read
 or written. A solid arrow makes or reads; a dotted one gives values. A build runs records, fit, score, decide and
-report; an update the same on a new batch; decide and match their own file alone. Every job runs functions.sql
-first.*
+report; an update the same on a new batch; decide and match their own file alone.*
 
 Every job runs `functions.sql` first. It holds the functions the other files call: the intake's `read_value`, the
 comparisons (`gamma_*`, and the name's `name_score` then `name_level`; one level per pair) and the rules' fuzzy tests

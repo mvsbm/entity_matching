@@ -215,4 +215,4 @@ Pairs of two people of one household are counted apart, neither true nor false: 
 - Splink documentation: the [waterfall chart](https://moj-analytical-services.github.io/splink/charts/waterfall_chart.html), [match weights](https://moj-analytical-services.github.io/splink/charts/match_weights_chart.html), [term frequency](https://moj-analytical-services.github.io/splink/topic_guides/comparisons/term-frequency.html).
 - P. Christen, *Data Matching*, Springer, 2012: chapter 6 (classification).
 
-**Next:** [7. Person or company →](06-person-or-company.md)
+**Next:** [6. Person or company →](06-person-or-company.md)
