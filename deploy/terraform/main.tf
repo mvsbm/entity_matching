@@ -46,11 +46,13 @@ resource "google_secret_manager_secret" "mapping" {
 }
 
 # The run: its tables, functions and procedures (deploy/deploy.py); and staging's sandbox for the engine-parity check,
-# whose tables expire in a day.
+# whose tables expire in a day. Time travel keeps 2 days, the least BigQuery keeps: every job replaces some of the run's
+# tables (gold, cands, model, matched), and storage bills each version time travel keeps. Undo needs none: it clones.
 resource "google_bigquery_dataset" "runs" {
-  dataset_id = "nayose"
-  location   = var.bigquery_location
-  depends_on = [google_project_service.on]
+  dataset_id            = "nayose"
+  location              = var.bigquery_location
+  max_time_travel_hours = 48
+  depends_on            = [google_project_service.on]
 }
 
 resource "google_bigquery_dataset" "sandbox" {

@@ -202,7 +202,7 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
             nayose.check_threshold(float(given[0]))  # before any client, as the job does here
         except nayose.InputError as e:
             return say(2, error=str(e), fix=e.fix)
-    engine = BigQuery(dataset, client=client, bigquery=bigquery)
+    engine = BigQuery(dataset, client=client, bigquery=bigquery, job=job)
     try:
         return dispatch(engine, dataset, job, given)
     finally:
