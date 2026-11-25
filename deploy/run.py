@@ -13,7 +13,7 @@ It runs as nayose-runtime (deploy/Jenkinsfile's Run stage, from main).
 A job is all or nothing, though BigQuery takes no DDL in a transaction:
 - It first makes the table job_running (the mark), holding the job and the dataset's tables. A second job finds it
   and refuses (exit 75).
-- It then clones each table it writes (before__<table>; nayose.procedures.changed): a clone bills no bytes, and
+- It then clones each table its procedure writes, as deployed (before__<table>): a clone bills no bytes, and
   shares its storage until either changes.
 - A job that fails is undone: each table is made again from its clone, and each table it made is dropped. It exits 1.
 - A job whose process died is undone by `undo`, once no query of its session still runs: BigQuery carries on a
@@ -53,7 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # this checkout's 
 
 import nayose  # noqa: E402
 from nayose.engines import BigQuery, bigquery_literal  # noqa: E402
-from nayose.procedures import JOBS as PROCEDURES, changed  # noqa: E402
+from nayose.procedures import JOBS as PROCEDURES  # noqa: E402
 
 JOBS = tuple(PROCEDURES)  # the jobs with a procedure: build, update, decide, match
 MARK, BEFORE = "job_running", "before__"  # the running job's table, and the prefix of its clones
@@ -106,7 +106,8 @@ def begin(engine: BigQuery, dataset: str, job: str) -> list[str] | None:
     job's mark is there.
 
     The mark lists every table, so an undo drops each table the job made; a table the job doesn't write is left as it
-    is, so it needs no clone: the job's procedure's tables (changed), and the table its file is loaded into (LOADS).
+    is, so it needs no clone. The job writes what its procedure writes as deployed (written), which the code here
+    may not match until the next deploy, and the tables a file is loaded into (LOADS).
     """
     now = tables(engine, dataset)
     if MARK in now:
@@ -114,15 +115,29 @@ def begin(engine: BigQuery, dataset: str, job: str) -> list[str] | None:
     # a finished job's renamed mark and clones, left behind: dropped before the mark, so no undo reads them
     script(engine, [f"DROP TABLE `{dataset}`.{t}" for t in now if t.startswith(BEFORE)])
     held = [t for t in now if not t.startswith(BEFORE)]
+    writes = written(engine, dataset, job)  # before the mark: a failure here leaves none
+    cloned = [t for t in held if writes is None or t in writes or t in LOADS.values()]
     # fails where another job made the mark first, which is then never undone here
     engine.run(f"CREATE TABLE `{dataset}`.{MARK} AS SELECT '{job}' AS job, CURRENT_TIMESTAMP() AS started, "
                f"{bigquery_literal(engine.session)} AS session, {bigquery_literal(held or [NO_TABLE])} AS tables")
-    written = [t for t in held if t in changed(job) or t == LOADS.get(job)]
     try:
-        script(engine, [f"CREATE TABLE `{dataset}`.{BEFORE}{t} CLONE `{dataset}`.{t}" for t in written])
+        script(engine, [f"CREATE TABLE `{dataset}`.{BEFORE}{t} CLONE `{dataset}`.{t}" for t in cloned])
     except BaseException as stopped:
         undo_after(engine, dataset, stopped)
-    return written
+    return cloned
+
+
+# A statement of a procedure that writes one of the run's tables: the deploy names each of them with its dataset
+# (nayose.procedures.in_dataset), and none of the job's temporary tables.
+WRITES = r"(?:CREATE(?: OR REPLACE)? TABLE(?: IF NOT EXISTS)?|INSERT INTO|DELETE FROM|UPDATE|MERGE(?: INTO)?|"\
+         r"TRUNCATE TABLE|DROP TABLE(?: IF EXISTS)?)\s+`{dataset}`\.(\w+)"
+
+
+def written(engine: BigQuery, dataset: str, job: str) -> set[str] | None:
+    """Return the run's tables the job's procedure writes, as the dataset holds it; None where it holds none."""
+    found = engine.rows(f"SELECT routine_definition FROM `{dataset}`.INFORMATION_SCHEMA.ROUTINES "
+                        "WHERE routine_name = @job", {"job": job})
+    return set(re.findall(WRITES.format(dataset=re.escape(dataset)), found[0][0], re.I)) if found else None
 
 
 def undo_after(engine: BigQuery, dataset: str, stopped: BaseException) -> None:
@@ -143,13 +158,14 @@ LOADS = {"build": "input", "update": "input", "decide": "given"}  # the table a 
 
 
 def end(engine: BigQuery, dataset: str, job: str, cloned: list[str]) -> None:
-    """Rename the mark before__job_running, then drop it, the job's loaded file and the clones begin made (`cloned`).
+    """Rename the mark before__job_running, then drop it, the loaded files and the clones begin made (`cloned`).
 
     Once renamed, the mark is no mark: no job, undo or lookup finds it. A mark left by a DROP that failed would make
-    an undo take back what the job did. The loaded file (input, given) is the raw records or decisions: only the job
-    read it, so it doesn't outlive the job. The next job drops what a failed DROP leaves of the clones.
+    an undo take back what the job did. The loaded files (input, given) are the raw records and decisions: only a
+    job reads them, so none outlives one, whatever job left it. The next job drops what a failed DROP leaves of the
+    clones.
     """
-    loaded = [f"DROP TABLE IF EXISTS `{dataset}`.{LOADS[job]}"] if job in LOADS else []
+    loaded = [f"DROP TABLE IF EXISTS `{dataset}`.{t}" for t in dict.fromkeys(LOADS.values())]
     script(engine, [f"ALTER TABLE `{dataset}`.{MARK} RENAME TO {BEFORE}{MARK}", *loaded,  # the raw records go first
                     f"DROP TABLE `{dataset}`.{BEFORE}{MARK}", *(f"DROP TABLE `{dataset}`.{BEFORE}{t}" for t in cloned)])
 
@@ -172,7 +188,7 @@ def undo(engine: BigQuery, dataset: str) -> bool:
     held = [t for t in held if t != NO_TABLE]
     if still_running(engine, dataset, session):
         raise Running(session)
-    back = [t for t in held if BEFORE + t in now]  # a table without its clone was never touched: the job stopped first
+    back = [t for t in held if BEFORE + t in now]  # a table without its clone wasn't written: not the job's, or not yet
     made = [t for t in now if t not in held and t != MARK and not t.startswith(BEFORE)]
     script(engine, [*(f"CREATE OR REPLACE TABLE `{dataset}`.{t} CLONE `{dataset}`.{BEFORE}{t}" for t in back),
                     *(f"DROP TABLE `{dataset}`.{t}" for t in made), f"DROP TABLE `{dataset}`.{MARK}",

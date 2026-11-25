@@ -89,21 +89,6 @@ ARGUMENTS = {"match": {"threshold": "FLOAT64"}}  # a procedure's own values: giv
 KEPT = ("decisions",)  # people's decisions: a build keeps them, as the CLI's build does
 
 
-def changed(job: str) -> list[str]:
-    """Return the run's tables a job's procedure may write, in the order first written: what an undo of it puts back.
-
-    That is each table a statement of its stages makes, replaces, inserts into or deletes from (WRITE), whether or
-    not its -- when: holds, a view and a temporary table aside; and a build's method.
-    """
-    out = dict.fromkeys(["method"] if job == "build" else [])
-    for stage, _ in JOBS[job]:
-        for sql in stage_statements(stage, None):
-            head = WRITE.match(sql)
-            if head and not {"VIEW", "TEMP"} & set(nayose.verb_of(head).split()):
-                out.setdefault(head["table"])
-    return list(out)
-
-
 def in_dataset(sql: str, dataset: str, temp: set = frozenset()) -> str:
     """Return a statement with each table it names written with the dataset, but a WITH's names and `temp`'s.
 

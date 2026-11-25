@@ -212,9 +212,16 @@ def test_a_job_loads_its_input_into_the_dataset_and_calls_its_procedure(monkeypa
 PROCEDURE_FAILS = ("procedure", "interrupted", "interrupted as it ends", "changed", "refused")  # how a fake procedure call ends
 
 
+DEPLOYED = {}  # each job's procedure as the deploy makes it in p.run, the body BigQuery's INFORMATION_SCHEMA.ROUTINES holds
+
+
 class Tables(Recorded):  # a dataset's tables, each a version and a type, as BigQuery lists them: what a job's statements leave
-    def __init__(self, tables: dict, job: dict | None = None, fail: tuple = ()):
+    def __init__(self, tables: dict, job: dict | None = None, fail: tuple = (), deployed: dict | None = None):
         super().__init__()
+        if not DEPLOYED:
+            DEPLOYED.update({re.search(r"PROCEDURE `p\.run`\.(\w+)\(", x)[1]: x[x.index("\nBEGIN\n"):]
+                             for x in procedures("p.run") if "CREATE OR REPLACE PROCEDURE" in x})
+        self.deployed = {**DEPLOYED, **(deployed or {})}  # a test's procedure, as an older deploy left it
         self.tables, self.job = dict(tables), job or {}  # job: the procedure's tables (None: dropped)
         self.fails = list(fail)  # each in turn: a statement holding it fails, or the procedure (one of PROCEDURE_FAILS)
         self.kind = dict.fromkeys(tables, "BASE TABLE")
@@ -240,6 +247,8 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
             if "INFORMATION_SCHEMA.TABLES" in s:
                 kinds = re.findall(r"'([A-Z ]+)'", s)
                 rows = [{"table_name": x} for x in sorted(self.tables) if self.kind[x] in kinds]
+            elif "INFORMATION_SCHEMA.ROUTINES" in s:
+                rows = [{"routine_definition": self.deployed[given["job"]]}] if given["job"] in self.deployed else []
             elif "INFORMATION_SCHEMA.JOBS_BY_USER" in s:
                 rows = [{"n": int(given["session"] in self.running)}]
                 self.checked_in.append(getattr(job_config, "connection_properties", None))  # the session it ran in
@@ -316,6 +325,9 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
     matching = Tables({"records": 1, "scored": 1, "matched": 1, "name_weights": 1}, {"matched": 2})
     assert ends(matching, ["p.run", "match", "8"])[0] == 0 and matching.tables["matched"] == 2
     assert set(re.findall(r"CLONE `p\.run`\.(\w+)", "\n".join(matching.sent))) == {"matched"}  # its one table
+    older = Tables({"records": 1, "rule_pairs": 1}, {"rule_pairs": 2}, fail=["procedure"],  # prod's procedure, deployed
+                   deployed={"update": "\nBEGIN\nINSERT INTO `p.run`.rule_pairs SELECT 1;\nEND"})  # before this code
+    assert ends(older, ["p.run", "update", "gs://b/y.parquet"])[0] == 1 and older.tables["rule_pairs"] == 1  # put back
     assert ends(done)[0] == 0 and done.tables == after  # and the next job runs as well
     failed = Tables(before, made, fail=["procedure"])
     code, said = ends(failed)
@@ -371,7 +383,7 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
                                                   "correct those rows, or leave them empty") and refused.tables == before
 
     died = Tables(before, made)  # a job whose process died, its procedure run: the next job refuses; undo waits for it, then undoes
-    assert run.begin(run.BigQuery("p.run", client=died, bigquery=MODULE), "p.run", "build")
+    assert run.begin(run.BigQuery("p.run", client=died, bigquery=MODULE), "p.run", "build") is not None
     died.query("CALL `p.run`.build()")
     died.running, died.tables["name_weights"] = {"s1"}, 2  # its procedure still running; a deploy since, with a new name model
     assert ends(died, ["p.run", "match", "8"])[0] == 75 and not [s for s in died.sent if s.startswith("CALL `p.run`.match")]
