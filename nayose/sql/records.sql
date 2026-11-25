@@ -44,9 +44,9 @@ CREATE OR REPLACE TABLE this_batch AS SELECT COALESCE(MAX(batch) + 1, 0) AS batc
 
 
 -- 1. This section sets aside the rows that can't be resolved. Rows identical in every column count once (mapping.sql's
---    input_rows). A row is set aside if it has no ID, if its record is already in the run, or if another row gives
+--    input_rows). A row is set aside if it has no ID, if its ID is already in the run, or if another row gives
 --    its ID with different content. An ID that is empty or whitespace alone, as Python counts whitespace, is no ID.
---    Since a record already in the run is set aside, a batch given twice adds nothing the second time. Every row of
+--    Since an ID already in the run is set aside, a batch given twice adds nothing the second time. Every row of
 --    an ID with different content is set aside, because the run can't tell which row is right.
 
 CREATE OR REPLACE TABLE set_aside AS
@@ -214,9 +214,10 @@ FROM same;
 --    field's records per value if that is more. A crowded value is a placeholder if its own pairs outnumber the pairs
 --    that all the field's uncrowded values make together.
 --    A customer ID is a placeholder if it reaches its field's bar. Its customers and pairs aren't tested.
---    Blanking one field's placeholder changes no other field's counts. A person_name placeholder also blanks
---    full_name, given_name and any_name, but those fields aren't counted. Customers are counted by the customer ID as
---    this section reads it, before any new placeholder blanks it. So every field's placeholders are found at once,
+--    Blanking one field's placeholder changes no other field's record counts. A person_name placeholder also blanks
+--    full_name, given_name and any_name, but those fields aren't counted. Blanking a customer ID would change the
+--    customer counts, as a record without one is its own customer. So customers are counted by the customer ID as
+--    this section reads it, before any new placeholder blanks it. Every field's placeholders are then found at once,
 --    and section 6 blanks them as it writes the records.
 --    The run's placeholders stay. The batch is first read with them as missing, and its values are then counted
 --    together with the run's records. With @lookup, no placeholder is found.

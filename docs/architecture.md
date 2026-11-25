@@ -193,7 +193,7 @@ because in a bigger file a field agrees by chance less often. The `model` table 
 3. The model's bits (`weights`), and an exact upper bound on each pair's weight from its equalities and lengths alone
    (`bound_of`). The costly fuzzy comparisons run only on the pairs that could reach `keep_from`.
 4. The gate handles blocks of `oversized` records or more. Such a block is joined only if a sample of its pairs holds
-   one at `search_floor` bits or more (`gated`), because a placeholder's block holds no true match.
+   one at `search_floor` points or more (`gated`), because a placeholder's block holds no true match.
 5. The candidates: the pairs the keys list, and every pair of a kept block that touches the batch (`cands`).
 6. The scores: each kept pair gets its level of each comparison and its weight (`weight_of`). `scored` keeps every
    pair from `keep_from` bits up, and every rule pair.
@@ -229,8 +229,9 @@ The SQL text never changes between runs. What changes is given to it:
   own mapping. Prod's is in Secret Manager as `nayose-mapping`, outside the repository. `config.toml` `[input]` lists
   the columns it reads, and a column the file lacks is read as missing.
 
-`report.txt` names the method's fingerprint (`nayose.fingerprint`), a hash of every stage file, `config.toml` and
-the mapping, so two reports show whether two runs ran the same method.
+`report.txt` names the method's fingerprint (`nayose.fingerprint`), a hash of every stage file, `config.toml`, the
+mapping, the name model and the functions the deploy makes, any byte of them, so two reports show whether two runs
+ran the same method.
 
 ## 5 · An increment
 

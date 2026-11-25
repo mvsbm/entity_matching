@@ -946,10 +946,12 @@ def for_lookup(sql: str, temp: set) -> str | None:
 def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
     """Return the hash of what an update needs unchanged since its build.
 
-    It covers every stage file, the values (config.toml), the input's mapping, the name model, and the Python and
-    JavaScript BigQuery runs as the method's functions (em.py, entities.py, strings.js), each by name and content. A
-    build stores it in the table method; an update or a lookup refuses a run whose hash differs. `root` is the nayose
-    folder to hash; `mapping_file` is the deployment's mapping, where the deploy has one.
+    It covers every stage file, the values (config.toml), the input's mapping and the name model, each by name and
+    content, and every function the deploy makes outside the SQL files (engines.functions: the comparisons, the hash,
+    nfkc and the Python UDFs, em.py's and entities.py's whole source). Any byte counts, a comment's too: a run built
+    before an edit is built again. DuckDB's twins of the comparisons are held to them by tests/test_functions.py. A
+    build stores the hash in the table method; an update or a lookup refuses a run whose hash differs. `root` is the
+    nayose folder to hash; `mapping_file` is the deployment's mapping, where the deploy has one.
     """
     if root == HERE:
         config_file = Path(os.environ.get("NAYOSE_CONFIG") or HERE / "config.toml")
@@ -958,10 +960,11 @@ def fingerprint(root: Path = HERE, mapping_file: Path | None = None) -> str:
     else:
         config_file, the_mapping = root / "config.toml", mapping_file or root / "mapping.sql"
         name_model = root.parent / "config" / NAME_MODEL.name
-    functions = [root / "em.py", root / "entities.py", root / "strings.js"]  # fit_model, resampled, entities_of, cl_*
-    inputs = (config_file, the_mapping, name_model, *functions)
+    inputs = (config_file, the_mapping, name_model)
     hashed = [*(root / "sql").glob("*.sql"), *(p for p in inputs if p.exists())]
     digest = hashlib.sha256()
     for f in sorted(hashed, key=lambda p: p.name):
         digest.update(f.name.encode() + b"\0" + f.read_bytes() + b"\0")
+    from nayose.engines import functions  # engines imports this module, so not at its top
+    digest.update("\0".join(functions("dataset.d")).encode() + b"\0")  # as the deploy makes them, any dataset alike
     return digest.hexdigest()

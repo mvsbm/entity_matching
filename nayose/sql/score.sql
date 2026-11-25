@@ -183,7 +183,7 @@ GROUP BY 1, 2;
 -- 3. The model's bits, as a score reads them. weights holds the prior and, for each comparison, an array of its
 --    levels' bits. Level γ's bits are at OFFSET(γ + 1), so the missing level, -1, is at OFFSET(0) and weighs 0.
 --    weight_of gives a pair's points, the prior plus its levels' bits, added in the model's order. bound_of gives an
---    upper bound of a pair's points from equalities and lengths alone.
+--    upper bound of a pair's points from cheap tests alone.
 CREATE OR REPLACE TEMP TABLE weights AS
 WITH size AS (SELECT COUNT(*) + @outside AS n FROM records),  -- @outside counts the run's records a lookup didn't read
 lam AS (  -- λ is a per-pair rate, so it is rescaled to the run's size, as em.fitted rescales it
@@ -213,7 +213,8 @@ CREATE OR REPLACE TEMP FUNCTION weight_of(g_name INT64, g_company INT64, g_addre
   + w.phone[OFFSET(g_phone + 1)] + w.cif[OFFSET(g_cif + 1)] + w.birth[OFFSET(g_birth + 1)]
 );
 
--- bound_of returns an upper bound of a pair's points, from equalities and lengths alone. If a leading equality
+-- bound_of returns an upper bound of a pair's points from cheap tests alone: equalities, lengths, the names' letters
+-- and the cheap comparisons' own levels. If a leading equality
 -- settles a fuzzy comparison's level, the bound takes that level. Otherwise it takes the best level the comparison can
 -- still reach. A Jaro–Winkler level counts only if name_jw_most or jaro_winkler_most, the most the score can be,
 -- reaches its threshold. The given name's level counts only if the given names are equal, "address close" only if the
