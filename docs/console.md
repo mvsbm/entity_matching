@@ -55,8 +55,8 @@ another fingerprint, so a run built with one is built again (step 4) after insta
    *Create dataset*.
 2. **Load the name model.** On the dataset `nayose`, click ⋮ → *Create table*. Source: *Upload*, file:
    `name_weights.csv`, format *CSV*. Table: `name_weights`. Schema: click *Edit as text* and paste
-   `term:STRING,coef:FLOAT64`. Under *Advanced options*: *Write preference* *Overwrite table*, and *Header rows to
-   skip* `1`. Click *Create table*.
+   `term:STRING,coef:FLOAT` (the schema text's name for FLOAT64). Under *Advanced options*: *Write preference*
+   *Overwrite table*, and *Header rows to skip* `1`. Click *Create table*.
 3. **Install.** Click *+* (a new query), paste all of `deploy.sql`, and click *Run*. It takes about a minute. Then
    the dataset holds nayose's functions and four procedures: `build`, `update`, `decide` and `match`.
 
