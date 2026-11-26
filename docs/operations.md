@@ -78,6 +78,10 @@ build and update print `report.txt`, which Jenkins archives. It holds no record'
 
 **All or nothing.** A job first makes the table `job_running` (the job, its start, the dataset's tables) and clones each table the job writes as `before__<table>`: the tables its procedure writes, as the dataset holds it (`INFORMATION_SCHEMA.ROUTINES`), so a match clones its `matched` alone and a decide `decisions` and `gold`. A clone bills no bytes, and it shares the table's storage until either changes. A job that fails is undone: each table is made again from its clone, and a table the job made is dropped; it exits 1 with a JSON line that says what failed, as it does for an interrupt it can undo at once. Then the clones go, and so do the tables the job's files were loaded into (`input`, `given`): the raw records and decisions outlive no job. A job done renames `job_running` to `before__job_running`, so that no job, undo or lookup finds it, then drops it and the clones; the next job drops any left. A job that finds `job_running` exits 75: another job is running, or one's process died. For the latter, run `undo`. BigQuery carries on a query its caller left, so `undo` exits 75 while a query of that job's session still runs (it reads its own jobs: the custom role `nayoseRuntimeJobs`, `bigquery.jobs.list`), and undoes it once none does; an undo that failed or stopped partway can run again. A job interrupted while its clones are made or its procedure runs (an interrupt, a client's timeout) exits 75 with what stopped it: run `undo` once that query ends. `name_weights` is the deploy's, so no undo brings an older one back. The run's view (`compared`) isn't a table: a first build that fails leaves it, and the next build makes it again. A procedure called other than through `deploy/run.py` is neither marked nor undone.
 
+## Running from the BigQuery console
+
+By hand, with no Python, Terraform or Jenkins: [console](console.md). The deploy is two files `deploy/deploy.py --sql DIR` writes; the records are the table the mapping's `FROM` names, which a build or an update given no file reads (`deploy/run.py PROJECT.DATASET build`).
+
 ## Running locally
 
 ```

@@ -3,6 +3,10 @@ output "bucket" {
   value = google_storage_bucket.runs.name
 }
 
+output "dataset" {
+  value = google_bigquery_dataset.runs.dataset_id
+}
+
 output "runtime_service_account" {
   value = google_service_account.runtime.email
 }

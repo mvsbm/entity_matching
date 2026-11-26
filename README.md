@@ -89,6 +89,7 @@ procedures of the run's dataset, and Jenkins calls them ([operations](docs/opera
 | see how it is built: every stage, table and engine | [architecture](docs/architecture.md) |
 | understand each method, and why it is the one chosen | [the guide](docs/guide/01-entity-resolution-and-our-task.md) |
 | deploy and run it on BigQuery | [operations](docs/operations.md) |
+| run it by hand in the BigQuery console, no Python | [console](docs/console.md) |
 | know what each stage costs | [performance](docs/performance.md) |
 | check the numbers (synthetic data only) | [benchmark](reports/benchmark.md) |
 | know where the data comes from | [data](docs/data.md) |

@@ -1,6 +1,6 @@
 locals {
   # named as deploy/Jenkinsfile expects them
-  bucket = "${var.project}-nayose-runs"
+  bucket = var.bucket != "" ? var.bucket : "${var.project}-nayose-runs"
   services = [
     "storage.googleapis.com",
     "bigquery.googleapis.com",
@@ -51,7 +51,7 @@ resource "google_secret_manager_secret" "mapping" {
 # logical ones. Physical billing also bills time travel, so it keeps 2 days, the least BigQuery keeps: every job
 # replaces some of the run's tables (gold, cands, matched). Undo needs none: it clones.
 resource "google_bigquery_dataset" "runs" {
-  dataset_id            = "nayose"
+  dataset_id            = var.dataset
   location              = var.bigquery_location
   storage_billing_model = "PHYSICAL"
   max_time_travel_hours = 48
@@ -60,7 +60,7 @@ resource "google_bigquery_dataset" "runs" {
 
 resource "google_bigquery_dataset" "sandbox" {
   count                       = var.environment == "staging" ? 1 : 0
-  dataset_id                  = "nayose_ci"
+  dataset_id                  = "${var.dataset}_ci"
   location                    = var.bigquery_location
   default_table_expiration_ms = 24 * 3600 * 1000
   depends_on                  = [google_project_service.on]

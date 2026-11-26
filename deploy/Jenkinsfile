@@ -9,11 +9,16 @@
 // Every call runs as an account of the project it touches: nayose-deployer to make, nayose-runtime to run. Each
 // credential is a Jenkins file credential: a Workload Identity Federation configuration where this Jenkins can issue
 // OIDC tokens, else a service account key (docs/operations.md). Jenkins provides, as environment: STAGING_PROJECT,
-// PROD_PROJECT, and APPROVERS (who may promote to prod). The run's dataset in each project is nayose.
+// PROD_PROJECT, and APPROVERS (who may promote to prod); and, where Terraform's dataset and bucket variables were set,
+// NAYOSE_DATASET (nayose otherwise) and NAYOSE_STAGING_BUCKET (STAGING_PROJECT-nayose-runs otherwise).
 pipeline {
   agent none
   options {
     disableConcurrentBuilds()  // one delivery at a time: two would race to make the procedures
+  }
+  environment {
+    DATASET = "${env.NAYOSE_DATASET ?: 'nayose'}"  // the run's dataset in each project (Terraform's dataset)
+    STAGING_BUCKET = "${env.NAYOSE_STAGING_BUCKET ?: env.STAGING_PROJECT + '-nayose-runs'}"  // Terraform's bucket
   }
   parameters {
     choice(name: 'JOB', choices: ['none', 'build', 'update', 'decide', 'match', 'undo', 'lookup'], description: 'only run this job in prod, with ARGS (no checks, no deploy)')
@@ -40,7 +45,7 @@ pipeline {
           sh '''
             python3 -m venv .venv
             .venv/bin/python -m pip install --quiet -r requirements.txt -r deploy/requirements.txt
-            .venv/bin/python deploy/deploy.py "$STAGING_PROJECT.nayose"
+            .venv/bin/python deploy/deploy.py "$STAGING_PROJECT.$DATASET"
           '''
         }
         withCredentials([file(credentialsId: 'nayose-staging-runtime', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
@@ -48,8 +53,8 @@ pipeline {
             export CLOUDSDK_CONFIG="$WORKSPACE/.gcloud-staging"
             gcloud auth login --cred-file="$GOOGLE_APPLICATION_CREDENTIALS" --quiet
             .venv/bin/python scripts/generate.py --entities 2000 --seed 7 --out smoke
-            gcloud storage cp smoke/records.parquet "gs://$STAGING_PROJECT-nayose-runs/in/smoke.parquet" --project="$STAGING_PROJECT"
-            .venv/bin/python deploy/smoke.py "$STAGING_PROJECT.nayose" "gs://$STAGING_PROJECT-nayose-runs/in/smoke.parquet" smoke/records.parquet
+            gcloud storage cp smoke/records.parquet "gs://$STAGING_BUCKET/in/smoke.parquet" --project="$STAGING_PROJECT"
+            .venv/bin/python deploy/smoke.py "$STAGING_PROJECT.$DATASET" "gs://$STAGING_BUCKET/in/smoke.parquet" smoke/records.parquet
           '''
         }
       }
@@ -73,7 +78,7 @@ pipeline {
             python3 -m venv .venv
             .venv/bin/python -m pip install --quiet -r requirements.txt -r deploy/requirements.txt
             gcloud secrets versions access latest --secret=nayose-mapping --project="$PROD_PROJECT" > mapping.sql
-            .venv/bin/python deploy/deploy.py "$PROD_PROJECT.nayose" --mapping mapping.sql
+            .venv/bin/python deploy/deploy.py "$PROD_PROJECT.$DATASET" --mapping mapping.sql
             rm -f mapping.sql
           '''
         }
@@ -95,7 +100,7 @@ pipeline {
               gcloud secrets versions access latest --secret=nayose-mapping --project="$PROD_PROJECT" > mapping.sql
               export NAYOSE_MAPPING="$PWD/mapping.sql"
             fi
-            .venv/bin/python deploy/run.py "$PROD_PROJECT.nayose" "$JOB" $ARGS > report.txt
+            .venv/bin/python deploy/run.py "$PROD_PROJECT.$DATASET" "$JOB" $ARGS > report.txt
           '''
           archiveArtifacts artifacts: 'report.txt', allowEmptyArchive: true  // build's and update's: no record's value in it
         }
