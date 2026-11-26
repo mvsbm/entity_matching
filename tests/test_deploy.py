@@ -21,7 +21,7 @@ from test_sql import reserved
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 CODE = nayose.NOT_CODE  # comments and strings: what isn't code
-FILE_BUDGET = 82  # the most tracked files the repository holds: CONTRIBUTING.md, rule 10
+FILE_BUDGET = 87  # the most tracked files the repository holds: CONTRIBUTING.md, rule 10
 
 
 def test_the_repository_holds_no_more_files_than_its_budget():
@@ -186,6 +186,21 @@ class Recorded:  # a BigQuery client that records what it is sent
 
 MODULE = SimpleNamespace(QueryJobConfig=lambda **k: SimpleNamespace(**k), ConnectionProperty=lambda key, value: SimpleNamespace(key=key, value=value),
                          LoadJobConfig=lambda **k: SimpleNamespace(**k), ScalarQueryParameter=lambda *a: a, ArrayQueryParameter=lambda *a: a)
+
+
+def test_data_console_holds_what_scripts_console_files_writes(tmp_path):  # docs/console.md's first test, never stale
+    import pyarrow.parquet as pq
+    spec = importlib.util.spec_from_file_location("console_files", DEPLOY.parent / "scripts" / "console_files.py")
+    files = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(files)
+    assert files.main([str(tmp_path), "--sql-only"]) == 0
+    kept = DEPLOY.parent / "data" / "console"
+    for name in ("deploy.sql", "name_weights.csv"):
+        assert (tmp_path / name).read_bytes() == (kept / name).read_bytes(), \
+            f"data/console/{name} is stale: python scripts/console_files.py --sql-only"
+    for name in ("synthetic_first.parquet", "synthetic_batch.parquet"):  # what the mapping reads, every column as text
+        schema = pq.read_schema(kept / name)
+        assert schema.names == nayose.config()["input"]["columns"] and {str(t) for t in schema.types} <= {"string", "large_string"}
 
 
 def test_the_deploy_as_files_holds_every_statement_and_the_name_model_and_sends_nothing(tmp_path):

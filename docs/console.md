@@ -28,6 +28,23 @@ no Jenkins. Everything here is pasting SQL and clicking **Run**, or uploading a 
   table: where yours lacks one, add it empty (``ALTER TABLE `YOUR_PROJECT.raw.nayose_batch` ADD COLUMN NAME STRING``)
   or take it out of the mapping. A build otherwise stops at "Unrecognized name: NAME".
 
+## A first test, with synthetic records
+
+The repository's [data/console](../data/console) folder holds the four files of a first test, generated records
+only: `deploy.sql` and `name_weights.csv`, made for the dataset `YOUR_PROJECT.nayose` and its table
+`synthetic_records`, and `synthetic_first.parquet` (for the build) and `synthetic_batch.parquet` (for an update).
+Download each from GitHub (the file, then *Download raw file*).
+
+- **deploy.sql names its dataset.** Open it in a text editor and replace every `YOUR_PROJECT.nayose` with your
+  project ID and dataset, for example `my-project.nayose_poc` (*Replace all*), then save it.
+- **The records:** after step 1, on your dataset, click ⋮ → *Create table*. Source: *Upload*, `synthetic_first.parquet`,
+  format *Parquet*. Table: `synthetic_records`. Click *Create table*. Then do steps 2 to 8 as written.
+- **The update (step 9):** upload `synthetic_batch.parquet` the same way, as `synthetic_records`, with *Write
+  preference* *Overwrite table*.
+
+Your technical contact can write the same four files for your own names, with no replacing:
+`python scripts/console_files.py OUT --dataset YOUR_PROJECT.YOUR_DATASET`.
+
 ## Once: install nayose
 
 1. **Make the dataset.** In the Explorer, on your project, click ⋮ → *Create dataset*. Dataset ID: `nayose`.

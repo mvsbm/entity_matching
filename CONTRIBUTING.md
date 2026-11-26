@@ -44,6 +44,8 @@ The tests run this checkout's code, a git worktree's too: the processes they sta
 
 A pull request that changes SQL quotes BigQuery's cost before and after, as measured by
 `scripts/estimate_cost.py FILE [FILE ...]` (bytes billed and work, statement by statement, on DuckDB).
+It also writes data/console/'s deploy files again (`scripts/console_files.py --sql-only`), which a test holds to the
+code.
 
 ## Docs
 
