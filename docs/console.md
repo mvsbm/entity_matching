@@ -128,5 +128,29 @@ stops two, and two at once can lose people's decisions.
 - **"the method, its values or the mapping changed since the run was built"**: a new `deploy.sql` was installed.
   Run step 4 with all your records.
 - **"deploy: the last deploy did not finish"**: step 3 stopped partway. Run step 3 again.
+- **"Query exceeded limit for bytes billed"**: the job needed more than the cap below allows. Raise it, and run
+  step 4 again with all your records.
 
-On-demand billing charges for the bytes read; a test of thousands of records reads a few GB at most.
+## Capping what a job costs
+
+On-demand billing charges for the bytes a query reads. A cap stops a job before it bills more: on each query tab
+that runs a `CALL`, open *More* → *Query settings* → *Advanced options*, and set *Maximum bytes billed* (in bytes).
+
+- **The cap is one budget for the whole job.** A `CALL` runs a few hundred statements, and the cap counts them all
+  together: the statement that would pass it is refused, unbilled, and the job stops there. What ran before it is
+  billed and stays, and the console undoes nothing. So set the cap well above what the job needs: as a guard
+  against surprises, not as a tight fit.
+- **What the jobs bill**, as measured:
+
+  | Job | the first test (13,019 records) | a million records |
+  |---|---|---|
+  | `build()` | about 1 GB | about 11 GB |
+  | `update()` | under 1 GB | about 3.3 GB |
+  | `match(8.0)` | about 0.04 GB | about 0.2 GB |
+
+- **For the first test**, 10 GB (`10737418240`) for every job: ten times a build.
+- **For your own records**, a first cap of ten times the table's figure for their number. After the job, its *Job
+  information* shows *Bytes billed*; from then on, cap each job at about twice that. Real records, with longer
+  values than generated ones, may bill more than the table says.
+- **For the whole project**, an administrator can set BigQuery's *Query usage per day* quota (*IAM & Admin* →
+  *Quotas*) and a budget alert: limits on everything the project runs, not one query tab.
