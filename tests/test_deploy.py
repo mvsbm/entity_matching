@@ -21,7 +21,7 @@ from test_sql import reserved
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 CODE = nayose.NOT_CODE  # comments and strings: what isn't code
-FILE_BUDGET = 81  # the most tracked files the repository holds: CONTRIBUTING.md, rule 10
+FILE_BUDGET = 82  # the most tracked files the repository holds: CONTRIBUTING.md, rule 10
 
 
 def test_the_repository_holds_no_more_files_than_its_budget():
@@ -188,6 +188,16 @@ MODULE = SimpleNamespace(QueryJobConfig=lambda **k: SimpleNamespace(**k), Connec
                          LoadJobConfig=lambda **k: SimpleNamespace(**k), ScalarQueryParameter=lambda *a: a, ArrayQueryParameter=lambda *a: a)
 
 
+def test_the_deploy_as_files_holds_every_statement_and_the_name_model_and_sends_nothing(tmp_path):
+    import pandas as pd
+    assert script("deploy").main(["p.run", "--sql", str(tmp_path)], client=None, bigquery=None) == 0  # no client made
+    sql = (tmp_path / "deploy.sql").read_text(encoding="utf-8")
+    assert sql == ";\n\n".join([*functions("p.run"), *procedures("p.run")]) + ";\n"
+    assert len(sql.encode()) < 1024 ** 2  # the console's limit: 1 MB a query
+    weights = pd.read_csv(tmp_path / "name_weights.csv", keep_default_na=False, float_precision="round_trip")
+    assert weights.values.tolist() == nayose.name_weights().values.tolist()  # every term and weight, to the last bit
+
+
 def test_the_deploy_makes_the_functions_then_the_procedures_and_loads_the_name_model():
     client = Recorded()
     assert script("deploy").main(["p.run"], client=client, bigquery=MODULE) == 0
@@ -210,7 +220,7 @@ def test_a_job_loads_its_input_into_the_dataset_and_calls_its_procedure(monkeypa
     assert run.main(["p.run", "lookup", "x"], client=Recorded(), bigquery=MODULE) == 2  # not a job BigQuery runs
 
 
-PROCEDURE_FAILS = ("procedure", "interrupted", "interrupted as it ends", "changed", "refused")  # how a fake procedure call ends
+PROCEDURE_FAILS = ("procedure", "interrupted", "interrupted as it ends", "changed", "refused", "no input")  # how a fake procedure call ends
 
 
 DEPLOYED = {}  # each job's procedure as the deploy makes it in p.run, the body BigQuery's INFORMATION_SCHEMA.ROUTINES holds
@@ -274,6 +284,9 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                 if self.fails[:1] == ["changed"]:  # UNCHANGED: refused before the procedure writes anything
                     self.fails.pop(0)
                     raise RuntimeError(f"Query error: {nayose.CHANGED}; build the run again at [1:1]")
+                if self.fails[:1] == ["no input"]:  # a mapping reading input, which no file filled
+                    self.fails.pop(0)
+                    raise RuntimeError("Query error: Not found: Table p:run.input was not found in location asia-northeast1")
                 if self.fails[:1] == ["refused"]:  # as BigQuery says decide.sql's ERROR: the decisions given are wrong
                     self.fails.pop(0)
                     raise RuntimeError("400 GET https://x: Query error: given: a decision is match or no_match, not "
@@ -331,6 +344,12 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
                    deployed={"update": "\nBEGIN\nINSERT INTO `p.run`.rule_pairs SELECT 1;\nEND"})  # before this code
     assert ends(older, ["p.run", "update", "gs://b/y.parquet"])[0] == 1 and older.tables["rule_pairs"] == 1  # put back
     assert ends(done)[0] == 0 and done.tables == after  # and the next job runs as well
+    from_table = Tables(before, made)  # no file: the deployed mapping reads a table of the team's
+    code, said = ends(from_table, ["p.run", "build"])
+    assert code == 0 and not from_table.loaded and from_table.tables["records"] == 2
+    no_input = Tables(before, made, fail=["no input"])  # no file, and a mapping that reads input
+    code, said = ends(no_input, ["p.run", "update"])
+    assert code == 2 and "docs/console.md" in said["fix"] and no_input.tables == before
     failed = Tables(before, made, fail=["procedure"])
     code, said = ends(failed)
     assert code == 1 and said == {"severity": "ERROR", "job": "build", "dataset": "p.run", "error": "the procedure failed partway", "fix": "run this job again"}

@@ -18,6 +18,18 @@ variable "region" {
   default     = "asia-northeast1"
 }
 
+variable "dataset" {
+  description = "The run's dataset: its tables, functions and procedures (deploy/deploy.py PROJECT.DATASET). Staging's CI sandbox is DATASET_ci."
+  type        = string
+  default     = "nayose"
+}
+
+variable "bucket" {
+  description = "The bucket of the jobs' input files; empty: PROJECT-nayose-runs."
+  type        = string
+  default     = ""
+}
+
 variable "bigquery_location" {
   description = "Where the datasets are."
   type        = string

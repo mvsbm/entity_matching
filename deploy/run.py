@@ -8,6 +8,9 @@ say what it did. A build and an update print report.txt (nayose.report_text, fro
     python deploy/run.py PROJECT.DATASET undo                                         a job that never ended, undone
     python deploy/run.py PROJECT.DATASET lookup --record ID | COLUMN=VALUE ...        a lookup, answered in looked_up
 
+A build or an update given no file reads the records the deployed mapping reads: a table of yours, where the
+mapping's FROM names one (docs/console.md), else the table input.
+
 It runs as nayose-runtime (deploy/Jenkinsfile's Run stage, from main).
 
 A job is all or nothing, though BigQuery takes no DDL in a transaction:
@@ -62,6 +65,7 @@ DEPLOYED = ("name_weights",)  # the deploy's tables, no job's: an undo never bri
 # then says what is wrong and, after the last "; ", what to do. What is wrong may quote people's values, a ; among
 # them; what to do holds none. A mistake in what the job was given: running it again won't do.
 REFUSED = re.compile(r"Query error: (?P<error>(?:given|config\.toml)\b.*?); (?P<fix>[^;]*?) at \[")
+NO_INPUT = re.compile(r"Not found: Table \S+[.:]input\b")  # a job given no file, its mapping reading input
 SEVERITY = {0: "INFO", 75: "WARNING"}  # what an exit code says, as a log reads it: any other is an ERROR
 NO_TABLE = ""  # what the mark's tables hold for an empty dataset, never an empty array: an undo reads past it
 
@@ -217,7 +221,7 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
     again later."""
     args = sys.argv[1:] if argv is None else argv
     known = len(args) >= 2 and args[1] in (*JOBS, "undo", "lookup")
-    given_enough = known and (args[1] == "undo" or len(args) >= 3)  # undo takes nothing more, every other job some
+    given_enough = known and (args[1] in ("undo", "build", "update") or len(args) >= 3)  # build, update: files or none
     if not given_enough:
         print(__doc__, file=sys.stderr)
         return 2
@@ -248,6 +252,10 @@ def dispatch(engine: BigQuery, dataset: str, job: str, given: list[str]) -> int:
     except (Exception, KeyboardInterrupt) as e:  # all_or_nothing undid the job, or never marked the dataset
         if nayose.CHANGED in str(e):  # the procedure's check of the method's fingerprint (nayose.UNCHANGED)
             return say(2, job=job, dataset=dataset, error=described(e), fix=nayose.build_again(job))
+        if job in ("build", "update") and not given and NO_INPUT.search(str(e)):
+            return say(2, job=job, dataset=dataset, error="no file given, and the deployed mapping reads the table "
+                       "input", fix="give the job a file, or deploy a mapping whose FROM names your table "
+                       "(docs/console.md)")
         if refused := REFUSED.search(str(e)):
             return say(2, job=job, dataset=dataset, error=refused["error"], fix=refused["fix"])
         return say(1, job=job, dataset=dataset, error=described(e), fix="run this job again")
@@ -333,8 +341,8 @@ def lookup(engine: BigQuery, dataset: str, given: list[str]) -> int:
 
 
 def call_procedure(engine: BigQuery, dataset: str, job: str, given: list[str]) -> None:
-    """Load the job's input, then call its procedure."""
-    if job in ("build", "update"):
+    """Load the job's input, then call its procedure. A build or an update given no file loads none."""
+    if job in ("build", "update") and given:
         engine.read_parquet("input", given, nayose.config()["input"]["columns"])
     if job == "decide":
         engine.read_parquet("given", given, ["why"])
