@@ -46,7 +46,8 @@ A pull request that changes SQL quotes BigQuery's cost before and after, as meas
 `scripts/estimate_cost.py FILE [FILE ...]` (bytes billed and work, statement by statement, on DuckDB).
 A pull request that changes the method (anything deploy.sql holds: the SQL, config.toml, the mapping, the Python
 functions, the name model) writes data/console/'s deploy files again (`scripts/console_files.py --sql-only`), which a
-test holds to the code.
+test holds to the code. One that changes which tables a statement reads or writes draws docs/dataflow.md again
+(`scripts/dataflow.py`), which a test holds to the SQL.
 
 ## Docs
 

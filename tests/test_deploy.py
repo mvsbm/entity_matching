@@ -21,7 +21,7 @@ from test_sql import reserved
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 CODE = nayose.NOT_CODE  # comments and strings: what isn't code
-FILE_BUDGET = 88  # the most tracked files the repository holds: CONTRIBUTING.md, rule 10
+FILE_BUDGET = 90  # the most tracked files the repository holds: CONTRIBUTING.md, rule 10
 
 
 def test_the_repository_holds_no_more_files_than_its_budget():
