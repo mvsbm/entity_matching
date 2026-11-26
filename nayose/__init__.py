@@ -654,7 +654,10 @@ def decide(engine: Engine, files: list) -> None:
 
 
 def check_threshold(threshold: float) -> None:
-    """Raise InputError for a threshold below [score] keep_from: the run keeps no pair below it."""
+    """Raise InputError for a threshold that is no finite number, or below [score] keep_from: the run keeps no pair
+    below it."""
+    if not math.isfinite(threshold):
+        raise InputError(f"threshold {threshold:g} is no number of points", fix="give a finite number, for example 8")
     keep_from = float(config()["score"]["keep_from"])
     if threshold < keep_from:
         raise InputError(f"threshold {threshold:g}: the run keeps the pairs from {keep_from:g} points up only",

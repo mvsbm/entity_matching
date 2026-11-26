@@ -30,6 +30,14 @@ from nayose import TEMP_FUNCTION, WRITE, em, entities
 from nayose.engines import BUILT_IN, FUNCTIONS, STRINGS, bigquery_literal, bigquery_type, qualified
 
 
+def stubs(dataset: str) -> list[str]:
+    """Return a procedure for each job that only refuses (UNFINISHED). A deploy makes them first and the jobs'
+    procedures last, so one stopped partway leaves no job calling functions or a name model of another version."""
+    return [f"CREATE OR REPLACE PROCEDURE `{dataset}`.{job}("
+            + ", ".join(f"v_{k} {kind}" for k, kind in ARGUMENTS.get(job, {}).items())
+            + f")\nBEGIN\nSELECT ERROR({bigquery_literal(UNFINISHED)});\nEND" for job in JOBS]
+
+
 def functions(dataset: str) -> list[str]:
     """Return the statements that make the method's non-SQL functions in `dataset` (project.dataset), run once a deploy.
 
@@ -86,6 +94,7 @@ JOBS = {
     "match": [("functions", {}), ("match", {})],
 }
 ARGUMENTS = {"match": {"threshold": "FLOAT64"}}  # a procedure's own values: given when it is called, not declared
+UNFINISHED = "deploy: the last deploy did not finish; deploy again"  # what a job's stub says (stubs)
 KEPT = ("decisions",)  # people's decisions: a build keeps them, as the CLI's build does
 
 
