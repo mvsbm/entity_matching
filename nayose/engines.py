@@ -1,7 +1,8 @@
 """Where nayose's SQL runs. The SQL is BigQuery's (nayose/sql/), and the two engines differ only here:
 
     BigQuery   runs it as written, in a session of the job's own. A run's tables are in its dataset, and so are the
-               functions it calls by name (cl_*, er_hash, nfkc), which the deploy makes there (nayose.procedures).
+               functions it calls by name (cl_*, er_hash, nfkc, one_byte_hash, and the Python UDFs fit_model and
+               entities_of), which the deploy makes there (nayose.procedures).
     DuckDB     translates it first (sqlglot, BigQuery → DuckDB), refusing a form whose translation changes what it
                gives (AVOID, avoided()). It calls twins of the same functions: for cl_*, DuckDB's own where both
                strings are one byte a character (native), else rapidfuzz; Arrow's utf8_normalize for nfkc; numpy for

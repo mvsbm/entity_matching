@@ -17,15 +17,16 @@ It runs as nayose-runtime (deploy/Jenkinsfile's Run stage, from main).
 A job is all or nothing, though BigQuery takes no DDL in a transaction:
 - It first makes the table job_running (the mark), holding the job and the dataset's tables. A second job finds it
   and refuses (exit 75).
-- It then clones each table its procedure writes, as deployed (before__<table>): a clone bills no bytes, and
-  shares its storage until either changes.
+- It then clones each table its procedure writes, as deployed, and each table a file is loaded into
+  (before__<table>). Where the dataset holds no procedure for the job, or only a stub, it clones every table. A clone
+  bills no bytes, and shares its storage until either changes.
 - A job that fails is undone: each table is made again from its clone, and each table it made is dropped. It exits 1.
 - A job whose process died is undone by `undo`, once no query of its session still runs, nor a load into input or
   given: BigQuery carries on a query or a load its caller left. So is a job interrupted while its file loads, its
   clones are made or its procedure runs (an interrupt, a client's timeout): it exits 75 with what stopped it, and
   `undo` puts the tables back once that query or load ends.
-- A job done renames its mark before__job_running, so that no job, undo or lookup finds it, then drops it and the
-  clones. The next job drops what is left of them.
+- A job done renames its mark before__job_running, so that no job, undo or lookup finds it, then drops input and
+  given, the mark and the clones. The next job drops what is left of them.
 - The run's view (fit.sql's compared) isn't a table: a first build that fails leaves it; the next build makes it again.
 
 Each run ends with one JSON line on stderr. Its outcomes, their exit codes and their fixes:
@@ -37,6 +38,8 @@ Each run ends with one JSON line on stderr. Its outcomes, their exit codes and t
     failed or interrupted, and undone (error)                1     run it again
     refused, as another method built the run (error)         2     build again, or run it with the build's code
     refused, as what it was given is wrong (error, fix)      2     the fix it names (the SQL's own words)
+    no file given, and no table X                            2     give the job a file, or deploy a mapping whose
+                                                                   FROM names your table
     refused, as the last deploy didn't finish                2     deploy again
     failed, and its undo failed too (error, undo_error)      1     undo, then run it again
     done, but ending it or report.txt failed (finished)      1     run nothing again; drop a mark left, never undo

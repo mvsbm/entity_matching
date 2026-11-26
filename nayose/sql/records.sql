@@ -21,7 +21,7 @@
 -- Writes:
 --   set_aside, the batch's rows that are set aside, each with its reason;
 --   placeholders, the run's placeholders and the new ones this batch brings;
---   records, one row per record with its fields, its kind, its copies and its batch.
+--   records, one row per record with its fields, its kind, its copies, its customer and its batch.
 
 
 -- 0. The run's records and placeholders start empty. This batch's number is one more than the last batch's, or 0 for

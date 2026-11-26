@@ -31,7 +31,7 @@
 --    close enough.
 --
 -- 4. The steps that the stages share: pairs_of, which counts the pairs a block's records make, and the steps of the
---    address copy (records.sql).
+--    birth date (padded) and of the address copy (records.sql).
 --
 -- Writes: no table. The table of the levels that section 2 numbers is fit.sql's (levels), its one reader.
 
@@ -282,12 +282,6 @@ CREATE OR REPLACE TEMP FUNCTION gamma_address(x ANY TYPE, y ANY TYPE) AS (
   END
 );
 
--- padded writes each one-digit part of a value with a leading zero, where a separator or the end follows it:
--- 1990/1/2 becomes 1990/01/02. Twice, as one pass leaves a part whose separator before it the last match took.
-CREATE OR REPLACE TEMP FUNCTION padded(x STRING) AS (
-  REGEXP_REPLACE(REGEXP_REPLACE(x, r'([^0-9])([0-9])([^0-9]|$)', r'\10\2\3'), r'([^0-9])([0-9])([^0-9]|$)', r'\10\2\3')
-);
-
 -- may_be_one_edit is TRUE if a and b may be one edit apart. One edit (a character changed, added or dropped, or two
 -- neighbours swapped) changes the length by one at most, and leaves whole either the first h characters or the last h,
 -- with h = ⌊(the shorter length − 1)/2⌋. So two values one edit apart differ in length by one at most, and share
@@ -391,6 +385,12 @@ CREATE OR REPLACE TEMP FUNCTION near_phone(x ANY TYPE, y ANY TYPE) AS (
 
 -- pairs_of(n) returns the number of pairs that n records make, n(n − 1)/2.
 CREATE OR REPLACE TEMP FUNCTION pairs_of(n INT64) AS (DIV(n * (n - 1), 2));
+
+-- padded writes each one-digit part of a value with a leading zero, where a separator or the end follows it:
+-- 1990/1/2 becomes 1990/01/02. Twice, as one pass leaves a part whose separator before it the last match took.
+CREATE OR REPLACE TEMP FUNCTION padded(x STRING) AS (
+  REGEXP_REPLACE(REGEXP_REPLACE(x, r'([^0-9])([0-9])([^0-9]|$)', r'\10\2\3'), r'([^0-9])([0-9])([^0-9]|$)', r'\10\2\3')
+);
 
 -- The address copy's steps (records.sql), on an address in NFKC form. numbers_dashed writes 丁目, 番 or 番地 after a
 -- number as a dash, and drops 号 after a number. up_to_street_number keeps the address up to the first space after

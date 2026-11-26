@@ -6,7 +6,7 @@ What a run reads, what it makes of it, and what people give back. The method's o
 
 ## The input
 
-Records as Parquet. Locally, a file, a folder of them or a quoted glob, joined by column name (`python -m nayose build|update`); in prod, files in the bucket's `in/`, loaded into the run's dataset as the table `input` (`deploy/run.py`). Text that isn't UTF-8 is refused. Locally each column gets a name of its own: control characters dropped, a blank name numbered (`column_4`), one repeating another but for case suffixed (`TEL`, `tel` → `TEL`, `tel_2`). Both engines read column names case aside.
+Records as Parquet. Locally, a file, a folder of them or a quoted glob, joined by column name (`python -m nayose build|update`); in prod, files in the bucket's `in/`, loaded into the run's dataset as the table `input` (`deploy/run.py`), or, given no file, the table the mapping's `FROM` names (any `input` left is dropped first). Text that isn't UTF-8 is refused. Locally each column gets a name of its own: control characters dropped, a blank name numbered (`column_4`), one repeating another but for case suffixed (`TEL`, `tel` → `TEL`, `tel_2`). Both engines read column names case aside.
 
 `nayose/config.toml` `[input]`:
 
@@ -34,7 +34,7 @@ Records as Parquet. Locally, a file, a folder of them or a quoted glob, joined b
 | `town_code`, `city` | ADDR_CD, ADDRESS_TWO | report.txt only |
 | `phone` | PHONE_NUM_4 | the phone comparison, rules, generators |
 | `customer_id` | CIF_ID | the cif comparison, rules, generators |
-| `birth_date` | BIRTH_DATE | the birth comparison, generators |
+| `birth_date` | BIRTH_DATE | the birth comparison, generators, the household label |
 | `kind_flag` | PERSON_ORG_CODE | the kind, where the name doesn't settle it |
 
 **Person or company.** A written legal form says company. Otherwise the name model (`config/kind_names.npz`) decides when it is `name_line` sure (0.99), but a person's name never overrides a company flag. Otherwise `kind_flag` decides: `flag_company`'s values say company. `trust_flag = true` lets the flag decide every record. `shared_name_column = true` handles one column that holds every name: the person fields keep it on records that lean person, `company_name` on those that lean company (`design/shared_name_mapping.sql` maps such a file).
@@ -46,10 +46,10 @@ Records as Parquet. Locally, a file, a folder of them or a quoted glob, joined b
 - **damaged:** a value holding U+FFFD (bytes decoded wrong upstream) is missing;
 - **lists:** `["8700848"]`, `['大分市']` or `[0708612]` give their first filled item; with none filled, the value is missing;
 - **controls:** control characters, zero-width characters and BOMs are removed, and tabs and line breaks become one space;
-- **placeholders:** one of `[input] nulls`, or spaces alone (any width), is missing;
+- **null tokens:** one of `[input] nulls`, or spaces alone (any width), is missing;
 - **numbers:** in a numeric column, `12345.0` is read as `12345`; one cut short in E notation (`1.23E+11`: its digits are gone) is missing.
 
-Each field is then standardized (`records.sql`, step 2): NFKC, hiragana as katakana, spaces and separators dropped, legal forms stripped, kana folded, as each field's chain says. A value the chain leaves empty is missing.
+Each field is then standardized (`records.sql`, step 2): NFKC, hiragana as katakana, a birth date's one-digit parts padded (1990/1/2 reads 19900102), spaces and separators dropped, legal forms stripped, kana folded, as each field's chain says. A value the chain leaves empty is missing.
 
 ## What is set aside
 
@@ -110,4 +110,4 @@ data/console/                            a first console test's files        scr
 
 ### How hard it is
 
-Real data holds few direct duplicates, so the generator makes them rare. `design.generate.profile` measures it on the true pairs (two records of one entity), and `scripts/generate.py` prints it: the share that shares the customer ID, the exact name, the phone, the address code, the standard address or the birth date; the share that is **direct** (the same customer ID and name, or the same name, address code and phone: what exact rules settle); and the share with **nothing in common** (no field equal, and the names under 0.75 Jaro–Winkler). No method can find that last share, so recall is read against the rest. of its 11,950 true pairs (40,000 entities, 52,115 records), 2.3% share the customer ID, 9.1% the exact name, 33.2% the phone, 27.1% the address code, 9.9% the standard address and 1.5% the birth date; 1.1% are direct (an exact rule pairs them) and 11.3% share nothing
+Real data holds few direct duplicates, so the generator makes them rare. `design.generate.profile` measures it on the true pairs (two records of one entity), and `scripts/generate.py` prints it: the share that shares the customer ID, the exact name, the phone, the address code, the standard address or the birth date; the share that is **direct** (the same customer ID and name, or the same name, address code and phone: what exact rules settle); and the share with **nothing in common** (no field equal, and the names under 0.75 Jaro–Winkler). No method can find that last share, so recall is read against the rest. Of the generated data's 11,950 true pairs (40,000 entities, 52,115 records), 2.3% share the customer ID, 9.1% the exact name, 33.2% the phone, 27.1% the address code, 9.9% the standard address and 1.5% the birth date; 1.1% are direct (an exact rule pairs them) and 11.3% share nothing

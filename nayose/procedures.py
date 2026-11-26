@@ -1,4 +1,5 @@
-"""What the deploy makes in a run's BigQuery dataset: the functions (functions) and one procedure a job (procedures).
+"""What the deploy makes in a run's BigQuery dataset, in this order: a stub of each job's procedure, which refuses
+(stubs); the functions (functions); and one procedure a job, in the stubs' place (procedures).
 
 A procedure is its job's stages' statements in order, as the SQL files hold them, made for BigQuery: each of the
 run's tables named with its dataset (in_dataset), each @value a declared variable, each -- when: an IF, decided at

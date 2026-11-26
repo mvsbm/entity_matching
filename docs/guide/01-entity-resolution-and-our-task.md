@@ -33,7 +33,7 @@ Matching is one step inside resolution. Resolution adds two jobs of its own:
 | Question | are these two records the same entity? | which records belong together? |
 | Looks at | one pair | the whole file |
 | Answer | yes / no, or a probability | the entities, each a set of records |
-| In this repo | `score.sql` (6. The scores), each comparison's level from `functions.sql` (`gamma_name` and the others) | `score.sql`'s keys (2. The keys), then its scores, then connected components over people's match decisions (`decide.sql`, `entities_of` in `nayose/entities.py`; the benchmark makes its entities with the same function) |
+| In this repo | `score.sql` (6. The scores), each comparison's level from `functions.sql` (`name_level`, `gamma_company` and the others) | `score.sql`'s keys (2. The keys), then its scores, then connected components over people's match decisions (`decide.sql`, `entities_of` in `nayose/entities.py`; the benchmark makes its entities with the same function) |
 
 The same problem goes by other names. *Deduplication* finds duplicates inside one file, which is our case. *Record linkage* connects records across two files. Linking records to a master list is a third variant.
 
@@ -156,7 +156,7 @@ Every choice of the method (`nayose/sql/`, and its values in `nayose/config.toml
 
 - **The threshold.** On cross-validated train (each third scored by a model fitted on the other two, so every score is out-of-fold), the lowest threshold with no false pair and a false-pair rate bound of at most 5%, then one grid step stricter: 6 points.
 - **A change** is adopted if it is *better* (a significant paired gain on cross-validated train, p < 0.05, and no false pair added), *cheaper* (no true pair lost, no false pair added), *safer* (the same test, for a change that adds pairs whose gain shows only at scale) or *chosen* (the owner's call, for a gain too small to show on files of 10,000 records; no false pair added). Then, on val, a better, cheaper or safer change may not lose more true pairs than it gains.
-- **Households are counted apart.** Two people of one household share the family name, the address and the phone, so their pair can score as high as a duplicate. It is neither true nor false, and people decide it, labelled "maybe one household".
+- **Households are counted apart.** Two people of one household share the family name, the address and the phone, so their pair can score as high as a duplicate. It is neither true nor false, and people decide it, marked in the match table's column `household`.
 
 **In short:** real names, invented behaviour, exact truth, and one rule for every choice.
 
@@ -191,7 +191,7 @@ Every choice of the method (`nayose/sql/`, and its values in `nayose/config.toml
 | false merge | two different entities put in one; "at most 0.26%" is the 95% upper bound when none was seen | 1 |
 | cross-validation | fitting on two thirds of train and scoring the other third, three times, so a choice is never judged on the data it was fitted on | 1 |
 | the method | `nayose/sql/`: the fields, rules, generators and model every job runs, a file per stage; their values in `nayose/config.toml` | 1 |
-| build, update | a run's first batch of records; a batch added to a run, which scores only the pairs touching it | [architecture](../architecture.md#5--an-update) |
+| build, update | a run's first batch of records; a batch added to a run, which scores only the pairs touching it or a record it makes again | [architecture](../architecture.md#5--an-update) |
 
 ## In the code
 
