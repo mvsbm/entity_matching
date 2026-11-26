@@ -20,9 +20,10 @@ A job is all or nothing, though BigQuery takes no DDL in a transaction:
 - It then clones each table its procedure writes, as deployed (before__<table>): a clone bills no bytes, and
   shares its storage until either changes.
 - A job that fails is undone: each table is made again from its clone, and each table it made is dropped. It exits 1.
-- A job whose process died is undone by `undo`, once no query of its session still runs: BigQuery carries on a
-  query its caller left. So is a job interrupted while its clones are made or its procedure runs (an interrupt, a
-  client's timeout): it exits 75 with what stopped it, and `undo` puts the tables back once that query ends.
+- A job whose process died is undone by `undo`, once no query of its session still runs, nor a load into input or
+  given: BigQuery carries on a query or a load its caller left. So is a job interrupted while its file loads, its
+  clones are made or its procedure runs (an interrupt, a client's timeout): it exits 75 with what stopped it, and
+  `undo` puts the tables back once that query or load ends.
 - A job done renames its mark before__job_running, so that no job, undo or lookup finds it, then drops it and the
   clones. The next job drops what is left of them.
 - The run's view (fit.sql's compared) isn't a table: a first build that fails leaves it; the next build makes it again.
@@ -40,10 +41,12 @@ Each run ends with one JSON line on stderr. Its outcomes, their exit codes and t
     failed, and its undo failed too (error, undo_error)      1     undo, then run it again
     done, but ending it or report.txt failed (finished)      1     run nothing again; drop a mark left, never undo
     undo: done, or nothing marked                            0
-    undo: the marked job's query still runs                  75    undo once it ends
+    undo: the marked job's query or load still runs          75    undo once it ends
     undo: failed (error)                                     1     undo again
     a lookup: answered; a job marked; a mistake in it        0; 75; 2
-    a mistake in the command (a threshold under keep_from)   2     the fix it names
+    a lookup: failed (error)                                 1     look it up again
+    a mistake in the command (a threshold that is no number,  2     the fix it names
+      or under keep_from)
 
 A lookup (nayose.lookup) writes its answer, which holds records' values, to the run's table looked_up, and prints only
 that it did, as Jenkins keeps what a job prints. It refuses while a job is marked, as that job's tables are half made.
@@ -58,7 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # this checkout's 
 
 import nayose  # noqa: E402
 from nayose.engines import BigQuery, bigquery_literal  # noqa: E402
-from nayose.procedures import JOBS as PROCEDURES  # noqa: E402
+from nayose.procedures import JOBS as PROCEDURES, UNFINISHED  # noqa: E402
 
 JOBS = tuple(PROCEDURES)  # the jobs with a procedure: build, update, decide, match
 MARK, BEFORE = "job_running", "before__"  # the running job's table, and the prefix of its clones
@@ -127,9 +130,11 @@ def begin(engine: BigQuery, dataset: str, job: str) -> list[str] | None:
         engine.run(f"CREATE TABLE `{dataset}`.{MARK} AS SELECT '{job}' AS job, CURRENT_TIMESTAMP() AS started, "
                    f"{bigquery_literal(engine.session)} AS session, {bigquery_literal(held or [NO_TABLE])} AS tables")
     except Exception:
-        if MARK in tables(engine, dataset):  # another job made the mark first: its tables, never undone here
-            return None
-        raise
+        if MARK not in tables(engine, dataset):
+            raise
+        if engine.rows(f"SELECT session, tables FROM `{dataset}`.{MARK}")[0][0] != engine.session:
+            return None  # another job made the mark first: its tables, never undone here
+        # this job's own mark, made though its answer was lost: the job carries on
     try:
         script(engine, [f"CREATE TABLE `{dataset}`.{BEFORE}{t} CLONE `{dataset}`.{t}" for t in cloned])
     except BaseException as stopped:
@@ -144,10 +149,13 @@ WRITES = r"(?:CREATE(?: OR REPLACE)? TABLE(?: IF NOT EXISTS)?|INSERT INTO|DELETE
 
 
 def written(engine: BigQuery, dataset: str, job: str) -> set[str] | None:
-    """Return the run's tables the job's procedure writes, as the dataset holds it; None where it holds none."""
+    """Return the run's tables the job's procedure writes, as the dataset holds it; None where it holds none, or
+    only a stub (a deploy under way, which may make the real procedure before this job calls it)."""
     found = engine.rows(f"SELECT routine_definition FROM `{dataset}`.INFORMATION_SCHEMA.ROUTINES "
                         "WHERE routine_name = @job", {"job": job})
-    return set(re.findall(WRITES.format(dataset=re.escape(dataset)), found[0][0], re.I)) if found else None
+    if not found or UNFINISHED in found[0][0]:
+        return None
+    return set(re.findall(WRITES.format(dataset=re.escape(dataset)), found[0][0], re.I))
 
 
 def undo_after(engine: BigQuery, dataset: str, stopped: BaseException) -> None:
@@ -239,10 +247,10 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
     if job == "match":
         try:
             nayose.check_threshold(float(given[0]))  # before any client, as the job does here
+        except nayose.InputError as e:  # before ValueError, which InputError is
+            return say(2, error=str(e), fix=e.fix)
         except ValueError:
             return say(2, error=f"threshold {given[0]!r} is no number", fix="give points as a number, for example 8")
-        except nayose.InputError as e:
-            return say(2, error=str(e), fix=e.fix)
     engine = BigQuery(dataset, client=client, bigquery=bigquery, job=job)
     try:
         return dispatch(engine, dataset, job, given)
@@ -277,7 +285,7 @@ def undone(engine: BigQuery, dataset: str) -> int:
     try:
         undid = undo(engine, dataset)
     except Running as e:
-        return say(75, error=f"the marked job's query still runs in BigQuery (session {e})",
+        return say(75, error=f"the marked job's query or load still runs in BigQuery (session {e})",
                    fix=f"undo once it ends: python deploy/run.py {dataset} undo")
     except Exception as e:  # an undo stopped partway can run again
         return say(1, job="undo", dataset=dataset, error=described(e),
@@ -300,9 +308,9 @@ def all_or_nothing(engine: BigQuery, dataset: str, job: str, given: list[str]) -
             call_procedure(engine, dataset, job, given)
         except BaseException as stopped:
             undo_after(engine, dataset, stopped)
-    except Running as e:  # stopped waiting mid-query (its clones, its procedure): it carries on, so its undo waits
-        return say(75, error=f"the job's query still runs in BigQuery (session {e})", cause=described(e.__cause__),
-                   fix=f"undo once it ends: python deploy/run.py {dataset} undo")
+    except Running as e:  # stopped waiting mid-query or mid-load: it carries on, so its undo waits
+        return say(75, error=f"the job's query or load still runs in BigQuery (session {e})",
+                   cause=described(e.__cause__), fix=f"undo once it ends: python deploy/run.py {dataset} undo")
     return finished(engine, dataset, job, round(time.perf_counter() - t, 1), cloned)
 
 
@@ -337,21 +345,19 @@ def lookup(engine: BigQuery, dataset: str, given: list[str]) -> int:
     values = None if record else dict(w.split("=", 1) for w in given if "=" in w)
     if values is not None and len(values) != len(given):
         return say(2, error="give --record ID, or COLUMN=VALUE words", fix="for example: lookup --record 1234")
-    if MARK in tables(engine, dataset):
-        return say(75, error=f"a job is marked running in {dataset} ({MARK}): its tables are half made",
-                   fix="look up once it ends")
     try:
+        if MARK in tables(engine, dataset):
+            return say(75, error=f"a job is marked running in {dataset} ({MARK}): its tables are half made",
+                       fix="look up once it ends")
         answer = nayose.lookup(engine, record=record, values=values)
-    except nayose.InputError as e:
+        engine.run("CREATE TABLE IF NOT EXISTS looked_up (asked STRING, asked_at TIMESTAMP, answer STRING)")
+        asked = json.dumps(dict(record=record, values=values), ensure_ascii=False)
+        engine.run("INSERT INTO looked_up (asked, asked_at, answer) SELECT @asked, CURRENT_TIMESTAMP(), @answer",
+                   {"asked": asked, "answer": json.dumps(answer, ensure_ascii=False)})
+    except nayose.InputError as e:  # the method changed among them (nayose.unchanged)
         return say(2, error=str(e), fix=e.fix)
     except Exception as e:
-        if nayose.CHANGED in str(e):
-            return say(2, job="lookup", dataset=dataset, error=described(e), fix=nayose.build_again("lookup"))
         return say(1, job="lookup", dataset=dataset, error=described(e), fix="look it up again")
-    engine.run("CREATE TABLE IF NOT EXISTS looked_up (asked STRING, asked_at TIMESTAMP, answer STRING)")
-    asked = json.dumps(dict(record=record, values=values), ensure_ascii=False)
-    engine.run("INSERT INTO looked_up (asked, asked_at, answer) SELECT @asked, CURRENT_TIMESTAMP(), @answer",
-               {"asked": asked, "answer": json.dumps(answer, ensure_ascii=False)})
     return say(0, job="lookup", dataset=dataset, into=f"{dataset}.looked_up", entities=len(answer["entities"]))
 
 
