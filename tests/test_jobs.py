@@ -2,6 +2,7 @@
 updated, matched, decided and looked up in its folder, each job's JSON and exit code (0; 2, a mistake people fix; 75,
 another job is writing); a rebuild keeping people's decisions; report.txt; and people's decisions read and refused."""
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -67,6 +68,15 @@ def test_a_second_writer_is_told_to_try_again_later(tmp_path, population):
         assert locked(held)
         code, said = job("update", tmp_path / "in.parquet", "--out", run)
     assert code == 75 and said["severity"] == "WARNING" and "another job" in said["error"]
+    from nayose.__main__ import RUN, writing
+    new = run / f"{RUN}.new"  # a writer killed after DuckDB checkpointed its copy: the copy's log outlives it
+    shutil.copyfile(run / RUN, new)
+    subprocess.run([sys.executable, "-c", f"import duckdb, os; c = duckdb.connect({str(new)!r}); c.execute('CREATE "
+                    "TABLE made AS SELECT 1 AS y'); c.execute('CHECKPOINT'); c.execute('INSERT INTO made SELECT 2'); "
+                    "os._exit(9)"], check=False)
+    assert Path(f"{new}.wal").is_file()
+    with writing(run) as engine:  # the next writer's copy is the run alone, none of the killed writer's log
+        assert not engine.con.execute("SELECT 1 FROM duckdb_tables() WHERE table_name = 'made'").fetchall()
 
 
 def test_people_s_decisions_are_read_in_either_order_and_any_width_of_space_once_each_and_refused_where_they_name_nothing(tmp_path):

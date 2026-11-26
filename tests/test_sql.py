@@ -135,7 +135,7 @@ class Recorded:  # a BigQuery client that records what it was sent
     def __init__(self):
         self.sent = []
 
-    def query(self, sql, job_config=None):
+    def query(self, sql, job_config=None, job_retry=None):
         self.sent.append((sql, job_config))
         return self.Job()
 

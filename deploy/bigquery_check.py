@@ -88,7 +88,7 @@ class Sandbox:
     def __init__(self, client: object) -> None:
         self.client, self.temp, self.bytes, self.queries, self.calls, self.clusters = client, set(), 0, 0, [], {}
 
-    def query(self, sql: str, job_config: object = None) -> object:
+    def query(self, sql: str, job_config: object = None, job_retry: object = None) -> object:
         if job_config is not None and getattr(job_config, "create_session", False):
             self.temp = set()  # a new session: none of the old one's temporary tables
         temp = self.temp | set(TEMP.findall(sql))
@@ -97,7 +97,7 @@ class Sandbox:
         sent = ";\n".join(as_ddl(s, temp, self.clusters) for s in pieces) if pieces else sql
         if not sql.lstrip().upper().startswith("CREATE OR REPLACE PROCEDURE"):
             self.temp |= set(TEMP.findall(sql))  # a procedure's temporary tables are made when it is called
-        job = self.client.query(sent, job_config=job_config)
+        job = self.client.query(sent, job_config=job_config, job_retry=job_retry)
         self.queries += 1
         if sql.lstrip().startswith("CALL `"):  # a job's procedure, not BQ.ABORT_SESSION
             self.calls.append(job)

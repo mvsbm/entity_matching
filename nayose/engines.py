@@ -411,7 +411,9 @@ class BigQuery:
     def _job(self, sql: str, values: dict | None = None) -> object:
         """Run `sql` with its calls qualified, in the job's session (the first query makes it); return its result."""
         text = qualified(sql, self.dataset)
-        job = self.client.query(text, job_config=self._config(values))
+        # job_retry=None: the client library otherwise sends a job that failed on a passing error again whole, and a
+        # CALL begun again from its first statement finds the batch's records already in and loses them
+        job = self.client.query(text, job_config=self._config(values), job_retry=None)
         result = job.result()
         if self.session is None:
             self.session = job.session_info.session_id
@@ -480,7 +482,7 @@ class BigQuery:
     def close(self) -> None:
         """End the session, and its temporary tables with it."""
         if self.session:
-            self.client.query("CALL BQ.ABORT_SESSION()", job_config=self._config(None)).result()
+            self.client.query("CALL BQ.ABORT_SESSION()", job_config=self._config(None), job_retry=None).result()
             self.session = None
 
 
