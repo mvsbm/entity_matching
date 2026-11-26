@@ -34,17 +34,20 @@ Once per project, staging first.
    | `project` | the environment's project | required |
    | `environment` | `staging` or `prod`. Staging also gets `nayose_ci`, and its runtime account may write the bucket (for the smoke test's file) | required |
    | `region`, `bigquery_location` | where the bucket and the datasets are | `asia-northeast1` |
+   | `dataset` | the run's dataset (staging's CI sandbox is `<dataset>_ci`); the same in both projects, as Jenkins' `NAYOSE_DATASET` names both | `nayose` |
+   | `bucket` | the bucket of the jobs' input files | `PROJECT-nayose-runs` |
    | `jenkins_oidc_issuer`, `jenkins_oidc_subject` | Jenkins' OIDC issuer, and the token subject of its job; empty means keys instead | empty |
    | `alert_emails` | who the budget emails | none |
    | `billing_account`, `monthly_budget`, `budget_currency` | the budget; with no billing account there is none | empty, 0, `JPY` |
 
-   Outputs: `bucket`, `runtime_service_account`, `deployer_service_account`, `mapping_secret`, `workload_identity_provider`.
+   Outputs: `dataset`, `bucket`, `runtime_service_account`, `deployer_service_account`, `mapping_secret`, `workload_identity_provider`.
 2. **The column mapping, in prod:** `gcloud secrets versions add nayose-mapping --project=PROD_PROJECT --data-file=mapping.sql`. The file is the deployment's mapping, in `nayose/mapping.sql`'s form ([data](data.md#the-mapping-columns-to-fields)). It holds column names, never a record. Staging deploys the repository's `nayose/mapping.sql` instead, because the smoke test's generated file needs it; staging's secret stays empty.
 3. **Credentials:** four Jenkins file credentials, one per account and project: `nayose-staging-deployer`, `nayose-staging-runtime`, `nayose-prod-deployer`, `nayose-prod-runtime`.
    - **Best:** a Workload Identity Federation configuration, where Jenkins issues OIDC tokens (its OpenID Connect Provider plugin): `gcloud iam workload-identity-pools create-cred-config WORKLOAD_IDENTITY_PROVIDER --service-account=ACCOUNT_EMAIL --credential-source-file=TOKEN_FILE --output-file=FILE`. No key exists to leak.
    - **Otherwise:** a key of the account, rotated at least every 90 days.
 4. **The Jenkins job:** a multibranch pipeline on the repository, with script path `deploy/Jenkinsfile`.
-   - **Environment:** `STAGING_PROJECT`, `PROD_PROJECT`, and `APPROVERS` (the Jenkins users or group that may promote to prod).
+   - **Environment:** `STAGING_PROJECT`, `PROD_PROJECT`, and `APPROVERS` (the Jenkins users or group that may promote to prod). Where Terraform's `dataset` or staging's `bucket` isn't the default, also `NAYOSE_DATASET` and `NAYOSE_STAGING_BUCKET`, set to the same.
+   - **A mapping that reads a table of yours** (its `FROM` names one, and jobs are given no file): grant `nayose-runtime` *BigQuery Data Viewer* on that table's dataset, or every job is denied.
    - **Agents need:** Python 3.12 or later with `venv`, and the gcloud CLI. The BigQuery client comes from pip (`deploy/requirements.txt`).
    - **Plugins:** Pipeline and Credentials Binding.
 
