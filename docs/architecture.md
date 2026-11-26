@@ -167,8 +167,9 @@ flowchart TB
 ```
 
 *A box is a stage file, what it does and its cost; a cylinder, the run's tables it writes; a slanted box, a file read
-or written. [Data flow](dataflow.md) draws each job's tables, table by table, from its SQL. A solid arrow makes or reads; a dotted one gives values. A build runs records, fit, score, decide and
-report; an update the same on a new batch; decide and match their own file alone.*
+or written. A solid arrow makes or reads; a dotted one gives values. A build runs records, fit, score, decide and
+report; an update the same on a new batch; decide and match their own file alone.
+[Data flow](dataflow.md) draws each job's tables, table by table, from its SQL.*
 
 Every job runs `functions.sql` first. It holds the functions the other files call: the intake's `read_value`, the
 comparisons (`gamma_*`, and the name's `name_score` then `name_level`; one level per pair) and the rules' fuzzy tests
