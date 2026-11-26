@@ -326,12 +326,11 @@ CREATE OR REPLACE TEMP FUNCTION name_bound(x ANY TYPE, y ANY TYPE, w ANY TYPE) A
 
 -- company_bound takes the company's JW low level only if jaro_winkler_most allows it.
 CREATE OR REPLACE TEMP FUNCTION company_bound(x ANY TYPE, y ANY TYPE, w ANY TYPE) AS (
-  CASE WHEN x.company_name IS NULL OR y.company_name IS NULL THEN bits_at(w.company, -1)
+  CASE WHEN x.company_name__nfkc_strip_legal_form_kana_fold IS NULL
+            OR y.company_name__nfkc_strip_legal_form_kana_fold IS NULL
+         THEN bits_at(w.company, -1)                                                                  -- missing
        WHEN x.company_name__nfkc_strip_legal_form_kana_fold = y.company_name__nfkc_strip_legal_form_kana_fold
          THEN bits_at(w.company, 2)                                                                   -- exact
-       WHEN x.company_name__nfkc_strip_legal_form_kana_fold IS NULL
-            OR y.company_name__nfkc_strip_legal_form_kana_fold IS NULL
-         THEN w.company_after
        WHEN jaro_winkler_most(x.company_name__nfkc_strip_legal_form_kana_fold,
                               y.company_name__nfkc_strip_legal_form_kana_fold)
             >= cut_from(CAST(0.8 AS FLOAT64)) THEN w.company_after
@@ -342,7 +341,8 @@ CREATE OR REPLACE TEMP FUNCTION company_bound(x ANY TYPE, y ANY TYPE, w ANY TYPE
 -- address_bound takes "address close" only if the two addresses' lengths differ by two characters or less, and "same
 -- postal" only if the postal codes are equal.
 CREATE OR REPLACE TEMP FUNCTION address_bound(x ANY TYPE, y ANY TYPE, w ANY TYPE) AS (
-  CASE WHEN (x.address_code IS NULL OR y.address_code IS NULL) AND (x.address IS NULL OR y.address IS NULL)
+  CASE WHEN (x.address_code IS NULL OR y.address_code IS NULL)
+            AND (x.address__address IS NULL OR y.address__address IS NULL)
             AND (x.postal_code IS NULL OR y.postal_code IS NULL) THEN bits_at(w.address, -1)
        WHEN x.address_code = y.address_code OR x.address__address = y.address__address
          THEN bits_at(w.address, 3)                                                                   -- same address

@@ -240,10 +240,11 @@ CREATE OR REPLACE TEMP FUNCTION name_level(x ANY TYPE, y ANY TYPE, s FLOAT64) AS
 );
 
 -- The comparison company tests the companies' names in NFKC form, with their legal forms removed, and folded (the
--- column company_name__nfkc_strip_legal_form_kana_fold).
+-- column company_name__nfkc_strip_legal_form_kana_fold). A name that is a legal form alone is missing.
 CREATE OR REPLACE TEMP FUNCTION gamma_company(x ANY TYPE, y ANY TYPE) AS (
   CASE
-    WHEN x.company_name IS NULL OR y.company_name IS NULL THEN -1
+    WHEN x.company_name__nfkc_strip_legal_form_kana_fold IS NULL
+      OR y.company_name__nfkc_strip_legal_form_kana_fold IS NULL THEN -1  -- missing
     WHEN x.company_name__nfkc_strip_legal_form_kana_fold = y.company_name__nfkc_strip_legal_form_kana_fold
       THEN 2  -- exact
     WHEN jaro_winkler_of(x.company_name__nfkc_strip_legal_form_kana_fold,
@@ -268,10 +269,11 @@ CREATE OR REPLACE TEMP FUNCTION address_close(x ANY TYPE, y ANY TYPE) AS (
 );
 
 -- The comparison address is missing only if the address code, the address and the postal code are each missing on
--- one side or both.
+-- one side or both. The address is the one compared (address__address), so a prefecture alone is missing.
 CREATE OR REPLACE TEMP FUNCTION gamma_address(x ANY TYPE, y ANY TYPE) AS (
   CASE
-    WHEN (x.address_code IS NULL OR y.address_code IS NULL) AND (x.address IS NULL OR y.address IS NULL)
+    WHEN (x.address_code IS NULL OR y.address_code IS NULL)
+      AND (x.address__address IS NULL OR y.address__address IS NULL)
       AND (x.postal_code IS NULL OR y.postal_code IS NULL) THEN -1
     WHEN x.address_code = y.address_code OR x.address__address = y.address__address THEN 3          -- same address
     WHEN address_close(x, y) THEN 2                                                                  -- address close

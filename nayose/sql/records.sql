@@ -47,7 +47,7 @@ CREATE OR REPLACE TEMP TABLE this_batch AS SELECT COALESCE(MAX(batch) + 1, 0) AS
 -- 1. This section sets aside the rows that can't be resolved. Rows identical in every column count once (mapping.sql's
 --    input_rows). A row is set aside if it has no ID, if its ID is already in the run, or if another row gives
 --    its ID with different content. An ID that is empty or whitespace alone, as Python counts whitespace, is no ID.
---    Since an ID already in the run is set aside, a batch given twice adds nothing the second time. Every row of
+--    Since an ID already in the run is set aside, a batch given twice adds no record the second time. Every row of
 --    an ID with different content is set aside, because the run can't tell which row is right.
 --    The list of IDs held twice leaves out a missing ID, because a NULL in a NOT IN list fails the test for every row.
 
@@ -99,7 +99,7 @@ SELECT
   NULLIF(city, '') AS city,
   NULLIF(REGEXP_REPLACE(nfkc(phone), r'[\s\x{3000}\-\x{2010}-\x{2015}\x{2212}\x{30fc}/.()〒]', ''), '') AS phone,
   NULLIF(REGEXP_REPLACE(nfkc(customer_id), r'[\s\x{3000}\-\x{2010}-\x{2015}\x{2212}\x{30fc}/.()〒]', ''), '') AS customer_id,
-  NULLIF(birth_date, '') AS birth_date,
+  NULLIF(REGEXP_REPLACE(nfkc(birth_date), r'[\s\x{3000}\-\x{2010}-\x{2015}\x{2212}\x{30fc}/.()〒]', ''), '') AS birth_date,
   NULLIF(kind_flag, '') AS kind_flag,
   any_name AS kind_name  -- Section 3 looks for a legal form in this name as written.
 FROM admitted;
@@ -238,61 +238,73 @@ FROM same;
 --    customer counts, as a record without one is its own customer. So customers are counted by the customer ID as
 --    this section reads it, before any new placeholder blanks it. Every field's placeholders are then found at once,
 --    and section 6 blanks them as it writes the records.
---    The run's placeholders stay. The batch is first read with them as missing, and its values are then counted
---    together with the run's records. With @lookup, no placeholder is found.
+--    The run's placeholders stay, and each keeps its count n of the records that hold it, the batch's added. An update
+--    counts what a build of the same records would: the run's records are stored with its placeholders blanked, so
+--    each field's records per value counts the run's placeholders by their n. Their pairs aren't counted, as they
+--    are crowded, and they are no candidates again. So a batch given twice changes nothing the second time. With
+--    @lookup, no placeholder is found and no count changes.
 -- known keeps the run's placeholders from before this batch, since placeholders is replaced below.
 CREATE OR REPLACE TEMP TABLE known AS SELECT * FROM placeholders;
 
-CREATE OR REPLACE TEMP TABLE new_placeholders AS
--- counted holds the run's records and the batch's. The run's records were written with the run's placeholders
--- already blanked, and the batch's values are read here with them as missing.
+CREATE OR REPLACE TABLE placeholders AS
+-- counted holds the run's records and the batch's, each with its customer: its customer ID, or its own ID if it has
+-- none ('c' and 'r' keep the two apart). The run's records were written with the run's placeholders already blanked.
+-- The batch's values are as read, and a customer ID among the run's placeholders makes no customer.
 WITH counted AS (
-  SELECT id, person_name, company_name, address_code, address, phone, birth_date, customer_id
+  SELECT id, person_name, company_name, address_code, address, phone, birth_date, customer_id,
+         COALESCE('c' || customer_id, 'r' || id) AS customer
   FROM records WHERE NOT @lookup
   UNION ALL
-  SELECT id,
-    IF(person_name IN (SELECT value FROM known WHERE field = 'person_name'), NULL, person_name),
-    IF(company_name IN (SELECT value FROM known WHERE field = 'company_name'), NULL, company_name),
-    IF(address_code IN (SELECT value FROM known WHERE field = 'address_code'), NULL, address_code),
-    IF(address IN (SELECT value FROM known WHERE field = 'address'), NULL, address),
-    IF(phone IN (SELECT value FROM known WHERE field = 'phone'), NULL, phone),
-    IF(birth_date IN (SELECT value FROM known WHERE field = 'birth_date'), NULL, birth_date),
-    IF(customer_id IN (SELECT value FROM known WHERE field = 'customer_id'), NULL, customer_id)
+  SELECT id, person_name, company_name, address_code, address, phone, birth_date, customer_id,
+         COALESCE('c' || IF(customer_id IN (SELECT value FROM known WHERE field = 'customer_id'), NULL, customer_id),
+                  'r' || id)
   FROM sided
 ),
--- field_values lists each record's value of each field, with its customer. A record's customer is its customer ID,
--- or the record's own ID if it has no customer ID.
-field_values AS (
-  SELECT 'person_name' AS field, person_name AS value, COALESCE(customer_id, id) AS customer FROM counted
-  UNION ALL SELECT 'company_name', company_name, COALESCE(customer_id, id) FROM counted
-  UNION ALL SELECT 'address_code', address_code, COALESCE(customer_id, id) FROM counted
-  UNION ALL SELECT 'address', address, COALESCE(customer_id, id) FROM counted
-  UNION ALL SELECT 'phone', phone, COALESCE(customer_id, id) FROM counted
-  UNION ALL SELECT 'birth_date', birth_date, COALESCE(customer_id, id) FROM counted
+field_values AS (  -- each record's value of each field, with its customer
+  SELECT 'person_name' AS field, person_name AS value, customer FROM counted
+  UNION ALL SELECT 'company_name', company_name, customer FROM counted
+  UNION ALL SELECT 'address_code', address_code, customer FROM counted
+  UNION ALL SELECT 'address', address, customer FROM counted
+  UNION ALL SELECT 'phone', phone, customer FROM counted
+  UNION ALL SELECT 'birth_date', birth_date, customer FROM counted
   UNION ALL SELECT 'customer_id', customer_id, NULL FROM counted
 ),
 value_counts AS (  -- Each value's records (n) and customers are counted.
   SELECT field, value, COUNT(*) AS n, COUNT(DISTINCT customer) AS customers
   FROM field_values WHERE value IS NOT NULL GROUP BY field, value
 ),
--- Each field gets its bar (at_least), and the number of pairs that all its values make together (all_pairs). A value
--- held by n records makes n(n-1)/2 pairs.
+-- held is each of the run's placeholders, its n now: the records that held it before this batch, and the batch's.
+held AS (
+  SELECT k.field, k.value, k.n + IF(@lookup, 0, COALESCE(v.n, 0)) AS n
+  FROM known AS k LEFT JOIN value_counts AS v ON v.field = k.field AND v.value = k.value
+),
+fresh AS (  -- Every other value may become a placeholder.
+  SELECT v.* FROM value_counts AS v LEFT JOIN known AS k ON k.field = v.field AND k.value = v.value
+  WHERE k.field IS NULL
+),
+-- Each field gets its bar (at_least), from its records per value over every value, the run's placeholders too, and
+-- the number of pairs that its other values make together (all_pairs). A value held by n records makes n(n-1)/2 pairs.
 field_bars AS (
   SELECT field, GREATEST(@placeholder_min, CAST(CEIL(@spread * SUM(n) / GREATEST(COUNT(*), 1)) AS INT64)) AS at_least,
-         SUM(pairs_of(n)) AS all_pairs
-  FROM value_counts GROUP BY field
+         SUM(IF(is_fresh, pairs_of(n), 0)) AS all_pairs
+  FROM (SELECT field, n, TRUE AS is_fresh FROM fresh UNION ALL SELECT field, n, FALSE FROM held)
+  GROUP BY field
 ),
 crowded AS (  -- A customer ID needs only the bar, as its customers aren't counted.
-  SELECT v.field, v.value, v.n FROM value_counts AS v JOIN field_bars AS b USING (field)
+  SELECT v.field, v.value, v.n FROM fresh AS v JOIN field_bars AS b USING (field)
   WHERE v.n >= b.at_least AND (v.field = 'customer_id' OR v.customers >= @crowd)
 ),
 crowded_pairs AS (SELECT field, SUM(pairs_of(n)) AS pairs FROM crowded GROUP BY field)
+SELECT field, value, n FROM held
+UNION ALL
 -- A crowded value is a placeholder if its own pairs outnumber those of all the field's values that aren't crowded.
 SELECT c.field, c.value, c.n FROM crowded AS c JOIN field_bars AS b USING (field) JOIN crowded_pairs AS p USING (field)
 WHERE NOT @lookup AND (c.field = 'customer_id' OR pairs_of(c.n) > b.all_pairs - p.pairs);
 
-CREATE OR REPLACE TABLE placeholders AS
-SELECT * FROM known UNION ALL SELECT * FROM new_placeholders;
+-- new_placeholders holds the placeholders this batch found.
+CREATE OR REPLACE TEMP TABLE new_placeholders AS
+SELECT p.field, p.value, p.n FROM placeholders AS p LEFT JOIN known AS k ON k.field = p.field AND k.value = p.value
+WHERE k.field IS NULL;
 
 -- 6. The records are written with the copies of their fields that the keys and comparisons read. Each copy is a chain
 --    of steps from a field, and is named field__steps, as person_name__kana_fold is. The batch's records are
@@ -357,12 +369,13 @@ marked AS (
   FROM made
 ),
 -- Every placeholder is read as missing. A person_name placeholder also blanks full_name, given_name and any_name,
--- and a company_name placeholder also blanks any_name, since those fields come from the same columns.
+-- since those fields come from the same columns. A company_name placeholder blanks any_name only where the record
+-- has no person_name, as any_name is the person's name where there is one (mapping.sql).
 blanked AS (
   SELECT * EXCEPT (person_placeholder, company_placeholder) REPLACE (
     IF(person_placeholder, NULL, full_name) AS full_name,
     IF(person_placeholder, NULL, given_name) AS given_name,
-    IF(person_placeholder OR company_placeholder, NULL, any_name) AS any_name,
+    IF(person_placeholder OR (company_placeholder AND person_name IS NULL), NULL, any_name) AS any_name,
     IF(person_placeholder, NULL, person_name) AS person_name,
     IF(company_placeholder, NULL, company_name) AS company_name,
     IF(address_code IN (SELECT value FROM placeholders WHERE field = 'address_code'), NULL, address_code) AS address_code,
