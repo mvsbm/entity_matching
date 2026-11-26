@@ -224,7 +224,7 @@ job loads:
 
 | Stage | Tables |
 |---|---|
-| records | `records` (a record a row: its fields, kind, copies and `batch`), `set_aside`, `placeholders`, `name_weights` |
+| records | `records` (a record a row: its fields, kind, copies, `customer` and `batch`), `set_aside`, `placeholders`, `name_weights` |
 | fit | `compared` (a view: the columns the fit and the scores read of a record), `model`, `fit` (λ, sizes, notes, and `fitted`: the model whole, which an update scores with) |
 | score | `rule_keys` and `every_key` (each record's keys: the index lookups read), `cands` (the last batch's candidates, each with its `generators`, which `scripts/generator_quality.py` reads), `scored` (each pair once: `id_l`, `id_r`, its levels, `points`, `match_probability`, `rule`, `generators`) |
 | decide | `decisions` (every decision that changed its pair, with its `round`, the latest flagged), `gold` (each record's `entity`, its kind and its entity's: `entity_kind`) |
