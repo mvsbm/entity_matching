@@ -4,12 +4,13 @@
 
 nayose's method is SQL in BigQuery's dialect, one file per stage, in `nayose/sql/`. The files read from top to bottom.
 BigQuery runs them as written. DuckDB, on a laptop or in CI, runs them after sqlglot translates them. A run is a set of
-tables: a BigQuery dataset in prod, and a DuckDB database file here. Python does four things only:
+tables: a BigQuery dataset in prod, and a DuckDB database file here. Python does five things only:
 
 - **the jobs** (`nayose/__main__.py`, `nayose/__init__.py`, `nayose/reporting.py`), which run each stage file's
   statements in order and write report.txt;
 - **the engines** (`nayose/engines.py`), which run the SQL: on BigQuery as written, on DuckDB translated;
-- **the deploy's statements** (`nayose/procedures.py`): the functions, and one procedure a job, made from the SQL;
+- **the deploy's statements** (`nayose/procedures.py`): a stub of each job's procedure, the functions, and one
+  procedure a job, made from the SQL;
 - **EM** (`nayose/em.py`), which learns the model from the counts the SQL leaves;
 - **connected components** (`nayose/entities.py`), which make entities from people's decisions.
 
@@ -63,21 +64,22 @@ SQL locally.*
 | downstream system | takes each record's entity | `gold` |
 
 Design time never runs in prod: `scripts/generate.py` (synthetic records with known answers),
-`scripts/benchmark.py` (quality and cost on them), `scripts/train_name_model.py` (`config/kind_names.npz`) and
-`design/`. A run only loads the name model. `scripts/generator_quality.py` reads a run, a real one too: each generator's
-candidates and matches, as counts alone.
+`scripts/benchmark.py` (quality and cost on them), `scripts/train_name_model.py` (`config/kind_names.npz`),
+`scripts/console_files.py` (a first BigQuery-console test's files, `data/console/`) and `design/`. A run only loads
+the name model. `scripts/generator_quality.py` reads a run, a real one too: each generator's candidates and matches,
+as counts alone.
 
 ## 2 · Components
 
 ```mermaid
 flowchart TB
   cli["The jobs, here: nayose/__main__.py<br/>python -m nayose build, update, match, decide, lookup:<br/>a run's folder, its lock, the JSON printed, the exit code"]
-  deploy["The deploy: deploy/<br/>deploy.py: functions and procedures · run.py: a job called<br/>smoke.py: BigQuery against DuckDB · Jenkinsfile · terraform/"]
-  tools["Design time: scripts/, design/<br/>synthetic data, the benchmark, the cost estimate,<br/>generator quality, the name model's training"]
+  deploy["The deploy: deploy/<br/>deploy.py: stubs, functions and procedures · run.py: a job called<br/>smoke.py: BigQuery against DuckDB · Jenkinsfile · terraform/"]
+  tools["Design time: scripts/, design/<br/>synthetic data, the benchmark, the cost estimate,<br/>generator quality, the name model's training,<br/>the console test's files"]
   stages["Stages and jobs: nayose/__init__.py<br/>records, fit, score, decide, match, lookup, build, update:<br/>each stage file run with its values"]
   reporting["report.txt: nayose/reporting.py<br/>report.sql run, then its tables on a page:<br/>no record's value in it"]
   engines["Engines: nayose/engines.py<br/>DuckDB: the SQL translated, the function twins<br/>BigQuery: the SQL as written, a session a job"]
-  procedures["Deploy: nayose/procedures.py<br/>functions(), procedures(): the SQL as BigQuery's procedures,<br/>each condition decided or asked once"]
+  procedures["Deploy: nayose/procedures.py<br/>stubs(), functions(), procedures(): the SQL as BigQuery's procedures,<br/>each condition decided or asked once"]
   udfs["Python UDFs: nayose/em.py, nayose/entities.py<br/>fit_model: EM · entities_of: connected components<br/>standard library only, BigQuery's python-3.11"]
   sql[("The method: nayose/sql/*.sql, mapping.sql<br/>functions, records, fit, score, decide, match, lookup, report")]
   values[("The values: nayose/config.toml, config/kind_names.npz<br/>a section a stage; the name model")]
@@ -110,7 +112,7 @@ files (nayose/procedures.py), embedding the Python UDFs and the JavaScript compa
 | `nayose/__init__.py` | one function per stage and job (`records`, `fit`, `score`, `decide`, `match`, `lookup`, `build`, `update`), `values_of` (what each stage reads from `config.toml`), `stage` (a file's statements in order) and `Engine` (the verbs an engine answers) |
 | `nayose/reporting.py` | `report` and `report_text`: report.txt from report.sql's tables, with no record's value in it (the package names both too) |
 | `nayose/engines.py` | `DuckDB` and `BigQuery`, which answer the same verbs (`run`, `rows`, `value`, `frame`, `put`, `read_parquet`); the translation (`duckdb_sql`, `AVOID`) |
-| `nayose/procedures.py` | the deploy's statements: `functions` (the comparisons, the hash, the Python UDFs) and `procedures` (each job's stages as one procedure: `in_dataset`, `folded`, `queried_once`) |
+| `nayose/procedures.py` | the deploy's statements: `stubs` (a procedure a job that refuses until the deploy ends), `functions` (the comparisons, the hash, the Python UDFs) and `procedures` (each job's stages as one procedure: `in_dataset`, `folded`, `queried_once`) |
 | `nayose/sql/*.sql` | the method. Each header says what the stage does, its cost, and the tables it reads and writes |
 | `nayose/em.py`, `nayose/entities.py` | `fit_model` and `entities_of`: pure functions, JSON in and JSON out |
 | `nayose/strings.js` | the character-level comparisons as BigQuery runs them |
@@ -274,9 +276,9 @@ An update costs `O(Δ·(L + b) + C_Δ·K·L²)`, plus `O(N)` scans of the run's 
 
 Nothing merges by itself. The **match job** (`match.sql`, `O(C + P·F)`) lists the pairs at `@threshold` points or more,
 less those whose latest decision is `no_match`. The list is one table for people, highest points first. Each row has
-an empty `decision`, both records' fields side by side, each comparison's level and bits, the rule that joins the
-pair, the generators whose keys listed it, and whether it may be two people of one household. A threshold below
-`keep_from` is refused, because the run keeps no pair below it.
+an empty `decision` and an empty `why`, both records' fields side by side, each comparison's level and bits, the
+rule that joins the pair, the generators whose keys listed it, and whether it may be two people of one household. A
+threshold below `keep_from` is refused, because the run keeps no pair below it.
 
 The **decide job** (`decide.sql`, `O(D + N)`) reads that table back once it is filled in (`given`: `id_l`, `id_r`,
 `decision`, and `why` where given). It refuses a decided row without both IDs, a decision other than `match` or
@@ -396,19 +398,26 @@ threads=4` sets DuckDB's limits for one build or update.
 
 ## 10 · On BigQuery
 
-In prod, the run is the dataset `nayose` in each project, and nothing changes it by hand.
+In prod, the run is one dataset in each project, Terraform's `dataset` (`nayose` by default, Jenkins'
+`NAYOSE_DATASET`), and nothing changes it by hand.
 
-- **`deploy/deploy.py PROJECT.DATASET [--mapping FILE]`** makes the dataset's functions (`procedures.functions`). Then
-  it makes the method's own SQL functions (each file's `CREATE TEMP FUNCTION`, made persistent) and one procedure per
-  job (`procedures.procedures`): `build`, `update`, `decide` and `match`. A procedure holds its stages' statements in
+- **`deploy/deploy.py PROJECT.DATASET [--mapping FILE] [--sql DIR]`** first makes a stub of each job's procedure
+  (`procedures.stubs`), which refuses ("deploy: the last deploy did not finish; deploy again"). Then it makes the
+  dataset's functions (`procedures.functions`) and loads `name_weights`. Last, in the stubs' place, it makes the
+  method's own SQL functions (each file's `CREATE TEMP FUNCTION`, made persistent) and one procedure per job
+  (`procedures.procedures`): `build`, `update`, `decide` and `match`. A procedure holds its stages' statements in
   order, with the deployment's mapping. Each value they read is `DECLARE`d at its top from `config.toml`, so a change
   of values reaches prod only by a deploy. `build` drops the run's tables first and keeps `decisions`. `match` takes
-  its threshold as an argument. Last, the deploy loads `name_weights`. Every statement is `CREATE OR REPLACE`, so a
-  deploy can be run again.
+  its threshold as an argument. Every statement is `CREATE OR REPLACE`, so a deploy can be run again, and one stopped
+  partway leaves every job refusing. `--sql DIR` sends nothing: it writes `deploy.sql` and `name_weights.csv` to DIR,
+  for the console ([console](console.md)).
 - **`deploy/run.py PROJECT.DATASET JOB ARGS`** loads the job's input from Cloud Storage into `input` or `given` and
-  `CALL`s the procedure. After a build or an update it prints `report.txt` from the `report_` tables. A job is all
-  or nothing: it first marks the dataset (`job_running`) and clones each table the job writes, and a failed job is
-  undone from the clones (`undo` undoes one whose process died, once its procedure has ended in BigQuery).
+  `CALL`s the procedure. A build or an update given no file drops any `input` left and reads the table the mapping's
+  `FROM` names. After a build or an update it prints `report.txt` from the `report_` tables. A job is all or nothing:
+  it first marks the dataset (`job_running`) and clones each table the job writes, and a failed job is undone from
+  the clones (`undo` undoes one whose process died, once its procedure has ended in BigQuery). The tables cloned are
+  those the deployed procedure writes (`INFORMATION_SCHEMA.ROUTINES`) and those a file is loaded into, or every table
+  where it finds no procedure or only a stub.
 - **`deploy/smoke.py`** builds one generated file on BigQuery in staging and on DuckDB on the agent, and compares
   `scored` and `gold` row for row, and an edit distance on kanji.
 - **`deploy/bigquery_check.py PROJECT`** runs every job on a BigQuery sandbox (a project without billing) and holds

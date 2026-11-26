@@ -935,7 +935,7 @@ def of(pairs: str) -> str:
 --    close enough.
 --
 -- 4. The steps that the stages share: pairs_of, which counts the pairs a block's records make, and the steps of the
---    address copy (records.sql).
+--    birth date (padded) and of the address copy (records.sql).
 --
 -- Writes: no table. The table of the levels that section 2 numbers is fit.sql's (levels), its one reader.
 
@@ -1214,13 +1214,6 @@ CREATE OR REPLACE FUNCTION `YOUR_PROJECT.nayose`.gamma_address(x ANY TYPE, y ANY
 );
 
 
--- padded writes each one-digit part of a value with a leading zero, where a separator or the end follows it:
--- 1990/1/2 becomes 1990/01/02. Twice, as one pass leaves a part whose separator before it the last match took.
-CREATE OR REPLACE FUNCTION `YOUR_PROJECT.nayose`.padded(x STRING) AS (
-  REGEXP_REPLACE(REGEXP_REPLACE(x, r'([^0-9])([0-9])([^0-9]|$)', r'\10\2\3'), r'([^0-9])([0-9])([^0-9]|$)', r'\10\2\3')
-);
-
-
 -- may_be_one_edit is TRUE if a and b may be one edit apart. One edit (a character changed, added or dropped, or two
 -- neighbours swapped) changes the length by one at most, and leaves whole either the first h characters or the last h,
 -- with h = ⌊(the shorter length − 1)/2⌋. So two values one edit apart differ in length by one at most, and share
@@ -1332,6 +1325,13 @@ CREATE OR REPLACE FUNCTION `YOUR_PROJECT.nayose`.near_phone(x ANY TYPE, y ANY TY
 
 -- `YOUR_PROJECT.nayose`.pairs_of(n) returns the number of pairs that n records make, n(n − 1)/2.
 CREATE OR REPLACE FUNCTION `YOUR_PROJECT.nayose`.pairs_of(n INT64) AS (DIV(n * (n - 1), 2));
+
+
+-- padded writes each one-digit part of a value with a leading zero, where a separator or the end follows it:
+-- 1990/1/2 becomes 1990/01/02. Twice, as one pass leaves a part whose separator before it the last match took.
+CREATE OR REPLACE FUNCTION `YOUR_PROJECT.nayose`.padded(x STRING) AS (
+  REGEXP_REPLACE(REGEXP_REPLACE(x, r'([^0-9])([0-9])([^0-9]|$)', r'\10\2\3'), r'([^0-9])([0-9])([^0-9]|$)', r'\10\2\3')
+);
 
 
 -- The address copy's steps (records.sql), on an address in NFKC form. numbers_dashed writes 丁目, 番 or 番地 after a
@@ -1632,7 +1632,7 @@ FROM source;
 -- Writes:
 --   set_aside, the batch's rows that are set aside, each with its reason;
 --   placeholders, the run's placeholders and the new ones this batch brings;
---   records, one row per record with its fields, its kind, its copies and its batch.
+--   records, one row per record with its fields, its kind, its copies, its customer and its batch.
 
 
 -- 0. The run's records and placeholders start empty. This batch's number is one more than the last batch's, or 0 for
@@ -3035,7 +3035,7 @@ WHERE gen.used;
 -- report_entities counts the entities of each size.
 CREATE OR REPLACE TEMP TABLE report_entities AS
 SELECT n AS size, COUNT(*) AS entities FROM (SELECT COUNT(*) AS n FROM `YOUR_PROJECT.nayose`.gold GROUP BY entity) GROUP BY n;
-CREATE OR REPLACE TABLE `YOUR_PROJECT.nayose`.method AS SELECT 'f4db6e8349053bef0bde3d9fe7f003af26b4d09a642fbac3658a623a441c2c36' AS fingerprint;
+CREATE OR REPLACE TABLE `YOUR_PROJECT.nayose`.method AS SELECT '1086401df6941dddcccef10a0fc033641b17a263936ea179fdfd185583822b7f' AS fingerprint;
 END;
 
 CREATE OR REPLACE PROCEDURE `YOUR_PROJECT.nayose`.update() OPTIONS (strict_mode = FALSE)
@@ -3074,7 +3074,7 @@ DECLARE v_patterns_shown INT64 DEFAULT 12;
 DECLARE v_condition_1 BOOL DEFAULT FALSE;
 DECLARE v_condition_2 BOOL DEFAULT FALSE;
 DECLARE v_condition_3 BOOL DEFAULT FALSE;
-SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM 'f4db6e8349053bef0bde3d9fe7f003af26b4d09a642fbac3658a623a441c2c36', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
+SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM '1086401df6941dddcccef10a0fc033641b17a263936ea179fdfd185583822b7f', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
 -- This file maps the input's columns to the fields that records.sql reads. It is the mapping of the generated data,
 -- whose columns design/generate.py writes. A deployment keeps its own mapping, in the same form, outside the
 -- repository (in Secret Manager).
@@ -3159,7 +3159,7 @@ FROM source;
 -- Writes:
 --   set_aside, the batch's rows that are set aside, each with its reason;
 --   placeholders, the run's placeholders and the new ones this batch brings;
---   records, one row per record with its fields, its kind, its copies and its batch.
+--   records, one row per record with its fields, its kind, its copies, its customer and its batch.
 
 
 -- 0. The run's records and placeholders start empty. This batch's number is one more than the last batch's, or 0 for
@@ -4177,7 +4177,7 @@ END;
 CREATE OR REPLACE PROCEDURE `YOUR_PROJECT.nayose`.decide() OPTIONS (strict_mode = FALSE)
 BEGIN
 DECLARE v_given BOOL DEFAULT TRUE;
-SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM 'f4db6e8349053bef0bde3d9fe7f003af26b4d09a642fbac3658a623a441c2c36', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
+SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM '1086401df6941dddcccef10a0fc033641b17a263936ea179fdfd185583822b7f', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
 -- The decide job stores people's decisions on pairs and makes the entities again from them. The decisions come in
 -- given, a match table that people filled in. They are stored with the run's earlier decisions, and each pair's latest
 -- decision is its standing. The entities are the connected components of the pairs whose latest decision is match
@@ -4286,7 +4286,7 @@ END;
 
 CREATE OR REPLACE PROCEDURE `YOUR_PROJECT.nayose`.match(v_threshold FLOAT64) OPTIONS (strict_mode = FALSE)
 BEGIN
-SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM 'f4db6e8349053bef0bde3d9fe7f003af26b4d09a642fbac3658a623a441c2c36', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
+SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM '1086401df6941dddcccef10a0fc033641b17a263936ea179fdfd185583822b7f', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
 
 -- shown gives each comparison's levels as people read them, each with its label and its bits rounded to two places.
 -- A missing side is level -1, labelled missing, with 0 bits. lookup.sql's shown uses the same labels.

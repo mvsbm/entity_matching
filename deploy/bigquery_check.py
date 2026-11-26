@@ -3,7 +3,7 @@
     python deploy/bigquery_check.py PROJECT [--entities 400] [--plans plans.json] [--keep]
 
 It deploys nayose (deploy/deploy.py) in the dataset PROJECT.nayose_check, made anew, then runs the jobs through
-deploy/run.py on the tests' generated records: a build, an update, a match, people's decisions, a match again, two
+deploy/run.py on the tests' generated records: a build, an update, a match, people's decisions, a match again, four
 lookups, and a decide that fails and is undone. DuckDB runs the same jobs on the same files. Every table each job
 leaves (tests/test_parity.py's, floats to 9 places) and each lookup's answer must be the same on both.
 Each procedure's statements are listed with what BigQuery measured (slot time, bytes processed and billed), the

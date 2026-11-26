@@ -21,7 +21,7 @@ Running SQL:
     stage(engine, name, **values)   run a stage file's statements in order, each given the values it names (@name)
     statements(text)                split a stage file into statements: each ends with a line that ends in ';'
     fingerprint()                   hash what every job after a build needs unchanged: the SQL, the values, the
-                                    mapping and the name model
+                                    mapping, the name model and the functions the deploy makes
 """
 import contextlib
 import functools

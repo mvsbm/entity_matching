@@ -1,6 +1,6 @@
 // Delivery of nayose to BigQuery, as docs/operations.md sets it up. GitHub Actions gates every pull request
 // (.github/workflows/); this pipeline ships what main holds, the same commit from staging to prod:
-//   Checks    every push: the lint and the fast tests
+//   Checks    every push: the lint and every test
 //   Staging   main: nayose made in staging's dataset (deploy/deploy.py: its functions, procedures and name model); then
 //             the smoke test (deploy/smoke.py): a generated file built by BigQuery there and by DuckDB here, compared
 //   Approve   a person promotes the commit; nothing reaches prod without one
