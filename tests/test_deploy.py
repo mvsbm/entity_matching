@@ -16,7 +16,7 @@ import sqlglot
 import nayose
 
 from nayose.engines import bigquery_literal
-from nayose.procedures import functions, in_dataset, procedures
+from nayose.procedures import functions, in_dataset, procedures, stubs
 from test_sql import reserved
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
@@ -176,7 +176,7 @@ class Recorded:  # a BigQuery client that records what it is sent
         return SimpleNamespace(result=lambda: [], session_info=SimpleNamespace(session_id="s1"))
 
     def load_table_from_dataframe(self, frame, table, job_config=None):
-        self.loaded.append((table, len(frame)))
+        self.loaded.append((table, len(frame), len(self.sent)))  # and how many statements came before
         return SimpleNamespace(result=lambda: None)
 
     def load_table_from_uri(self, uris, table, job_config=None):
@@ -192,18 +192,21 @@ def test_the_deploy_as_files_holds_every_statement_and_the_name_model_and_sends_
     import pandas as pd
     assert script("deploy").main(["p.run", "--sql", str(tmp_path)], client=None, bigquery=None) == 0  # no client made
     sql = (tmp_path / "deploy.sql").read_text(encoding="utf-8")
-    assert sql == ";\n\n".join([*functions("p.run"), *procedures("p.run")]) + ";\n"
+    assert sql == ";\n\n".join([*stubs("p.run"), *functions("p.run"), *procedures("p.run")]) + ";\n"
     assert len(sql.encode()) < 1024 ** 2  # the console's limit: 1 MB a query
     weights = pd.read_csv(tmp_path / "name_weights.csv", keep_default_na=False, float_precision="round_trip")
     assert weights.values.tolist() == nayose.name_weights().values.tolist()  # every term and weight, to the last bit
 
 
-def test_the_deploy_makes_the_functions_then_the_procedures_and_loads_the_name_model():
+def test_the_deploy_makes_stubs_then_the_functions_and_the_name_model_then_the_procedures():
     client = Recorded()
     assert script("deploy").main(["p.run"], client=client, bigquery=MODULE) == 0
     made = [s for s in client.sent if s.startswith("CREATE OR REPLACE")]
-    assert made[0].startswith("CREATE OR REPLACE FUNCTION `p.run`.cl_") and made[-1].startswith("CREATE OR REPLACE PROCEDURE `p.run`.match(")
-    assert client.loaded[0][0] == "p.run.name_weights" and client.loaded[0][1] > 1000
+    assert made[:4] == stubs("p.run") and all("ERROR('deploy: " in s for s in made[:4])  # a deploy stopped: jobs refuse
+    assert made[4].startswith("CREATE OR REPLACE FUNCTION `p.run`.cl_") and made[-1].startswith("CREATE OR REPLACE PROCEDURE `p.run`.match(")
+    table, rows, before = client.loaded[0]
+    first_procedure = next(i for i, s in enumerate(client.sent) if s.startswith("CREATE OR REPLACE PROCEDURE `p.run`.build() OPTIONS"))
+    assert table == "p.run.name_weights" and rows > 1000 and before <= first_procedure  # loaded before any job's procedure
 
 
 def test_a_job_loads_its_input_into_the_dataset_and_calls_its_procedure(monkeypatch):
@@ -220,7 +223,8 @@ def test_a_job_loads_its_input_into_the_dataset_and_calls_its_procedure(monkeypa
     assert run.main(["p.run", "lookup", "x"], client=Recorded(), bigquery=MODULE) == 2  # not a job BigQuery runs
 
 
-PROCEDURE_FAILS = ("procedure", "interrupted", "interrupted as it ends", "changed", "refused", "no input")  # how a fake procedure call ends
+PROCEDURE_FAILS = ("procedure", "interrupted", "interrupted as it ends", "changed", "refused", "no input", "unfinished",
+                   "raced")  # how a fake procedure call ends
 
 
 DEPLOYED = {}  # each job's procedure as the deploy makes it in p.run, the body BigQuery's INFORMATION_SCHEMA.ROUTINES holds
@@ -237,6 +241,7 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
         self.fails = list(fail)  # each in turn: a statement holding it fails, or the procedure (one of PROCEDURE_FAILS)
         self.kind = dict.fromkeys(tables, "BASE TABLE")
         self.mark, self.sessions, self.running, self.checked_in = {}, 0, set(), []
+        self.loading = False  # a load into input that BigQuery still runs, its caller gone
 
     def query(self, sql, job_config=None, job_retry="the library's: a failed job sent again whole"):
         assert job_retry is None, job_retry  # a CALL begun again from its first statement loses the batch's records
@@ -260,9 +265,13 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                 kinds = re.findall(r"'([A-Z ]+)'", s)
                 rows = [{"table_name": x} for x in sorted(self.tables) if self.kind[x] in kinds]
             elif "INFORMATION_SCHEMA.ROUTINES" in s:
+                if self.fails[:1] == ["raced"]:  # another job makes its mark between this job's listing and its mark
+                    self.fails.pop(0)
+                    self.tables["job_running"], self.kind["job_running"] = "mark", "BASE TABLE"
                 rows = [{"routine_definition": self.deployed[given["job"]]}] if given["job"] in self.deployed else []
             elif "INFORMATION_SCHEMA.JOBS_BY_USER" in s:
-                rows = [{"n": int(given["session"] in self.running)}]
+                load = self.loading and "job_type = 'LOAD'" in s and "input" in given.get("loaded", [])
+                rows = [{"n": int(given["session"] in self.running or load)}]
                 self.checked_in.append(getattr(job_config, "connection_properties", None))  # the session it ran in
             elif s.startswith("SELECT session, tables FROM"):
                 rows = [self.mark]
@@ -284,6 +293,10 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                 if self.fails[:1] == ["changed"]:  # UNCHANGED: refused before the procedure writes anything
                     self.fails.pop(0)
                     raise RuntimeError(f"Query error: {nayose.CHANGED}; build the run again at [1:1]")
+                if self.fails[:1] == ["unfinished"]:  # a deploy stopped partway: its stubs (procedures.stubs) refuse
+                    self.fails.pop(0)
+                    raise RuntimeError("400 GET https://x: Query error: deploy: the last deploy did not finish; deploy "
+                                       "again at [p.run.build:3:1]")
                 if self.fails[:1] == ["no input"]:  # a mapping reading input, which no file filled
                     self.fails.pop(0)
                     raise RuntimeError("Query error: Not found: Table p:run.input was not found in location asia-northeast1")
@@ -409,6 +422,29 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
     code, said = ends(refused, ["p.run", "decide", "gs://b/d.parquet"])
     assert (code, said["error"], said["fix"]) == (2, "given: a decision is match or no_match, not maybe, match;",  # a ; given
                                                   "correct those rows, or leave them empty") and refused.tables == before
+    alter = next(s for s in refused.sent if s.startswith("ALTER TABLE"))  # every column decide reads: one a file lacks
+    assert all(f"`{c}`" in alter for c in ("id_l", "id_r", "decision", "why"))  # is empty, and decide.sql refuses it
+    unfinished = Tables(before, made, fail=["unfinished"])  # a deploy stopped partway left its stubs: refused, exit 2
+    code, said = ends(unfinished)
+    assert (code, said["fix"]) == (2, "deploy again") and unfinished.tables == before
+    raced = Tables(before, made, fail=["raced"])  # another job marked the dataset first: this one waits, and undoes nothing
+    assert ends(raced)[0] == 75 and raced.tables == {**before, "job_running": "mark"}
+    left = Tables(before, made)  # Ctrl-C while BigQuery loads the file: the load runs on, so undo waits for it
+
+    def load_left_running(uris, table, job_config=None):
+        left.loading = True
+        raise KeyboardInterrupt
+    left.load_table_from_uri = load_left_running
+    code, said = ends(left)
+    assert code == 75 and said["fix"] == "undo once it ends: python deploy/run.py p.run undo"
+    left.loading = False  # it ended: the undo puts every table back
+    assert ends(left, ["p.run", "undo"])[0] == 0 and left.tables == before
+    for threshold in ("nan", "inf", "8,5"):  # no number of points: refused before any query
+        nothing = Tables(before, made)
+        assert ends(nothing, ["p.run", "match", threshold])[0] == 2 and not nothing.sent, threshold
+    monkeypatch.setattr(run.nayose, "lookup", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    code, said = ends(Tables(before, made), ["p.run", "lookup", "--record", "1"])  # a lookup that fails says so too
+    assert (code, said["error"], said["fix"]) == (1, "boom", "look it up again")
 
     died = Tables(before, made)  # a job whose process died, its procedure run: the next job refuses; undo waits for it, then undoes
     assert run.begin(run.BigQuery("p.run", client=died, bigquery=MODULE), "p.run", "build") is not None

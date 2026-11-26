@@ -58,7 +58,7 @@ Every push to main goes through these stages (`deploy/Jenkinsfile`, one build at
 | Stage | What happens | Runs as |
 |---|---|---|
 | Checks | every push, on any branch: `ruff check` and the tests, except the slow ones | — |
-| Staging | `deploy/deploy.py STAGING_PROJECT.nayose`: the functions, the procedures and the name model. Then the smoke test (`deploy/smoke.py`): a generated file of 2,000 entities is copied to `in/smoke.parquet`, built by BigQuery there and by DuckDB on the agent, and the two runs' scored pairs and entities are compared row for row, with an edit distance on kanji (BigQuery's own counts characters, as the twin does) | deployer, then runtime |
+| Staging | `deploy/deploy.py STAGING_PROJECT.nayose`: a stub of each job's procedure that refuses, then the functions and the name model, then the procedures in the stubs' place, so a deploy stopped partway leaves every job refusing ("deploy again"), never one calling half a version. Then the smoke test (`deploy/smoke.py`): a generated file of 2,000 entities is copied to `in/smoke.parquet`, built by BigQuery there and by DuckDB on the agent, and the two runs' scored pairs and entities are compared row for row, with an edit distance on kanji (BigQuery's own counts characters, as the twin does) | deployer, then runtime |
 | Approve | someone in `APPROVERS` promotes the commit; this waits up to 7 days | — |
 | Prod | the same commit made in prod's `nayose`, with the secret's mapping | deployer |
 

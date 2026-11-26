@@ -1,10 +1,12 @@
-"""Deploy nayose into one BigQuery dataset, the run's. It makes:
+"""Deploy nayose into one BigQuery dataset, the run's. It makes, in this order:
+- a stub of each job's procedure, which refuses (nayose.procedures.stubs);
 - the functions (nayose.procedures.functions): the comparisons, in JavaScript or over BigQuery's own EDIT_DISTANCE;
   EM and the entities, in Python; the hash;
+- the name model the records read (the table name_weights);
 - the method's SQL functions, and one procedure a job, declaring the values config.toml gives
-  (nayose.procedures.procedures);
-- the name model the records read (the table name_weights).
-Each statement is CREATE OR REPLACE, so a deploy run again makes the same.
+  (nayose.procedures.procedures), in place of the stubs.
+Each statement is CREATE OR REPLACE, so a deploy run again makes the same. A deploy stopped partway leaves the stubs,
+so every job refuses ("deploy again") rather than run with half of a version.
 
     python deploy/deploy.py PROJECT.DATASET [--mapping mapping.sql] [--sql DIR]
 
@@ -23,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # this checkout's 
 
 import nayose  # noqa: E402
 from nayose.engines import BigQuery  # noqa: E402
-from nayose.procedures import functions, procedures  # noqa: E402
+from nayose.procedures import functions, procedures, stubs  # noqa: E402
 
 
 def main(argv: list[str] | None = None, client: object = None, bigquery: object = None) -> int:
@@ -36,19 +38,21 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
     p.add_argument("--mapping", type=Path, help="the deployment's mapping.sql (else NAYOSE_MAPPING's, or nayose's)")
     p.add_argument("--sql", type=Path, metavar="DIR", help="write deploy.sql and name_weights.csv to DIR, send nothing")
     a = p.parse_args(argv)
-    statements = [*functions(a.dataset), *procedures(a.dataset, a.mapping)]
+    first, last = [*stubs(a.dataset), *functions(a.dataset)], procedures(a.dataset, a.mapping)  # the name model between
     if a.sql:
         a.sql.mkdir(parents=True, exist_ok=True)
-        (a.sql / "deploy.sql").write_text(";\n\n".join(statements) + ";\n", encoding="utf-8")
+        (a.sql / "deploy.sql").write_text(";\n\n".join([*first, *last]) + ";\n", encoding="utf-8")
         # every term quoted, so a term of spaces or digits reads as text; each weight in 17 digits, read back exactly
         nayose.name_weights().to_csv(a.sql / "name_weights.csv", index=False, quoting=csv.QUOTE_NONNUMERIC,
                                      float_format="%.17g")
         return 0
     engine = BigQuery(a.dataset, client=client, bigquery=bigquery)
     try:
-        for sql in statements:
+        for sql in first:
             engine.run(sql)
         engine.put("name_weights", nayose.name_weights())
+        for sql in last:
+            engine.run(sql)
     finally:
         engine.close()
     return 0

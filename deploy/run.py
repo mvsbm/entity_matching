@@ -36,6 +36,7 @@ Each run ends with one JSON line on stderr. Its outcomes, their exit codes and t
     failed or interrupted, and undone (error)                1     run it again
     refused, as another method built the run (error)         2     build again, or run it with the build's code
     refused, as what it was given is wrong (error, fix)      2     the fix it names (the SQL's own words)
+    refused, as the last deploy didn't finish                2     deploy again
     failed, and its undo failed too (error, undo_error)      1     undo, then run it again
     done, but ending it or report.txt failed (finished)      1     run nothing again; drop a mark left, never undo
     undo: done, or nothing marked                            0
@@ -65,7 +66,7 @@ DEPLOYED = ("name_weights",)  # the deploy's tables, no job's: an undo never bri
 # One of the SQL's own refusals (ERROR), as BigQuery says it: each names what it refuses first, given or config.toml,
 # then says what is wrong and, after the last "; ", what to do. What is wrong may quote people's values, a ; among
 # them; what to do holds none. A mistake in what the job was given: running it again won't do.
-REFUSED = re.compile(r"Query error: (?P<error>(?:given|config\.toml)\b.*?); (?P<fix>[^;]*?) at \[")
+REFUSED = re.compile(r"Query error: (?P<error>(?:given|config\.toml|deploy)\b.*?); (?P<fix>[^;]*?) at \[", re.S)
 NOT_FOUND = re.compile(r"Not found: Table (\S+)")  # a job given no file: its mapping reads a table that isn't there
 SEVERITY = {0: "INFO", 75: "WARNING"}  # what an exit code says, as a log reads it: any other is an ERROR
 NO_TABLE = ""  # what the mark's tables hold for an empty dataset, never an empty array: an undo reads past it
@@ -122,9 +123,13 @@ def begin(engine: BigQuery, dataset: str, job: str) -> list[str] | None:
     held = [t for t in now if not t.startswith(BEFORE)]
     writes = written(engine, dataset, job)  # before the mark: a failure here leaves none
     cloned = [t for t in held if writes is None or t in writes or t in LOADS.values()]
-    # fails where another job made the mark first, which is then never undone here
-    engine.run(f"CREATE TABLE `{dataset}`.{MARK} AS SELECT '{job}' AS job, CURRENT_TIMESTAMP() AS started, "
-               f"{bigquery_literal(engine.session)} AS session, {bigquery_literal(held or [NO_TABLE])} AS tables")
+    try:
+        engine.run(f"CREATE TABLE `{dataset}`.{MARK} AS SELECT '{job}' AS job, CURRENT_TIMESTAMP() AS started, "
+                   f"{bigquery_literal(engine.session)} AS session, {bigquery_literal(held or [NO_TABLE])} AS tables")
+    except Exception:
+        if MARK in tables(engine, dataset):  # another job made the mark first: its tables, never undone here
+            return None
+        raise
     try:
         script(engine, [f"CREATE TABLE `{dataset}`.{BEFORE}{t} CLONE `{dataset}`.{t}" for t in cloned])
     except BaseException as stopped:
@@ -202,18 +207,22 @@ def undo(engine: BigQuery, dataset: str) -> bool:
 
 
 def still_running(engine: BigQuery, dataset: str, session: str) -> bool:
-    """Return whether a query of the marked job's session still runs.
+    """Return whether a query of the marked job's session still runs, or a load into the tables a file is loaded
+    into (LOADS): a load runs outside every session, and one left running would fill the table after an undo.
 
     The check runs outside every session: run in the marked one, as a job's own undo would, it would count itself.
-    The session's jobs are listed in the dataset's region (bigquery.jobs.list, iam.tf).
+    The jobs are listed in the dataset's region (bigquery.jobs.list, iam.tf).
     """
     bq = engine.bigquery
     region = engine.client.get_dataset(dataset).location.lower()
-    config = bq.QueryJobConfig(query_parameters=[bq.ScalarQueryParameter("session", "STRING", session)],
-                               labels=engine.labels)
+    values = [bq.ScalarQueryParameter("session", "STRING", session),
+              bq.ScalarQueryParameter("dataset", "STRING", dataset.split(".")[-1]),
+              bq.ArrayQueryParameter("loaded", "STRING", sorted(set(LOADS.values())))]
+    config = bq.QueryJobConfig(query_parameters=values, labels=engine.labels)
     done = engine.client.query(f"SELECT COUNT(*) FROM `region-{region}`.INFORMATION_SCHEMA.JOBS_BY_USER "
-                               "WHERE session_info.session_id = @session AND state <> 'DONE'", job_config=config,
-                               job_retry=None)
+                               "WHERE state <> 'DONE' AND (session_info.session_id = @session OR (job_type = 'LOAD' "
+                               "AND destination_table.dataset_id = @dataset AND destination_table.table_id IN "
+                               "UNNEST(@loaded)))", job_config=config, job_retry=None)
     return bool([tuple(r.values()) for r in done.result()][0][0])
 
 
@@ -230,6 +239,8 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
     if job == "match":
         try:
             nayose.check_threshold(float(given[0]))  # before any client, as the job does here
+        except ValueError:
+            return say(2, error=f"threshold {given[0]!r} is no number", fix="give points as a number, for example 8")
         except nayose.InputError as e:
             return say(2, error=str(e), fix=e.fix)
     engine = BigQuery(dataset, client=client, bigquery=bigquery, job=job)
@@ -333,6 +344,10 @@ def lookup(engine: BigQuery, dataset: str, given: list[str]) -> int:
         answer = nayose.lookup(engine, record=record, values=values)
     except nayose.InputError as e:
         return say(2, error=str(e), fix=e.fix)
+    except Exception as e:
+        if nayose.CHANGED in str(e):
+            return say(2, job="lookup", dataset=dataset, error=described(e), fix=nayose.build_again("lookup"))
+        return say(1, job="lookup", dataset=dataset, error=described(e), fix="look it up again")
     engine.run("CREATE TABLE IF NOT EXISTS looked_up (asked STRING, asked_at TIMESTAMP, answer STRING)")
     asked = json.dumps(dict(record=record, values=values), ensure_ascii=False)
     engine.run("INSERT INTO looked_up (asked, asked_at, answer) SELECT @asked, CURRENT_TIMESTAMP(), @answer",
@@ -348,7 +363,7 @@ def call_procedure(engine: BigQuery, dataset: str, job: str, given: list[str]) -
     elif job in ("build", "update"):
         engine.run(f"DROP TABLE IF EXISTS `{dataset}`.input")
     if job == "decide":
-        engine.read_parquet("given", given, ["why"])
+        engine.read_parquet("given", given, ["id_l", "id_r", "decision", "why"])  # one a file lacks: refused, exit 2
     engine.run(f"CALL `{dataset}`.{job}({float(given[0])!r})" if job == "match" else f"CALL `{dataset}`.{job}()")
 
 
