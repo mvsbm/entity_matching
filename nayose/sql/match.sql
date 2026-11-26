@@ -1,7 +1,7 @@
 -- The match job. It makes one table of pairs for people to decide on, with the highest points first. The table holds
 -- every pair the run scored at @threshold points or more, except the pairs whose latest decision is no_match.
 -- Each row holds:
---   an empty decision, for people to fill in with match or no_match;
+--   an empty decision, for people to fill in with match or no_match, and an empty why, for a reason if they like;
 --   the pair, its points and its probability;
 --   the rule that also joins the pair, if one does, and the generators whose keys listed it;
 --   whether a name was compared (named), and whether the pair may be two people of one household;
@@ -45,7 +45,8 @@ WITH pair_records AS (
   FROM records
 )
 SELECT
-  CAST(NULL AS STRING) AS decision, s.id_l, s.id_r, s.points, s.match_probability, s.rule, s.named,
+  CAST(NULL AS STRING) AS decision, CAST(NULL AS STRING) AS why,
+  s.id_l, s.id_r, s.points, s.match_probability, s.rule, s.named,
   household(x, y) AS household, s.generators,
   x.person_name AS person_name_l, y.person_name AS person_name_r,
   x.given_name AS given_name_l, y.given_name AS given_name_r,

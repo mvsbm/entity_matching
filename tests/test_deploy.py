@@ -309,6 +309,7 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
         return SimpleNamespace(result=lambda rows=rows: rows, session_info=SimpleNamespace(session_id=session))
 
     def load_table_from_uri(self, uris, table, job_config=None):
+        self.loaded.append((table, list(uris)))
         self.tables[table.split(".")[-1]], self.kind[table.split(".")[-1]] = "loaded", "BASE TABLE"
         return SimpleNamespace(result=lambda: None)
 
@@ -344,12 +345,18 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
                    deployed={"update": "\nBEGIN\nINSERT INTO `p.run`.rule_pairs SELECT 1;\nEND"})  # before this code
     assert ends(older, ["p.run", "update", "gs://b/y.parquet"])[0] == 1 and older.tables["rule_pairs"] == 1  # put back
     assert ends(done)[0] == 0 and done.tables == after  # and the next job runs as well
-    from_table = Tables(before, made)  # no file: the deployed mapping reads a table of the team's
+    from_table = Tables({**before, "input": "an earlier job's"}, made)  # no file: the mapping reads the team's table
     code, said = ends(from_table, ["p.run", "build"])
     assert code == 0 and not from_table.loaded and from_table.tables["records"] == 2
+    dropped, called = (next(i for i, s in enumerate(from_table.sent) if s.startswith(x))
+                       for x in ("DROP TABLE IF EXISTS `p.run`.input", "CALL `p.run`.build()"))
+    assert dropped < called  # an old batch is never read as this one
     no_input = Tables(before, made, fail=["no input"])  # no file, and a mapping that reads input
     code, said = ends(no_input, ["p.run", "update"])
-    assert code == 2 and "docs/console.md" in said["fix"] and no_input.tables == before
+    assert code == 2 and "p:run.input" in said["error"] and "docs/console.md" in said["fix"] and no_input.tables == before
+    for short in (["p.run", "decide"], ["p.run", "match"]):  # a file or a threshold each needs: the help, exit 2
+        client = Tables(before, made)
+        assert run.main(short, client=client, bigquery=MODULE) == 2 and not client.sent
     failed = Tables(before, made, fail=["procedure"])
     code, said = ends(failed)
     assert code == 1 and said == {"severity": "ERROR", "job": "build", "dataset": "p.run", "error": "the procedure failed partway", "fix": "run this job again"}

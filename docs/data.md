@@ -85,7 +85,7 @@ A decision is stored (`decisions`: `id_l`, `id_r`, `decision`, `why`, `round`, `
 
 `python -m nayose match --threshold T` writes `matched/points-T.parquet`; on BigQuery it is the table `matched`. It holds the pairs at T points or more, minus those whose latest decision is `no_match`, highest first:
 
-- `decision`, empty, for people to fill in;
+- `decision`, empty, for people to fill in, and `why`, empty, for a reason if they like;
 - `id_l` and `id_r`; `points`, `match_probability`, `rule` (a rule's name, if one joins the pair), `named` (a name was compared), `household` (it may be two people of one household: a label only), `generators` (the generators whose keys listed it);
 - each record's fields side by side: `person_name_l`, `person_name_r`, and so on for `given_name`, `company_name`, `address_code`, `address`, `postal_code`, `phone`, `customer_id` and `birth_date`;
 - each comparison's level and its bits: `name`, `name_bits`, then `company`, `address`, `phone`, `cif` and `birth` the same way.

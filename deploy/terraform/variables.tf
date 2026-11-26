@@ -19,7 +19,7 @@ variable "region" {
 }
 
 variable "dataset" {
-  description = "The run's dataset: its tables, functions and procedures (deploy/deploy.py PROJECT.DATASET). Staging's CI sandbox is DATASET_ci."
+  description = "The run's dataset: its tables, functions and procedures (deploy/deploy.py PROJECT.DATASET). Staging's CI sandbox is DATASET_ci. The same in staging and prod, as Jenkins' NAYOSE_DATASET names both."
   type        = string
   default     = "nayose"
 }
