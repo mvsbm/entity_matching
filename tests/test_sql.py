@@ -330,3 +330,13 @@ def test_no_name_is_a_reserved_keyword_unless_backquoted(path):
     assert not {n for sql in nayose.statements(path.read_text(encoding="utf-8")) for n in reserved(sql)}
 
 
+
+
+def test_docs_dataflow_md_is_each_job_s_data_flow_as_its_sql_has_it():  # redrawn at each change to the flow
+    import importlib.util
+    root = nayose.HERE.parent
+    spec = importlib.util.spec_from_file_location("dataflow", root / "scripts" / "dataflow.py")
+    dataflow = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dataflow)
+    assert (root / "docs" / "dataflow.md").read_text(encoding="utf-8") == dataflow.page(), \
+        "docs/dataflow.md is stale: python scripts/dataflow.py"
