@@ -149,3 +149,41 @@ def test_a_space_nfkc_makes_is_stripped_from_every_name_copy(tmp_path):  # U+00A
     pd.DataFrame([row], columns=COLUMNS).astype("string").to_parquet(tmp_path / "in.parquet", index=False)
     new, _ = nayose_records(tmp_path / "in.parquet")
     assert " " not in new.loc[0, "person_name"] and " " not in new.loc[0, "any_name"]
+
+
+def test_an_update_finds_the_placeholders_a_build_of_the_same_records_finds_and_a_batch_given_twice_changes_nothing(tmp_path):
+    row = lambda i, phone: {c: None for c in COLUMNS} | {"CONT_ID": f"{i:05d}", "FULL_NAME_KANA": f"サトウ{i}", "PHONE_NUM_4": phone}
+    first = [row(i, f"{i + 1:04d}") for i in range(300)] + [row(i, "0000") for i in range(300, 3000)]  # 0000: a placeholder
+    batch = [row(i, "1111") for i in range(3000, 3100)]  # 100 records: under the bar 0000's records raise, as a build counts
+    files = {}
+    for name, rows in {"first": first, "batch": batch, "all": first + batch}.items():
+        files[name] = tmp_path / f"{name}.parquet"
+        pd.DataFrame(rows, columns=COLUMNS).astype("string").to_parquet(files[name], index=False)
+    found = lambda e: e.rows("SELECT field, value, n FROM placeholders ORDER BY field, value")
+    built = DuckDB(); nayose.records(built, [files["all"]])
+    updated = DuckDB(); nayose.records(updated, [files["first"]]); nayose.records(updated, [files["batch"]])
+    assert found(updated) == found(built) == [("phone", "0000", 2700)]
+    records = lambda e: e.rows("SELECT * EXCEPT (batch) FROM records ORDER BY id")
+    held = records(built)
+    nayose.records(built, [files["all"]])  # the same batch again: every record already in the run
+    assert found(built) == [("phone", "0000", 2700)] and records(built) == held
+
+
+def test_a_company_placeholder_leaves_a_person_s_name_and_an_empty_value_or_one_format_compares_as_it_should(tmp_path):
+    row = lambda i, **k: {c: None for c in COLUMNS} | {"CONT_ID": f"{i:05d}"} | k
+    rows = [row(i, NYS_CNV_P_NAME_KANA=f"カブシキガイシャヤマダ{i}") for i in range(300)]  # companies, each its own name
+    rows += [row(i, FULL_NAME_KANA=f"スズキ{i}", NYS_CNV_P_NAME_KANA="ダミーショウジ") for i in range(300, 380)]  # one trade name
+    rows += [row(901, NYS_CNV_P_NAME_KANA="株式会社", STD_ADDRESS="東京都", BIRTH_DATE="1990-01-02"),  # a legal form alone
+             row(902, NYS_CNV_P_NAME_KANA="トヨタショウジ", STD_ADDRESS="東京都千代田区丸の内1-1", PHONE_NUM_4="1234",
+                 BIRTH_DATE="19900102"),
+             row(903, BIRTH_DATE="１９９０／０１／０２")]
+    pd.DataFrame(rows, columns=COLUMNS).astype("string").to_parquet(tmp_path / "in.parquet", index=False)
+    engine = DuckDB()
+    nayose.records(engine, [tmp_path / "in.parquet"])
+    assert ("company_name", "ダミーショウジ") in engine.rows("SELECT field, value FROM placeholders")
+    assert engine.value("SELECT COUNT(any_name) FROM records WHERE id >= '00300' AND id < '00380'") == 80  # their own
+    assert engine.rows("SELECT birth_date FROM records WHERE id IN ('00901', '00902', '00903')") == [("19900102",)] * 3
+    engine.run(nayose.statements((nayose.SQL / "match.sql").read_text(encoding="utf-8"))[0])  # household
+    pair = "FROM records AS x, records AS y WHERE x.id = '00901' AND y.id = '00902'"
+    assert engine.rows(f"SELECT gamma_company(x, y), gamma_address(x, y), gamma_birth(x, y), household(x, y) {pair}") == [
+        (-1, -1, 2, False)]  # nothing to compare is missing, not a disagreement; household is never empty

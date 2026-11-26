@@ -72,9 +72,11 @@ CREATE OR REPLACE TEMP TABLE u_masks AS
 WITH u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared)
 SELECT scope, 'name' AS comparison, IF(person_name IS NOT NULL, 1, 0) AS mask, COUNT(*) AS n
 FROM u_records GROUP BY scope, mask
-UNION ALL SELECT scope, 'company', IF(company_name IS NOT NULL, 1, 0) AS mask, COUNT(*) FROM u_records GROUP BY scope, mask
+UNION ALL SELECT scope, 'company', IF(company_name__nfkc_strip_legal_form_kana_fold IS NOT NULL, 1, 0) AS mask, COUNT(*)
+          FROM u_records GROUP BY scope, mask
 UNION ALL SELECT scope, 'address',
-                 IF(address_code IS NOT NULL, 1, 0) + IF(address IS NOT NULL, 2, 0) + IF(postal_code IS NOT NULL, 4, 0)
+                 IF(address_code IS NOT NULL, 1, 0) + IF(address__address IS NOT NULL, 2, 0)
+                 + IF(postal_code IS NOT NULL, 4, 0)
                    AS mask,
                  COUNT(*)
           FROM u_records GROUP BY scope, mask

@@ -20,7 +20,7 @@
 -- reading (three edits or more) or in their birth date (two edits or more). A difference counts only if both sides
 -- are filled. household is a label only, and it changes no score.
 CREATE OR REPLACE TEMP FUNCTION household(x ANY TYPE, y ANY TYPE) AS (
-  (x.address_code = y.address_code OR x.address__address = y.address__address OR x.phone = y.phone)
+  COALESCE(x.address_code = y.address_code OR x.address__address = y.address__address OR x.phone = y.phone, FALSE)
   AND ((x.given_name__kana_fold IS NOT NULL AND y.given_name__kana_fold IS NOT NULL
         AND cl_damerau_levenshtein_cut(x.given_name__kana_fold, y.given_name__kana_fold, 1) > 1)
     OR (x.person_name__kana_fold_long_vowel_last3 IS NOT NULL AND y.person_name__kana_fold_long_vowel_last3 IS NOT NULL
