@@ -39,8 +39,8 @@ no Jenkins. Everything here is pasting SQL and clicking **Run**, or uploading a 
 3. **Install.** Click *+* (a new query), paste all of `deploy.sql`, and click *Run*. It takes about a minute. Then
    the dataset holds nayose's functions and four procedures: `build`, `update`, `decide` and `match`.
 
-Each time your technical contact sends new files, run steps 2 and 3 again with them, then step 4: a run built before
-can't be updated by the new version.
+Each time your technical contact sends new files, run steps 2 and 3 again with them, one right after the other and no
+job between them, then step 4: a run built before can't be updated by the new version.
 
 ## Each time: match your records
 
@@ -106,5 +106,6 @@ stops two, and two at once can lose people's decisions.
   with all your records: people's decisions are always kept.
 - **"the method, its values or the mapping changed since the run was built"**: a new `deploy.sql` was installed.
   Run step 4 with all your records.
+- **"deploy: the last deploy did not finish"**: step 3 stopped partway. Run step 3 again.
 
 On-demand billing charges for the bytes read; a test of thousands of records reads a few GB at most.

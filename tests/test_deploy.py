@@ -206,7 +206,10 @@ def test_the_deploy_makes_stubs_then_the_functions_and_the_name_model_then_the_p
     assert made[4].startswith("CREATE OR REPLACE FUNCTION `p.run`.cl_") and made[-1].startswith("CREATE OR REPLACE PROCEDURE `p.run`.match(")
     table, rows, before = client.loaded[0]
     first_procedure = next(i for i, s in enumerate(client.sent) if s.startswith("CREATE OR REPLACE PROCEDURE `p.run`.build() OPTIONS"))
-    assert table == "p.run.name_weights" and rows > 1000 and before <= first_procedure  # loaded before any job's procedure
+    assert table == "p.run.name_weights" and rows > 1000  # after the stubs and the functions, before any job's procedure
+    assert len(stubs("p.run")) + len(functions("p.run")) <= before <= first_procedure
+    for stub, real in zip(stubs("p.run"), [s for s in made if s.startswith("CREATE OR REPLACE PROCEDURE") and " OPTIONS" in s]):
+        assert stub.split("\n")[0] == real.split(" OPTIONS")[0]  # each stub takes what its job's procedure takes
 
 
 def test_a_job_loads_its_input_into_the_dataset_and_calls_its_procedure(monkeypatch):
@@ -224,7 +227,7 @@ def test_a_job_loads_its_input_into_the_dataset_and_calls_its_procedure(monkeypa
 
 
 PROCEDURE_FAILS = ("procedure", "interrupted", "interrupted as it ends", "changed", "refused", "no input", "unfinished",
-                   "raced")  # how a fake procedure call ends
+                   "raced", "mark answer lost", "refused over lines")  # how a fake procedure call ends
 
 
 DEPLOYED = {}  # each job's procedure as the deploy makes it in p.run, the body BigQuery's INFORMATION_SCHEMA.ROUTINES holds
@@ -268,9 +271,11 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                 if self.fails[:1] == ["raced"]:  # another job makes its mark between this job's listing and its mark
                     self.fails.pop(0)
                     self.tables["job_running"], self.kind["job_running"] = "mark", "BASE TABLE"
+                    self.mark = {"session": "another job's", "tables": []}
                 rows = [{"routine_definition": self.deployed[given["job"]]}] if given["job"] in self.deployed else []
             elif "INFORMATION_SCHEMA.JOBS_BY_USER" in s:
-                load = self.loading and "job_type = 'LOAD'" in s and "input" in given.get("loaded", [])
+                load = (self.loading and "job_type = 'LOAD'" in s and "input" in given.get("loaded", [])
+                        and given.get("dataset") == "run")
                 rows = [{"n": int(given["session"] in self.running or load)}]
                 self.checked_in.append(getattr(job_config, "connection_properties", None))  # the session it ran in
             elif s.startswith("SELECT session, tables FROM"):
@@ -286,6 +291,9 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                 self.tables[name[0]], self.kind[name[0]] = "mark", "BASE TABLE"
                 tail = s.split("AS session, ")
                 self.mark = {"session": re.findall(r"'(\w*)'", tail[0])[-1], "tables": re.findall(r"'(\w*)'", tail[1])}
+                if self.fails[:1] == ["mark answer lost"]:  # made, but its answer never reaches the job
+                    self.fails.pop(0)
+                    raise RuntimeError("Connection reset by peer")
             elif s.startswith("DROP TABLE"):
                 if name[0] in self.tables or "IF EXISTS" not in s:  # IF EXISTS: a table that isn't there is no error
                     del self.tables[name[0]], self.kind[name[0]]
@@ -293,6 +301,10 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
                 if self.fails[:1] == ["changed"]:  # UNCHANGED: refused before the procedure writes anything
                     self.fails.pop(0)
                     raise RuntimeError(f"Query error: {nayose.CHANGED}; build the run again at [1:1]")
+                if self.fails[:1] == ["refused over lines"]:  # a refusal whose message holds a line break
+                    self.fails.pop(0)
+                    raise RuntimeError("Query error: given: a decision is match or no_match, not\nmaybe; correct those "
+                                       "rows at [p.run.decide:76:1]")
                 if self.fails[:1] == ["unfinished"]:  # a deploy stopped partway: its stubs (procedures.stubs) refuse
                     self.fails.pop(0)
                     raise RuntimeError("400 GET https://x: Query error: deploy: the last deploy did not finish; deploy "
@@ -429,6 +441,16 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
     assert (code, said["fix"]) == (2, "deploy again") and unfinished.tables == before
     raced = Tables(before, made, fail=["raced"])  # another job marked the dataset first: this one waits, and undoes nothing
     assert ends(raced)[0] == 75 and raced.tables == {**before, "job_running": "mark"}
+    monkeypatch.setattr(run.nayose, "report_text", lambda engine, steps, job: "")  # report.txt works again
+    lost = Tables(before, made, fail=["mark answer lost"])  # this job's own mark made, its answer lost: the job goes on
+    assert ends(lost)[0] == 0 and lost.tables == after
+    stub = {"build": "\nBEGIN\nSELECT ERROR('" + run.UNFINISHED + "');\nEND"}  # a deploy under way, done before the CALL
+    stubbed = Tables({**before, "matched": 1}, made, deployed=stub)
+    assert ends(stubbed)[0] == 0  # every table cloned, matched too, which a build's procedure never writes
+    assert set(re.findall(r"CLONE `p\.run`\.(\w+)", "\n".join(stubbed.sent))) == {"records", "scored", "decisions", "matched"}
+    lines = Tables(before, made, fail=["refused over lines"])
+    code, said = ends(lines, ["p.run", "decide", "gs://b/d.parquet"])
+    assert (code, said["fix"]) == (2, "correct those rows") and "\nmaybe" in said["error"]
     left = Tables(before, made)  # Ctrl-C while BigQuery loads the file: the load runs on, so undo waits for it
 
     def load_left_running(uris, table, job_config=None):
@@ -439,9 +461,10 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
     assert code == 75 and said["fix"] == "undo once it ends: python deploy/run.py p.run undo"
     left.loading = False  # it ended: the undo puts every table back
     assert ends(left, ["p.run", "undo"])[0] == 0 and left.tables == before
-    for threshold in ("nan", "inf", "8,5"):  # no number of points: refused before any query
+    for threshold in ("nan", "inf", "8,5", "-1"):  # no number of points, or under keep_from: refused before any query
         nothing = Tables(before, made)
-        assert ends(nothing, ["p.run", "match", threshold])[0] == 2 and not nothing.sent, threshold
+        code, said = ends(nothing, ["p.run", "match", threshold])
+        assert code == 2 and not nothing.sent and ("keep_from" in said["fix"]) == (threshold == "-1"), threshold
     monkeypatch.setattr(run.nayose, "lookup", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     code, said = ends(Tables(before, made), ["p.run", "lookup", "--record", "1"])  # a lookup that fails says so too
     assert (code, said["error"], said["fix"]) == (1, "boom", "look it up again")
