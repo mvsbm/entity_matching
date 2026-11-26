@@ -23,8 +23,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))  # this checkout's nayose and design
 
-import nayose  # noqa: E402
-from design.generate import generate, load_reference, load_spec  # noqa: E402
+import nayose
+from design.generate import generate, load_reference, load_spec
 
 DATASET, TABLE = "YOUR_PROJECT.nayose", "synthetic_records"  # data/console/'s: docs/console.md replaces the dataset
 

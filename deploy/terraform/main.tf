@@ -45,8 +45,7 @@ resource "google_secret_manager_secret" "mapping" {
   depends_on = [google_project_service.on]
 }
 
-# The run: its tables, functions and procedures (deploy/deploy.py); and staging's sandbox for the engine-parity check,
-# whose tables expire in a day. The run's storage is billed by its compressed bytes (PHYSICAL), as its tables
+# The run: its tables, functions and procedures (deploy/deploy.py). The run's storage is billed by its compressed bytes (PHYSICAL), as its tables
 # compress about 5 times (a BigQuery sandbox's run: 13.0 MB logical, 2.4 MB physical) and a physical byte costs 2
 # logical ones. Physical billing also bills time travel, so it keeps 2 days, the least BigQuery keeps: every job
 # replaces some of the run's tables (gold, cands, matched). Undo needs none: it clones.
@@ -56,14 +55,6 @@ resource "google_bigquery_dataset" "runs" {
   storage_billing_model = "PHYSICAL"
   max_time_travel_hours = 48
   depends_on            = [google_project_service.on]
-}
-
-resource "google_bigquery_dataset" "sandbox" {
-  count                       = var.environment == "staging" ? 1 : 0
-  dataset_id                  = "${var.dataset}_ci"
-  location                    = var.bigquery_location
-  default_table_expiration_ms = 24 * 3600 * 1000
-  depends_on                  = [google_project_service.on]
 }
 
 # Told: the month's spending.

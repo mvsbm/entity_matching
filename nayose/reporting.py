@@ -45,7 +45,7 @@ def report_text(engine: Engine, steps: dict[str, float], job: str) -> str:
                 report_fields(engine, fill), report_unmapped(engine, c, json.loads(values["looks"])),
                 report_scores(engine, values["edges"]),
                 report_patterns(engine, values["floor"], values["patterns_shown"]),
-                report_entities(engine), report_steps(counts, notes, steps, job), report_generators(generators),
+                report_entities(engine), report_steps(counts, notes, steps), report_generators(generators),
                 report_model(engine, c, notes), report_blocks(generators, counts)]
     return "\n".join(line for section in sections for line in section) + "\n"
 
@@ -217,7 +217,7 @@ def report_entities(engine: Engine) -> list[str]:
     return ["ENTITIES  (size: how many)", "  " + " · ".join(counted), ""]
 
 
-def report_steps(counts, notes: dict, steps: dict[str, float], job: str) -> list[str]:
+def report_steps(counts, notes: dict, steps: dict[str, float]) -> list[str]:
     """Return the STEPS section: each stage's seconds, with what it made."""
     n = number_of(counts)
     facts = dict(

@@ -2,9 +2,9 @@
 
 # Roadmap
 
-This page lists the plans, in order. The other docs describe the code as it is. Each step keeps the results
-identical, so `tests/test_parity.py`'s digests stay unchanged. Each step also quotes BigQuery's cost before and after,
-in both bytes billed and work, from `scripts/estimate_cost.py`.
+This page lists the plans, in order. The other docs describe the code as it is. Each step finds the same matches or
+more, none lost, and writes `tests/test_parity.py`'s digests again where results move. Each step also quotes BigQuery's
+cost before and after, in both bytes billed and work, from `scripts/estimate_cost.py`.
 
 ## 1 · BigQuery at scale, in staging
 

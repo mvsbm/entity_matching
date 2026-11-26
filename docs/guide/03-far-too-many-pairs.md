@@ -207,15 +207,8 @@ Without labels, only the patterns can be checked: every combination of compariso
 
 `scripts/benchmark.py` generates files of growing size and resolves each with `python -m nayose build`, in a process of its own, as a real run: on DuckDB tables, fitted on the file itself, without labels, under an 8 GB memory limit ([reports/benchmark.md](../../reports/benchmark.md)). Each stage's seconds:
 
-| Records | Records stage | Fit | Score | Decide | Total | Peak memory |
-|---|---|---|---|---|---|---|
-| 13,019 | 0.72 | 2.75 | 0.29 | 0.04 | 3.8 | 1.25 |
-| 25,947 | 1.20 | 2.80 | 0.37 | 0.04 | 4.4 | 1.46 |
-| 52,115 | 2.11 | 3.15 | 0.55 | 0.13 | 5.9 | 1.81 |
-| 77,926 | 2.96 | 3.76 | 0.78 | 0.06 | 7.6 | 2.3 |
-| **1,039,995** | 9.83 | 6.03 | 14.83 | 0.18 | 30.9 | 6.69 |
-
-A million records take 30.9 seconds, 14.83 of them in the score stage (the rules, the keys, the gate and the scores) and 9.83 reading the file. The fit, on a fixed sample, and the u sample of the file inside it, 10 million pairs, grow far slower than the file: 2.75 s at 13,019 records, 6.03 s at a million. So at these sizes the total grows slower than the file, like N^0.5. Only the rules' pairs and the pairs that can reach 0 points are weighed: a bound from cheap tests (equalities, lengths, the names' letters and common start, and the phone, CIF and birth levels) rules out the rest before the costly comparisons. Peak memory is the process's, Python included: 6.69 GB at a million records, under the 8 GB limit. The cost of every step, for a build and for an update, is in [performance.md](../performance.md).
+Its measured times, stage by stage, and peak memory, up to a million records, are in
+[the benchmark](../../reports/benchmark.md).
 
 Three choices keep a million records within bounds:
 

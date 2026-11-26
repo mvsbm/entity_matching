@@ -4,7 +4,7 @@ variable "project" {
 }
 
 variable "environment" {
-  description = "staging or prod: staging holds the CI sandbox dataset, and its runtime account writes the bucket (the smoke test's file)."
+  description = "staging or prod: staging's runtime account writes the bucket (the smoke test's file)."
   type        = string
   validation {
     condition     = contains(["staging", "prod"], var.environment)
@@ -19,7 +19,7 @@ variable "region" {
 }
 
 variable "dataset" {
-  description = "The run's dataset: its tables, functions and procedures (deploy/deploy.py PROJECT.DATASET). Staging's CI sandbox is DATASET_ci. The same in staging and prod, as Jenkins' NAYOSE_DATASET names both."
+  description = "The run's dataset: its tables, functions and procedures (deploy/deploy.py PROJECT.DATASET). The same in staging and prod, as Jenkins' NAYOSE_DATASET names both."
   type        = string
   default     = "nayose"
 }

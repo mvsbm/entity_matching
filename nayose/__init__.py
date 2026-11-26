@@ -276,6 +276,14 @@ def records(engine: Engine, files: list | None, temp: set | None = None) -> None
         engine.run(f"CREATE OR REPLACE TEMP TABLE input AS SELECT * FROM input LIMIT {sample}")
 
 
+def trained_ngram(ngram: int) -> int:
+    """Return config.toml's [records] ngram, refused where the name model was trained with another."""
+    if ngram != (trained := int(np.load(NAME_MODEL)["ngram"])):
+        raise InputError(f"config.toml [records] ngram is {ngram}, and the name model's n-grams are {trained}",
+                         fix="train it again: python scripts/train_name_model.py")
+    return ngram
+
+
 def name_weights() -> pd.DataFrame:
     """Return the name model (config/kind_names.npz) as a table: each character n-gram and its coefficient."""
     model = np.load(NAME_MODEL)
@@ -300,7 +308,7 @@ def values_of(name: str, refit: bool = True, lookup: bool = False, given: bool =
                     prefecture_regex=f"^(?:{'|'.join(map(re.escape, r['prefectures']))})",
                     flag_company=list(r["flag_company"]), name_line=float(r["name_line"]),
                     trust_flag=bool(r["trust_flag"]), shared_name_column=bool(r["shared_name_column"]),
-                    ngram=int(r["ngram"]),
+                    ngram=trained_ngram(int(r["ngram"])),
                     intercept=float(np.load(NAME_MODEL)["intercept"]), placeholder_min=int(r["placeholder_min"]),
                     spread=int(r["spread"]), crowd=int(r["crowd"]), lookup=lookup)
     if name == "fit":

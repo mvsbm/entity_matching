@@ -6,7 +6,7 @@ on:
   push:
     branches: [main]  # a branch's pushes run as its pull request's
   pull_request:
-  workflow_dispatch:  # every tier on a branch, when a change needs them before it merges (Windows)
+  workflow_dispatch:  # Windows' tests on a branch, when a change needs them before it merges
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # a newer push to a pull request makes this run moot; main's runs all finish

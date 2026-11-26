@@ -416,7 +416,7 @@ def load_spec(path: Path) -> tuple[Spec, Split]:
 def split_by_entity(truth: pd.DataFrame, split: Split) -> pd.Series:
     """Each record's split name: households (an entity and its household member, E…H) shuffled with split.seed and cut
     by split.shares, so neither a duplicate group nor a household spans two splits."""
-    household = truth["HOUSEHOLD_ID"] if "HOUSEHOLD_ID" in truth else truth["ENTITY_ID"]
+    household = truth["HOUSEHOLD_ID"]
     units = np.random.default_rng(split.seed).permutation(household.unique())
     cuts = np.round(np.cumsum(list(split.shares.values())) * len(units)).astype(int)[:-1]
     of = {e: name for name, part in zip(split.shares, np.split(units, cuts)) for e in part}

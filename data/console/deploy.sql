@@ -24,10 +24,6 @@ CREATE OR REPLACE FUNCTION `YOUR_PROJECT.nayose`.cl_jaro_winkler(a STRING, b STR
 // differently (arm64 fuses Jaro–Winkler's boost into one multiply-add), never reaches a comparison.
 function chars(s) { return Array.from(s); }
 
-function jaro(a, b) {  // as a float32, as rapidfuzz's cpdist gives every similarity (DuckDB's engine compares that)
-  return Math.fround(jaro_double(a, b));
-}
-
 function jaro_double(a, b) {
   const x = chars(a), y = chars(b);
   if (!x.length && !y.length) return 1.0;
@@ -95,10 +91,6 @@ CREATE OR REPLACE FUNCTION `YOUR_PROJECT.nayose`.cl_jaro_winkler_cut(a STRING, b
 // as rapidfuzz's cpdist returns them, the rest as it does: so the last bit of the double, which rapidfuzz's builds round
 // differently (arm64 fuses Jaro–Winkler's boost into one multiply-add), never reaches a comparison.
 function chars(s) { return Array.from(s); }
-
-function jaro(a, b) {  // as a float32, as rapidfuzz's cpdist gives every similarity (DuckDB's engine compares that)
-  return Math.fround(jaro_double(a, b));
-}
 
 function jaro_double(a, b) {
   const x = chars(a), y = chars(b);
@@ -172,10 +164,6 @@ CREATE OR REPLACE FUNCTION `YOUR_PROJECT.nayose`.cl_damerau_levenshtein(a STRING
 // differently (arm64 fuses Jaro–Winkler's boost into one multiply-add), never reaches a comparison.
 function chars(s) { return Array.from(s); }
 
-function jaro(a, b) {  // as a float32, as rapidfuzz's cpdist gives every similarity (DuckDB's engine compares that)
-  return Math.fround(jaro_double(a, b));
-}
-
 function jaro_double(a, b) {
   const x = chars(a), y = chars(b);
   if (!x.length && !y.length) return 1.0;
@@ -243,10 +231,6 @@ CREATE OR REPLACE FUNCTION `YOUR_PROJECT.nayose`.cl_damerau_levenshtein_cut(a ST
 // as rapidfuzz's cpdist returns them, the rest as it does: so the last bit of the double, which rapidfuzz's builds round
 // differently (arm64 fuses Jaro–Winkler's boost into one multiply-add), never reaches a comparison.
 function chars(s) { return Array.from(s); }
-
-function jaro(a, b) {  // as a float32, as rapidfuzz's cpdist gives every similarity (DuckDB's engine compares that)
-  return Math.fround(jaro_double(a, b));
-}
 
 function jaro_double(a, b) {
   const x = chars(a), y = chars(b);
@@ -316,10 +300,6 @@ CREATE OR REPLACE FUNCTION `YOUR_PROJECT.nayose`.cl_hamming(a STRING, b STRING) 
 // differently (arm64 fuses Jaro–Winkler's boost into one multiply-add), never reaches a comparison.
 function chars(s) { return Array.from(s); }
 
-function jaro(a, b) {  // as a float32, as rapidfuzz's cpdist gives every similarity (DuckDB's engine compares that)
-  return Math.fround(jaro_double(a, b));
-}
-
 function jaro_double(a, b) {
   const x = chars(a), y = chars(b);
   if (!x.length && !y.length) return 1.0;
@@ -387,10 +367,6 @@ CREATE OR REPLACE FUNCTION `YOUR_PROJECT.nayose`.cl_hamming_cut(a STRING, b STRI
 // as rapidfuzz's cpdist returns them, the rest as it does: so the last bit of the double, which rapidfuzz's builds round
 // differently (arm64 fuses Jaro–Winkler's boost into one multiply-add), never reaches a comparison.
 function chars(s) { return Array.from(s); }
-
-function jaro(a, b) {  // as a float32, as rapidfuzz's cpdist gives every similarity (DuckDB's engine compares that)
-  return Math.fround(jaro_double(a, b));
-}
 
 function jaro_double(a, b) {
   const x = chars(a), y = chars(b);
@@ -3035,7 +3011,7 @@ WHERE gen.used;
 -- report_entities counts the entities of each size.
 CREATE OR REPLACE TEMP TABLE report_entities AS
 SELECT n AS size, COUNT(*) AS entities FROM (SELECT COUNT(*) AS n FROM `YOUR_PROJECT.nayose`.gold GROUP BY entity) GROUP BY n;
-CREATE OR REPLACE TABLE `YOUR_PROJECT.nayose`.method AS SELECT '1086401df6941dddcccef10a0fc033641b17a263936ea179fdfd185583822b7f' AS fingerprint;
+CREATE OR REPLACE TABLE `YOUR_PROJECT.nayose`.method AS SELECT '4e9b53c6c56dfe21b75d4b6cd7d4c8a7d82a20d7b71b5f0f3b07f4a773c566cd' AS fingerprint;
 END;
 
 CREATE OR REPLACE PROCEDURE `YOUR_PROJECT.nayose`.update() OPTIONS (strict_mode = FALSE)
@@ -3074,7 +3050,7 @@ DECLARE v_patterns_shown INT64 DEFAULT 12;
 DECLARE v_condition_1 BOOL DEFAULT FALSE;
 DECLARE v_condition_2 BOOL DEFAULT FALSE;
 DECLARE v_condition_3 BOOL DEFAULT FALSE;
-SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM '1086401df6941dddcccef10a0fc033641b17a263936ea179fdfd185583822b7f', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
+SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM '4e9b53c6c56dfe21b75d4b6cd7d4c8a7d82a20d7b71b5f0f3b07f4a773c566cd', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
 -- This file maps the input's columns to the fields that records.sql reads. It is the mapping of the generated data,
 -- whose columns design/generate.py writes. A deployment keeps its own mapping, in the same form, outside the
 -- repository (in Secret Manager).
@@ -4177,7 +4153,7 @@ END;
 CREATE OR REPLACE PROCEDURE `YOUR_PROJECT.nayose`.decide() OPTIONS (strict_mode = FALSE)
 BEGIN
 DECLARE v_given BOOL DEFAULT TRUE;
-SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM '1086401df6941dddcccef10a0fc033641b17a263936ea179fdfd185583822b7f', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
+SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM '4e9b53c6c56dfe21b75d4b6cd7d4c8a7d82a20d7b71b5f0f3b07f4a773c566cd', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
 -- The decide job stores people's decisions on pairs and makes the entities again from them. The decisions come in
 -- given, a match table that people filled in. They are stored with the run's earlier decisions, and each pair's latest
 -- decision is its standing. The entities are the connected components of the pairs whose latest decision is match
@@ -4286,7 +4262,7 @@ END;
 
 CREATE OR REPLACE PROCEDURE `YOUR_PROJECT.nayose`.match(v_threshold FLOAT64) OPTIONS (strict_mode = FALSE)
 BEGIN
-SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM '1086401df6941dddcccef10a0fc033641b17a263936ea179fdfd185583822b7f', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
+SELECT IF((SELECT fingerprint FROM `YOUR_PROJECT.nayose`.method) IS DISTINCT FROM '4e9b53c6c56dfe21b75d4b6cd7d4c8a7d82a20d7b71b5f0f3b07f4a773c566cd', ERROR('the method, its values or the mapping changed since the run was built: this code would read its tables, and score its batches, otherwise; build the run again'), 0);
 
 -- shown gives each comparison's levels as people read them, each with its label and its bits rounded to two places.
 -- A missing side is level -1, labelled missing, with 0 bits. lookup.sql's shown uses the same labels.

@@ -4,10 +4,6 @@
 // differently (arm64 fuses Jaro–Winkler's boost into one multiply-add), never reaches a comparison.
 function chars(s) { return Array.from(s); }
 
-function jaro(a, b) {  // as a float32, as rapidfuzz's cpdist gives every similarity (DuckDB's engine compares that)
-  return Math.fround(jaro_double(a, b));
-}
-
 function jaro_double(a, b) {
   const x = chars(a), y = chars(b);
   if (!x.length && !y.length) return 1.0;

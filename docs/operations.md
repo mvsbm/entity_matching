@@ -9,7 +9,6 @@ For the DevOps team and the people who run the jobs. The code is in `deploy/`. T
 | GitHub Actions | gates every pull request: the lint, the tests, the Terraform formatted and valid | `.github/workflows/` |
 | Jenkins | ships what main holds: staging, a person's approval, then prod; runs one job in prod when asked | `deploy/Jenkinsfile` |
 | dataset `nayose` | the run: its tables, the functions, one procedure per job, the name model | `deploy/terraform/main.tf`; its contents by `deploy/deploy.py` |
-| dataset `nayose_ci` (staging only) | the sandbox for the BigQuery parity check; its tables expire after a day | `deploy/terraform/main.tf` |
 | bucket `PROJECT-nayose-runs` | the jobs' input files, in `in/`; a deleted object can be brought back for a week | `deploy/terraform/main.tf` |
 | secret `nayose-mapping` | prod's `mapping.sql`, which the prod deploy builds the procedures with | `deploy/terraform/main.tf`; the value is the DevOps team's |
 | service accounts | `nayose-deployer` makes the dataset's functions and procedures; `nayose-runtime` loads inputs and calls the procedures | `deploy/terraform/iam.tf` |
@@ -32,9 +31,9 @@ Once per project, staging first.
    | Variable | Sets | Default |
    |---|---|---|
    | `project` | the environment's project | required |
-   | `environment` | `staging` or `prod`. Staging also gets `nayose_ci`, and its runtime account may write the bucket (for the smoke test's file) | required |
+   | `environment` | `staging` or `prod`. Staging's runtime account may write the bucket (for the smoke test's file) | required |
    | `region`, `bigquery_location` | where the bucket and the datasets are | `asia-northeast1` |
-   | `dataset` | the run's dataset (staging's CI sandbox is `<dataset>_ci`); the same in both projects, as Jenkins' `NAYOSE_DATASET` names both | `nayose` |
+   | `dataset` | the run's dataset; the same in both projects, as Jenkins' `NAYOSE_DATASET` names both | `nayose` |
    | `bucket` | the bucket of the jobs' input files | `PROJECT-nayose-runs` |
    | `jenkins_oidc_issuer`, `jenkins_oidc_subject` | Jenkins' OIDC issuer, and the token subject of its job; empty means keys instead | empty |
    | `alert_emails` | who the budget emails | none |

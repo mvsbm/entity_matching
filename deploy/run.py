@@ -62,9 +62,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # this checkout's nayose
 
-import nayose  # noqa: E402
-from nayose.engines import BigQuery, bigquery_literal  # noqa: E402
-from nayose.procedures import JOBS as PROCEDURES, UNFINISHED  # noqa: E402
+import nayose
+from nayose.engines import BigQuery, bigquery_literal
+from nayose.procedures import JOBS as PROCEDURES, UNFINISHED
 
 JOBS = tuple(PROCEDURES)  # the jobs with a procedure: build, update, decide, match
 MARK, BEFORE = "job_running", "before__"  # the running job's table, and the prefix of its clones
@@ -178,7 +178,7 @@ def undo_after(engine: BigQuery, dataset: str, stopped: BaseException) -> None:
 LOADS = {"build": "input", "update": "input", "decide": "given"}  # the table a job's file is loaded into, for it alone
 
 
-def end(engine: BigQuery, dataset: str, job: str, cloned: list[str]) -> None:
+def end(engine: BigQuery, dataset: str, cloned: list[str]) -> None:
     """Rename the mark before__job_running, then drop it, the loaded files and the clones begin made (`cloned`).
 
     Once renamed, the mark is no mark: no job, undo or lookup finds it. A mark left by a DROP that failed would make
@@ -327,7 +327,7 @@ def finished(engine: BigQuery, dataset: str, job: str, seconds: float, cloned: l
     """
     step = "ending it (the mark and the clones)"
     try:
-        end(engine, dataset, job, cloned)
+        end(engine, dataset, cloned)
         step = "report.txt"
         if job in ("build", "update"):
             print(nayose.report_text(engine, {job: seconds}, job))
