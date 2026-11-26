@@ -80,6 +80,7 @@ def writing(out: Path, make: bool = False, compute: dict | None = None):
                        fix="wait for it to finish: a run takes one writer at a time")
         new = out / f"{RUN}.new"
         new.unlink(missing_ok=True)
+        Path(f"{new}.wal").unlink(missing_ok=True)  # a killed writer's log, which DuckDB would replay on the copy
         if not make:
             shutil.copyfile(out / RUN, new)
         engine = DuckDB(new, compute)

@@ -169,7 +169,8 @@ class Recorded:  # a BigQuery client that records what it is sent
         self.sent, self.loaded = [], []
         SENT.append(self.sent)
 
-    def query(self, sql, job_config=None):
+    def query(self, sql, job_config=None, job_retry="the library's: a failed job sent again whole"):
+        assert job_retry is None, job_retry  # a CALL begun again from its first statement loses the batch's records
         self.sent.append(sql)
         self.labels = getattr(job_config, "labels", None)  # the last query's
         return SimpleNamespace(result=lambda: [], session_info=SimpleNamespace(session_id="s1"))
@@ -227,7 +228,8 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
         self.kind = dict.fromkeys(tables, "BASE TABLE")
         self.mark, self.sessions, self.running, self.checked_in = {}, 0, set(), []
 
-    def query(self, sql, job_config=None):
+    def query(self, sql, job_config=None, job_retry="the library's: a failed job sent again whole"):
+        assert job_retry is None, job_retry  # a CALL begun again from its first statement loses the batch's records
         self.sent.append(sql)
         self.labels = getattr(job_config, "labels", None)  # the last query's
         if getattr(job_config, "create_session", False):
@@ -384,7 +386,7 @@ def test_a_job_on_bigquery_is_all_or_nothing_and_says_how_each_way_it_ends(monke
 
     died = Tables(before, made)  # a job whose process died, its procedure run: the next job refuses; undo waits for it, then undoes
     assert run.begin(run.BigQuery("p.run", client=died, bigquery=MODULE), "p.run", "build") is not None
-    died.query("CALL `p.run`.build()")
+    died.query("CALL `p.run`.build()", job_retry=None)
     died.running, died.tables["name_weights"] = {"s1"}, 2  # its procedure still running; a deploy since, with a new name model
     assert ends(died, ["p.run", "match", "8"])[0] == 75 and not [s for s in died.sent if s.startswith("CALL `p.run`.match")]
     assert ends(died, ["p.run", "undo"])[0] == 75 and died.tables["records"] == 2
