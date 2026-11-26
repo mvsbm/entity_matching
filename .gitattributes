@@ -1,0 +1,4 @@
+# LF on every checkout, Windows' too: the method's fingerprint hashes the files' bytes, and data/console is held
+# byte for byte to what the code writes
+* text=auto eol=lf
+data/console/** linguist-generated

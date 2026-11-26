@@ -35,20 +35,24 @@ only: `deploy.sql` and `name_weights.csv`, made for the dataset `YOUR_PROJECT.na
 `synthetic_records`, and `synthetic_first.parquet` (for the build) and `synthetic_batch.parquet` (for an update).
 Download each from GitHub (the file, then *Download raw file*).
 
-- **deploy.sql names its dataset.** Open it in a text editor and replace every `YOUR_PROJECT.nayose` with your
-  project ID and dataset, for example `my-project.nayose_poc` (*Replace all*), then save it.
+- **Your names.** On this page `YOUR_PROJECT.nayose` stands for your project ID and dataset: `nayose`, as step 1
+  makes it, or the name you gave it (for example `my-project.nayose_poc`). Write yours in place of it in every SQL
+  below. In `deploy.sql` too: open it in a text editor, replace every `YOUR_PROJECT.nayose` with yours (*Replace
+  all*), and save it, before step 3.
 - **The records:** after step 1, on your dataset, click ⋮ → *Create table*. Source: *Upload*, `synthetic_first.parquet`,
-  format *Parquet*. Table: `synthetic_records`. Click *Create table*. Then do steps 2 to 8 as written.
-- **The update (step 9):** upload `synthetic_batch.parquet` the same way, as `synthetic_records`, with *Write
-  preference* *Overwrite table*.
+  format *Parquet*. Table: `synthetic_records`. Click *Create table*. Then do steps 2 to 8.
+- **The update (step 9):** upload `synthetic_batch.parquet` the same way, as `synthetic_records`, and under *Advanced
+  options* set *Write preference* to *Overwrite table*.
 
-Your technical contact can write the same four files for your own names, with no replacing:
-`python scripts/console_files.py OUT --dataset YOUR_PROJECT.YOUR_DATASET`.
+Your technical contact can write the four files for your own names, with no replacing:
+`python scripts/console_files.py OUT --dataset YOUR_PROJECT.YOUR_DATASET`. That `deploy.sql` is the same method with
+another fingerprint, so a run built with one is built again (step 4) after installing the other.
 
 ## Once: install nayose
 
-1. **Make the dataset.** In the Explorer, on your project, click ⋮ → *Create dataset*. Dataset ID: `nayose`.
-   Location: *asia-northeast1 (Tokyo)*. Click *Create dataset*.
+1. **Make the dataset.** In the Explorer, on your project, click ⋮ → *Create dataset*. Dataset ID: `nayose` (or a
+   name of your own, written then in place of `nayose` throughout). Location: *asia-northeast1 (Tokyo)*. Click
+   *Create dataset*.
 2. **Load the name model.** On the dataset `nayose`, click ⋮ → *Create table*. Source: *Upload*, file:
    `name_weights.csv`, format *CSV*. Table: `name_weights`. Schema: click *Edit as text* and paste
    `term:STRING,coef:FLOAT64`. Under *Advanced options*: *Write preference* *Overwrite table*, and *Header rows to

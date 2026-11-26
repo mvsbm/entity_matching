@@ -41,10 +41,10 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
     first, last = [*stubs(a.dataset), *functions(a.dataset)], procedures(a.dataset, a.mapping)  # the name model between
     if a.sql:
         a.sql.mkdir(parents=True, exist_ok=True)
-        (a.sql / "deploy.sql").write_text(";\n\n".join([*first, *last]) + ";\n", encoding="utf-8")
+        (a.sql / "deploy.sql").write_text(";\n\n".join([*first, *last]) + ";\n", encoding="utf-8", newline="\n")
         # every term quoted, so a term of spaces or digits reads as text; each weight in 17 digits, read back exactly
         nayose.name_weights().to_csv(a.sql / "name_weights.csv", index=False, quoting=csv.QUOTE_NONNUMERIC,
-                                     float_format="%.17g")
+                                     float_format="%.17g", lineterminator="\n")
         return 0
     engine = BigQuery(a.dataset, client=client, bigquery=bigquery)
     try:
