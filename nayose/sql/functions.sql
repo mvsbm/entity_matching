@@ -282,6 +282,12 @@ CREATE OR REPLACE TEMP FUNCTION gamma_address(x ANY TYPE, y ANY TYPE) AS (
   END
 );
 
+-- padded writes each one-digit part of a value with a leading zero, where a separator or the end follows it:
+-- 1990/1/2 becomes 1990/01/02. Twice, as one pass leaves a part whose separator before it the last match took.
+CREATE OR REPLACE TEMP FUNCTION padded(x STRING) AS (
+  REGEXP_REPLACE(REGEXP_REPLACE(x, r'([^0-9])([0-9])([^0-9]|$)', r'\10\2\3'), r'([^0-9])([0-9])([^0-9]|$)', r'\10\2\3')
+);
+
 -- may_be_one_edit is TRUE if a and b may be one edit apart. One edit (a character changed, added or dropped, or two
 -- neighbours swapped) changes the length by one at most, and leaves whole either the first h characters or the last h,
 -- with h = ⌊(the shorter length − 1)/2⌋. So two values one edit apart differ in length by one at most, and share
