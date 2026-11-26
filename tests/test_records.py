@@ -62,7 +62,8 @@ def test_what_the_reader_fixes_sets_aside_and_reads_as_missing_is_as_recorded(tm
     assert by.loc["00000", "address__address"] == "千代田区丸の内1-1-1" and not math.isnan(by.loc["00302", "kind_p"])
 
 
-@pytest.mark.parametrize("path", [nayose.HERE / "mapping.sql"], ids=["mapping.sql"])
+@pytest.mark.parametrize("path", [nayose.HERE / "mapping.sql", nayose.HERE.parent / "design" / "shared_name_mapping.sql"],
+                         ids=["mapping.sql", "shared_name_mapping.sql"])
 def test_the_mapping_parses_as_bigquery_and_translates(path):
     from nayose.engines import duckdb_sql
     for sql in nayose.statements(path.read_text(encoding="utf-8")):

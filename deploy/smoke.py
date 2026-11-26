@@ -12,8 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import run  # noqa: E402
-from nayose.engines import BigQuery, DuckDB  # noqa: E402
+import run
+from nayose.engines import BigQuery, DuckDB
 
 COMPARED = {"scored": "SELECT id_l, id_r, ROUND(points, 9) AS points, rule, generators FROM scored ORDER BY id_l, id_r",
             "gold": "SELECT id, entity, entity_kind FROM gold ORDER BY id",

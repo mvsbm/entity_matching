@@ -3,7 +3,7 @@ by entity into config/generator.toml [split]'s datasets (records as they arrive,
 evaluation), as Parquet.
 
     .venv/bin/python scripts/generate.py                                   # data/medallion/bronze/<dataset>.parquet, data/labels/<dataset>.parquet
-    .venv/bin/python scripts/generate.py --entities 20000 --seed 3 --out data/synthetic/s3   # another population, unsplit
+    .venv/bin/python scripts/generate.py --entities 20000 --seed 3 --out data/artifacts/s3  # another population, unsplit
 """
 import argparse
 from dataclasses import replace

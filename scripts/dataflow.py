@@ -18,8 +18,8 @@ from sqlglot import exp
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))  # this checkout's nayose
 
-import nayose  # noqa: E402
-from nayose.procedures import ARGUMENTS, JOBS, TEMP_TABLE, in_procedure, stage_statements  # noqa: E402
+import nayose
+from nayose.procedures import ARGUMENTS, JOBS, TEMP_TABLE, in_procedure, stage_statements
 
 OUT = ROOT / "docs" / "dataflow.md"
 LOADED = ("input", "given", "name_weights")  # tables a job reads that no stage writes: files and the deploy's

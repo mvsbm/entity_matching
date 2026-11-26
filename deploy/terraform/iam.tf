@@ -74,13 +74,6 @@ resource "google_secret_manager_secret_iam_member" "runtime" {
   member    = google_service_account.runtime.member
 }
 
-resource "google_bigquery_dataset_iam_member" "runtime_sandbox" {
-  count      = var.environment == "staging" ? 1 : 0
-  dataset_id = google_bigquery_dataset.sandbox[0].dataset_id
-  role       = "roles/bigquery.dataEditor"
-  member     = google_service_account.runtime.member
-}
-
 # Jenkins without a key: its OIDC token, for the one job named, exchanged for either account's (Workload Identity Federation)
 resource "google_iam_workload_identity_pool" "jenkins" {
   count                     = var.jenkins_oidc_issuer == "" ? 0 : 1

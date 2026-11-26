@@ -69,7 +69,7 @@ def test_duckdb_s_own_comparisons_answer_where_both_strings_are_a_byte_a_charact
 
 
 def test_javascript_scores_as_the_duckdb_twins_do(duck):
-    mini_racer = pytest.importorskip("py_mini_racer")
+    import py_mini_racer as mini_racer
     ctx = mini_racer.MiniRacer()
     ctx.eval(STRINGS.read_text(encoding="utf-8"))
     given = pairs(20_000)

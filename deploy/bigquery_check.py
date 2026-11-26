@@ -31,9 +31,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))  # this checkout's nayose and design
 
-import nayose  # noqa: E402
-from nayose.engines import FUNCTIONS, BigQuery, DuckDB  # noqa: E402
-from nayose.procedures import TEMP_TABLE as TEMP  # noqa: E402
+import nayose
+from nayose.engines import FUNCTIONS, BigQuery, DuckDB
+from nayose.procedures import TEMP_TABLE as TEMP
 
 SCOPE = ["https://www.googleapis.com/auth/bigquery"]
 # US list prices (cloud.google.com/bigquery/pricing; asia-northeast1's are higher, in about the same ratio): on demand
@@ -311,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
             real.query(f"INSERT INTO `{dataset}`.billing (x) VALUES (2)").result()
             say("the project refuses DML: no billing", False, "it took an INSERT, so it bills: stopped")
             return 1
-        except Exception as e:  # noqa: BLE001 -- the refusal is the answer
+        except Exception as e:
             if not say("the project refuses DML: no billing", "Billing has not been enabled" in str(e), str(e)[:120]):
                 return 1
         client = Sandbox(real)

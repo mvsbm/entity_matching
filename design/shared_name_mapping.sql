@@ -16,11 +16,7 @@ CREATE OR REPLACE TEMP TABLE mapped AS
 WITH source AS (
   SELECT
     read_value(CONT_ID, TRUE, @nulls) AS id,
-    read_value(FULL_NAME_KANA, FALSE, @nulls)      AS FULL_NAME_KANA,
-    read_value(O_PERSON_NAME_KANA, FALSE, @nulls)  AS O_PERSON_NAME_KANA,
-    read_value(LAST_NAME_KANA, FALSE, @nulls)      AS LAST_NAME_KANA,
     read_value(GIVEN_NAME_KANA, FALSE, @nulls)     AS GIVEN_NAME_KANA,
-    read_value(NYS_CNV_P_NAME_KANA, FALSE, @nulls) AS NYS_CNV_P_NAME_KANA,
     read_value(NAME_KANA, FALSE, @nulls)           AS NAME_KANA,
     read_value(STD_ADDRESS, FALSE, @nulls)         AS STD_ADDRESS,
     read_value(ORIGINAL_ADDRESS, FALSE, @nulls)    AS ORIGINAL_ADDRESS,

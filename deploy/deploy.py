@@ -23,9 +23,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # this checkout's nayose
 
-import nayose  # noqa: E402
-from nayose.engines import BigQuery  # noqa: E402
-from nayose.procedures import functions, procedures, stubs  # noqa: E402
+import nayose
+from nayose.engines import BigQuery
+from nayose.procedures import functions, procedures, stubs
 
 
 def main(argv: list[str] | None = None, client: object = None, bigquery: object = None) -> int:

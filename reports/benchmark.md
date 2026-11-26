@@ -4,7 +4,7 @@ Written by `scripts/benchmark.py --entities 10000 20000 40000 60000 800000 --mem
 
 ## Quality: scenarios
 
-Each population's test split, with λ and m fitted on its train split without labels and u measured on the test split, as a run does. `false_merges` are pairs of records in one cluster that are two entities; `false_links` are the model's links between two entities, and `expected_false` the false links the model expects among its own (the sum of 1 − match probability), known without labels.
+Each population's test split, with λ and m fitted on its train split without labels and u measured on the test split, as a run does. `false_merges` are pairs of records in one entity that are two entities; `false_links` are the model's links between two entities, and `expected_false` the false links the model expects among its own (the sum of 1 − match probability), known without labels.
 
 | scenario | rules_recall | recall | interval | false_merges | fp_rate_at_most | household_merges | model_links | expected_false | false_links |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -18,9 +18,9 @@ Each population's test split, with λ and m fitted on its train split without la
 
 ## Person or company: end to end
 
-Populations with one name column for every kind (`design.generate.kind_problems`): real company names from the registry, held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the flag alone; by the kind step (a written legal form, or a name the model is sure of, never a person's against a company flag; else the flag). `person_company_clusters` hold a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; `wrong_*` the records called 2 that are persons and called 1 that are companies.
+Populations with one name column for every kind (`design.generate.kind_problems`): real company names from the registry, held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the flag alone; by the kind step (a written legal form, or a name the model is sure of, never a person's against a company flag; else the flag). `person_company_entities` hold a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; `wrong_*` the records called 2 that are persons and called 1 that are companies.
 
-| flag | routed_by | recall | false_merges | person_company_clusters | sure_companies | wrong_companies | sure_persons | wrong_persons | seconds |
+| flag | routed_by | recall | false_merges | person_company_entities | sure_companies | wrong_companies | sure_persons | wrong_persons | seconds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | good (1% wrong at random, 20% on representatives) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 5.0 |
 | good (1% wrong at random, 20% on representatives) | the flag alone | 0.4911 | 38 | 27 | 97.9% | 306 | 98.5% | 102 | 5.0 |
