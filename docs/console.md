@@ -14,7 +14,7 @@ no Jenkins. Everything here is pasting SQL and clicking **Run**, or uploading a 
   BigQuery doesn't read across locations.
 - **Two files from your technical contact**, made for your project, your dataset and your table:
   - `deploy.sql`: everything nayose installs in the dataset (functions and one procedure a job).
-  - `name_weights.csv`: the name model, which tells a person's name from a company's.
+  - `name_weights.parquet`: the name model, which tells a person's name from a company's.
 
   Your technical contact makes them once (and again only when nayose changes), from the repository:
 
@@ -31,7 +31,7 @@ no Jenkins. Everything here is pasting SQL and clicking **Run**, or uploading a 
 ## A first test, with synthetic records
 
 The repository's [data/console](../data/console) folder holds the four files of a first test, generated records
-only: `deploy.sql` and `name_weights.csv`, made for the dataset `YOUR_PROJECT.nayose` and its table
+only: `deploy.sql` and `name_weights.parquet`, made for the dataset `YOUR_PROJECT.nayose` and its table
 `synthetic_records`, and `synthetic_first.parquet` (for the build) and `synthetic_batch.parquet` (for an update).
 Download each from GitHub (the file, then *Download raw file*).
 
@@ -54,9 +54,9 @@ another fingerprint, so a run built with one is built again (step 4) after insta
    name of your own, written then in place of `nayose` throughout). Location: *asia-northeast1 (Tokyo)*. Click
    *Create dataset*.
 2. **Load the name model.** On the dataset `nayose`, click ⋮ → *Create table*. Source: *Upload*, file:
-   `name_weights.csv`, format *CSV*. Table: `name_weights`. Schema: click *Edit as text* and paste
-   `term:STRING,coef:FLOAT` (the schema text's name for FLOAT64). Under *Advanced options*: *Write preference*
-   *Overwrite table*, and *Header rows to skip* `1`. Click *Create table*.
+   `name_weights.parquet`, format *Parquet*. Table: `name_weights`. Leave the schema empty: the file carries it
+   (`term` STRING, `coef` FLOAT). Under *Advanced options*: *Write preference* *Overwrite table*. Click *Create
+   table*.
 3. **Install.** Click *+* (a new query), paste all of `deploy.sql`, and click *Run*. It takes about a minute. Then
    the dataset holds nayose's functions and four procedures: `build`, `update`, `decide` and `match`.
 

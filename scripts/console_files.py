@@ -3,7 +3,7 @@
     .venv/bin/python scripts/console_files.py                                   # data/console/, for YOUR_PROJECT.nayose
     .venv/bin/python scripts/console_files.py OUT --dataset PROJECT.DATASET     # for your own names
 
-- deploy.sql and name_weights.csv: deploy/deploy.py --sql, with nayose/mapping.sql reading the table TABLE of the
+- deploy.sql and name_weights.parquet: deploy/deploy.py --sql, with nayose/mapping.sql reading the table TABLE of the
   dataset (synthetic_records), not the table input;
 - synthetic_first.parquet: a generated population's records, for a build, every column the mapping reads among them
   (a column the generator doesn't fill is empty), as text;
@@ -35,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dataset", default=DATASET, help="PROJECT.DATASET nayose is installed in")
     p.add_argument("--table", default=TABLE, help="the table of the dataset the records are uploaded to")
     p.add_argument("--entities", type=int, default=10_000)
-    p.add_argument("--sql-only", action="store_true", help="deploy.sql and name_weights.csv alone")
+    p.add_argument("--sql-only", action="store_true", help="deploy.sql and name_weights.parquet alone")
     a = p.parse_args(argv)
     if os.environ.get("NAYOSE_CONFIG"):
         p.error("NAYOSE_CONFIG is set: these files hold nayose/config.toml's values; unset it")
@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     later = records["CONT_ID"].map(lambda x: int(hashlib.md5(x.encode()).hexdigest(), 16) % 100 < 5)
     records[~later].to_parquet(a.out / "synthetic_first.parquet", index=False)
     records[later].to_parquet(a.out / "synthetic_batch.parquet", index=False)
-    print(f"wrote {a.out}: deploy.sql, name_weights.csv, synthetic_first.parquet ({(~later).sum():,} records), "
+    print(f"wrote {a.out}: deploy.sql, name_weights.parquet, synthetic_first.parquet ({(~later).sum():,} records), "
           f"synthetic_batch.parquet ({later.sum():,})")
     return 0
 

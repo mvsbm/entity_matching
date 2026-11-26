@@ -195,7 +195,7 @@ def test_data_console_holds_what_scripts_console_files_writes(tmp_path):  # docs
     spec.loader.exec_module(files)
     assert files.main([str(tmp_path), "--sql-only"]) == 0
     kept = DEPLOY.parent / "data" / "console"
-    for name in ("deploy.sql", "name_weights.csv"):
+    for name in ("deploy.sql", "name_weights.parquet"):
         assert (tmp_path / name).read_bytes() == (kept / name).read_bytes(), \
             f"data/console/{name} is stale: python scripts/console_files.py --sql-only"
     for name in ("synthetic_first.parquet", "synthetic_batch.parquet"):  # what the mapping reads, every column as text
@@ -204,13 +204,14 @@ def test_data_console_holds_what_scripts_console_files_writes(tmp_path):  # docs
 
 
 def test_the_deploy_as_files_holds_every_statement_and_the_name_model_and_sends_nothing(tmp_path):
-    import pandas as pd
+    import pyarrow.parquet as pq
     assert script("deploy").main(["p.run", "--sql", str(tmp_path)], client=None, bigquery=None) == 0  # no client made
     sql = (tmp_path / "deploy.sql").read_text(encoding="utf-8")
     assert sql == ";\n\n".join([*stubs("p.run"), *functions("p.run"), *procedures("p.run")]) + ";\n"
     assert len(sql.encode()) < 1024 ** 2  # the console's limit: 1 MB a query
-    weights = pd.read_csv(tmp_path / "name_weights.csv", keep_default_na=False, float_precision="round_trip")
-    assert weights.values.tolist() == nayose.name_weights().values.tolist()  # every term and weight, to the last bit
+    weights = pq.read_table(tmp_path / "name_weights.parquet")
+    assert [str(t) for t in weights.schema.types] == ["string", "double"]  # BigQuery's STRING and FLOAT64
+    assert weights.to_pandas().values.tolist() == nayose.name_weights().values.tolist()  # every term and weight, to the last bit
 
 
 def test_the_deploy_makes_stubs_then_the_functions_and_the_name_model_then_the_procedures():
