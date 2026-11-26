@@ -44,7 +44,7 @@ SELECT
   id, person_name, full_name, given_name__kana_fold, person_name__kana_fold, person_name__kana_fold_long_vowel,
   person_name__kana_fold_one_byte, person_name__kana_fold_letters_lo, person_name__kana_fold_letters_hi,
   company_name, company_name__nfkc_strip_legal_form_kana_fold,
-  company_name__nfkc_strip_legal_form_kana_fold_one_byte, address_code, address, address__address,
+  company_name__nfkc_strip_legal_form_kana_fold_one_byte, address_code, address__address,
   address__address_one_byte_hash, postal_code, phone, customer_id, birth_date
 FROM records;
 
@@ -355,8 +355,9 @@ em_patterns AS (
 u_records AS (SELECT 'sample' AS scope, * FROM fit_sample UNION ALL SELECT 'file', * FROM compared),
 u_filled AS (
   SELECT
-    scope, COUNT(*) AS records, COUNT(person_name) AS name, COUNT(company_name) AS company,
-    GREATEST(COUNT(address_code), COUNT(address), COUNT(postal_code)) AS address,
+    scope, COUNT(*) AS records, COUNT(person_name) AS name,
+    COUNT(company_name__nfkc_strip_legal_form_kana_fold) AS company,
+    GREATEST(COUNT(address_code), COUNT(address__address), COUNT(postal_code)) AS address,
     COUNT(phone) AS phone, COUNT(customer_id) AS cif, COUNT(birth_date) AS birth
   FROM u_records GROUP BY scope
 ),

@@ -168,6 +168,24 @@ def test_an_update_finds_the_placeholders_a_build_of_the_same_records_finds_and_
     nayose.records(built, [files["all"]])  # the same batch again: every record already in the run
     assert found(built) == [("phone", "0000", 2700)] and records(built) == held
 
+    def run_of(*batches, name="x"):  # each batch a list of rows, records() run on each in turn
+        engine = DuckDB()
+        for i, rows in enumerate(batches):
+            pd.DataFrame(rows, columns=COLUMNS).astype("string").to_parquet(tmp_path / f"{name}{i}.parquet", index=False)
+            nayose.records(engine, [tmp_path / f"{name}{i}.parquet"])
+        return engine
+    cif = lambda i, phone, c: row(i, phone) | {"CIF_ID": c}
+    dummy = [cif(i, "5555" if i < 100 else f"{i + 1:04d}", "99999999") for i in range(3000)]  # one dummy customer ID
+    dummy += [cif(i, f"9{i:04d}", f"{i:08d}") for i in range(3000, 6000)]
+    once = run_of(dummy)  # 5555's 100 records are one customer, as a build reads the ID: no placeholder
+    assert found(once) == [("customer_id", "99999999", 3000)]
+    nayose.records(once, [tmp_path / "x0.parquet"])  # again, though the ID is now stored blanked: as before
+    assert found(once) == [("customer_id", "99999999", 3000)]
+    first = [row(i, f"{i + 1:04d}") for i in range(25)] + [row(i, "1111") for i in range(25, 175)]  # 1111: a placeholder
+    later = [row(i, "2222") for i in range(175, 395)] + [row(i, "3333") for i in range(395, 594)]
+    # the bar rises past 1111's 150 records: a build of all finds none, and an update keeps 1111 alone, as it stays
+    assert found(run_of(first + later, name="all")) == [] and found(run_of(first, later, name="two")) == [("phone", "1111", 150)]
+
 
 def test_a_company_placeholder_leaves_a_person_s_name_and_an_empty_value_or_one_format_compares_as_it_should(tmp_path):
     row = lambda i, **k: {c: None for c in COLUMNS} | {"CONT_ID": f"{i:05d}"} | k
@@ -176,13 +194,16 @@ def test_a_company_placeholder_leaves_a_person_s_name_and_an_empty_value_or_one_
     rows += [row(901, NYS_CNV_P_NAME_KANA="株式会社", STD_ADDRESS="東京都", BIRTH_DATE="1990-01-02"),  # a legal form alone
              row(902, NYS_CNV_P_NAME_KANA="トヨタショウジ", STD_ADDRESS="東京都千代田区丸の内1-1", PHONE_NUM_4="1234",
                  BIRTH_DATE="19900102"),
-             row(903, BIRTH_DATE="１９９０／０１／０２")]
+             row(903, BIRTH_DATE="１９９０／０１／０２"), row(904, BIRTH_DATE="1990/1/2"),
+             row(905, BIRTH_DATE="1990/1/12"), row(906, BIRTH_DATE="1990/11/2")]  # one-digit parts, padded
     pd.DataFrame(rows, columns=COLUMNS).astype("string").to_parquet(tmp_path / "in.parquet", index=False)
     engine = DuckDB()
     nayose.records(engine, [tmp_path / "in.parquet"])
     assert ("company_name", "ダミーショウジ") in engine.rows("SELECT field, value FROM placeholders")
     assert engine.value("SELECT COUNT(any_name) FROM records WHERE id >= '00300' AND id < '00380'") == 80  # their own
-    assert engine.rows("SELECT birth_date FROM records WHERE id IN ('00901', '00902', '00903')") == [("19900102",)] * 3
+    births = dict(engine.rows("SELECT id, birth_date FROM records WHERE id >= '00901' AND id <= '00906'"))
+    assert births == {"00901": "19900102", "00902": "19900102", "00903": "19900102", "00904": "19900102",
+                      "00905": "19900112", "00906": "19901102"}
     engine.run(nayose.statements((nayose.SQL / "match.sql").read_text(encoding="utf-8"))[0])  # household
     pair = "FROM records AS x, records AS y WHERE x.id = '00901' AND y.id = '00902'"
     assert engine.rows(f"SELECT gamma_company(x, y), gamma_address(x, y), gamma_birth(x, y), household(x, y) {pair}") == [
