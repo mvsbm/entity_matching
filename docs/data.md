@@ -103,7 +103,7 @@ data/reference/*.json                    public reference data, tracked (SOURCES
 data/medallion/bronze/<split>.parquet    records as they arrive              scripts/generate.py
 data/labels/<split>.parquet              each record's entity and household  scripts/generate.py
 data/artifacts/benchmark/cost_<N>/       records.parquet and run/, a run     scripts/benchmark.py
-data/console/                            a first console test's files, tracked  scripts/console_files.py
+data/console/                            a first console test's files        scripts/console_files.py
 ```
 
 `--entities`, `--seed` and `--out DIR` write one unsplit `records.parquet` and `labels.parquet` instead. `test` is held out: no work reads `data/medallion/bronze/test.parquet` or `data/labels/test.parquet`. The tests and the benchmark generate their own populations. The name model is trained from `individual.json` and `registry.json` (`scripts/train_name_model.py`); a run reads only the model.

@@ -13,6 +13,8 @@ With --sql-only, the two deploy files alone: what data/console/'s must equal (te
 import argparse
 import hashlib
 import importlib.util
+import os
+import re
 import sys
 import tempfile
 from dataclasses import replace
@@ -35,12 +37,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--entities", type=int, default=10_000)
     p.add_argument("--sql-only", action="store_true", help="deploy.sql and name_weights.csv alone")
     a = p.parse_args(argv)
-    mapping = (nayose.HERE / "mapping.sql").read_text(encoding="utf-8").replace("FROM input", f"FROM `{a.dataset}.{a.table}`")
+    if os.environ.get("NAYOSE_CONFIG"):
+        p.error("NAYOSE_CONFIG is set: these files hold nayose/config.toml's values; unset it")
+    if a.out == ROOT / "data" / "console" and (a.dataset, a.table) != (DATASET, TABLE):
+        p.error(f"give OUT for your own names: data/console holds {DATASET}'s files, which the repository keeps")
+    read = (nayose.HERE / "mapping.sql").read_text(encoding="utf-8")
+    mapping, n = re.subn(r"\bFROM\s+input\b", f"FROM `{a.dataset}.{a.table}`", read, flags=re.I)
+    assert n and not re.search(r"\binput\b", re.sub(r"--[^\n]*", "", mapping)), "mapping.sql reads input otherwise"
     spec = importlib.util.spec_from_file_location("deploy", ROOT / "deploy" / "deploy.py")
     deploy = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(deploy)
     with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "mapping.sql").write_text(mapping, encoding="utf-8")
+        (Path(tmp) / "mapping.sql").write_text(mapping, encoding="utf-8", newline="\n")
         deploy.main([a.dataset, "--mapping", str(Path(tmp) / "mapping.sql"), "--sql", str(a.out)])
     if a.sql_only:
         return 0
