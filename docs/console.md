@@ -23,7 +23,9 @@ no Jenkins. Everything here is pasting SQL and clicking **Run**, or uploading a 
 
   `your_mapping.sql` is a copy of `nayose/mapping.sql` with two things changed: the table it reads, its `FROM` lines
   (`FROM input` becomes ``FROM `YOUR_PROJECT.raw.nayose_batch` ``), and the columns, where yours are named otherwise.
-  A column that isn't text is read as text: `CAST(x AS STRING)`.
+  A column that isn't text is read as text: `CAST(x AS STRING)`. Every column the mapping names must be in your
+  table: where yours lacks one, add it empty (``ALTER TABLE `YOUR_PROJECT.raw.nayose_batch` ADD COLUMN NAME STRING``)
+  or take it out of the mapping. A build otherwise stops at "Unrecognized name: NAME".
 
 ## Once: install nayose
 
