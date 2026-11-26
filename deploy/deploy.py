@@ -12,14 +12,16 @@ so every job refuses ("deploy again") rather than run with half of a version.
 
 --mapping: the deployment's own column mapping (its secret, nayose-mapping); without it, NAYOSE_MAPPING's, else
 nayose/mapping.sql's.
---sql DIR: send nothing; write the deploy to DIR as deploy.sql, to run in the BigQuery console, and name_weights.csv,
-to upload as the table name_weights (docs/console.md). No Google account is needed to make them.
+--sql DIR: send nothing; write the deploy to DIR as deploy.sql, to run in the BigQuery console, and
+name_weights.parquet, to upload as the table name_weights (docs/console.md). No Google account is needed to make them.
 Runs as nayose-deployer (deploy/Jenkinsfile).
 """
 import argparse
-import csv
 import sys
 from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # this checkout's nayose
 
@@ -36,15 +38,16 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
     p = argparse.ArgumentParser(prog="deploy/deploy.py", description="nayose made in a BigQuery dataset")
     p.add_argument("dataset", help="PROJECT.DATASET: the run's")
     p.add_argument("--mapping", type=Path, help="the deployment's mapping.sql (else NAYOSE_MAPPING's, or nayose's)")
-    p.add_argument("--sql", type=Path, metavar="DIR", help="write deploy.sql and name_weights.csv to DIR, send nothing")
+    p.add_argument("--sql", type=Path, metavar="DIR", help="write deploy.sql and name_weights.parquet to DIR")
     a = p.parse_args(argv)
     first, last = [*stubs(a.dataset), *functions(a.dataset)], procedures(a.dataset, a.mapping)  # the name model between
     if a.sql:
         a.sql.mkdir(parents=True, exist_ok=True)
         (a.sql / "deploy.sql").write_text(";\n\n".join([*first, *last]) + ";\n", encoding="utf-8", newline="\n")
-        # every term quoted, so a term of spaces or digits reads as text; each weight in 17 digits, read back exactly
-        nayose.name_weights().to_csv(a.sql / "name_weights.csv", index=False, quoting=csv.QUOTE_NONNUMERIC,
-                                     float_format="%.17g", lineterminator="\n")
+        # Parquet carries its types (STRING, FLOAT64), so the upload needs no schema, and every weight exactly
+        weights = nayose.name_weights()
+        pq.write_table(pa.table({"term": pa.array(weights["term"], pa.string()),
+                                 "coef": pa.array(weights["coef"], pa.float64())}), a.sql / "name_weights.parquet")
         return 0
     engine = BigQuery(a.dataset, client=client, bigquery=bigquery)
     try:

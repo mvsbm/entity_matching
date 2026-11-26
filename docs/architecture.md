@@ -409,8 +409,8 @@ In prod, the run is one dataset in each project, Terraform's `dataset` (`nayose`
   order, with the deployment's mapping. Each value they read is `DECLARE`d at its top from `config.toml`, so a change
   of values reaches prod only by a deploy. `build` drops the run's tables first and keeps `decisions`. `match` takes
   its threshold as an argument. Every statement is `CREATE OR REPLACE`, so a deploy can be run again, and one stopped
-  partway leaves every job refusing. `--sql DIR` sends nothing: it writes `deploy.sql` and `name_weights.csv` to DIR,
-  for the console ([console](console.md)).
+  partway leaves every job refusing. `--sql DIR` sends nothing: it writes `deploy.sql` and `name_weights.parquet` to
+  DIR, for the console ([console](console.md)).
 - **`deploy/run.py PROJECT.DATASET JOB ARGS`** loads the job's input from Cloud Storage into `input` or `given` and
   `CALL`s the procedure. A build or an update given no file drops any `input` left and reads the table the mapping's
   `FROM` names. After a build or an update it prints `report.txt` from the `report_` tables. A job is all or nothing:
